@@ -1,33 +1,50 @@
+import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib.path as mpltPath
+from scipy.spatial import ConvexHull
 import torch
 
 class Room:
+    """
+    A room in a building (2D).
+    Coordinates must be entered in a clockwise or anti-clockwise order.
+    """
 
-    def __init__(self,name,capacitance,coordinates):
-        """
-        A room in a building (2D).
-        Coordinates must be entered in a clockwise or anti-clockwise order.
-        """
+    def __init__(self, name: str, capacitance: float, coordinates):
+
         self.name = name
         self.capacitance = capacitance
         self.coordinates = torch.tensor(coordinates)
-        self.area = self.polyarea(self.coordinates)
 
-        # Iterate through sorted vertices and store each pair which forms a wall
+        self.hull = ConvexHull(coordinates)
+        self.area = self.hull.area
+        self._path = mpltPath.Path(self.coordinates)
+
+        # Iterate through sorted vertices and store each pair which form a wall
         walls = []
-        for i in range(len(self.coordinates)-1):
-            walls.append((tuple(coordinates[i]), tuple(coordinates[i+1])))
+        for i in range(len(self.coordinates) - 1):
+            walls.append((tuple(coordinates[i]), tuple(coordinates[i + 1])))
         walls.append((tuple(coordinates[-1]), tuple(coordinates[0])))
-        self.walls = walls #list of walls in room
+        self.walls = walls  # list of walls in room
 
+    def pltrm(self, ax=None, colour=None):
 
-    def pltrm(self):
-        from matplotlib import pyplot as plt
-        import numpy as np
         c = self.coordinates
-        return plt.plot(np.append(c[:,0], c[0][0]) , np.append(c[:,1], c[0][1]))
 
-    def polyarea(self, coordinates):
-        from scipy.spatial import ConvexHull
-        hull = ConvexHull(coordinates)
+        if ax is None:
+            ax = plt
 
-        return hull.area
+        line = ax.plot(
+            np.hstack([c[:, 0], c[0, 0]]),
+            np.hstack([c[:, 1], c[0, 1]]),
+            c=colour,
+        )
+        return line
+
+    def points_in_room(self, P):
+        """ Boolean answering if point is inside the polygon.
+
+        P is in form:
+                P = [[x1,y1],[x2,y2]...]
+        """
+        return self._path.contains_points(P)
