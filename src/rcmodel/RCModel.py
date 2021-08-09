@@ -1,7 +1,7 @@
 import numpy as np
 import torch
 
-class Model:
+class RCModel:
     """
     A class containing all the rooms of a building (2D)
     """
@@ -31,6 +31,7 @@ class Model:
                 surf_area += self.Walls[i].area
 
         self.surf_area = surf_area
+        self.n_params = self.get_n_params() #Number of parameters needed for model i.e len(theta)
 
 
     def make_connectivity_matrix(self):
@@ -126,10 +127,9 @@ class Model:
         A[1,1] = -self.surf_area/(self.Re[1]*self.Ce[1])
 
 
-
         for row in range(n):
             if row == 0:
-                c = self.Ce[1]
+                c = self.Ce[-1]
             else:
                 c = self.rooms[row-1].capacitance # Heat Capacity (J/K)
 
@@ -275,8 +275,6 @@ class Model:
         # Set Tout input:
         B[0,0] = self.surf_area/(self.Re[0] * self.Ce[0])
 
-
-
         #Set the Q inputs for each room
         for rm in range(len(self.rooms)):
             B[rm+off, rm+1] = 1/self.rooms[rm].capacitance
@@ -398,8 +396,40 @@ class Model:
 
         A = self.make_system_matrix()
 
-        return A, Q_avg
+        Q = self.proportional_heating(Q_avg)
 
+        return A, Q
+
+    def get_n_params(self):
+        """Find how many parameters the model needs by testing each number."""
+        n_params = 1
+        while True:
+            params = torch.ones(n_params)
+            try:
+                self.categorise_theta(params)
+            except:
+                n_params += 1
+
+            else:
+                break #This is reached if no error occurs
+
+        return n_params
+
+
+    def proportional_heating(self, Q_avg):
+        """
+        Input: Q_avg (W/m^2)
+        Outputs: Q (Watts), np array - the energy each room recives.
+        """
+        if isinstance(Q_avg, list):
+            Q_avg = Q_avg[0]
+
+
+        Q = torch.zeros(len(self.rooms))
+        for i in range(len(self.rooms)):
+            Q[i] = Q_avg * self.rooms[i].area
+
+        return Q
 
     class Wall():
         """
@@ -431,7 +461,7 @@ class Model:
     #     Construct a new model.
     #     """
     #     assert(len(rooms) > 0)
-    # 
+    #
     #     self.matrix = Model.init_matrix(rooms)
     #
     # def init_matrix(rooms):
