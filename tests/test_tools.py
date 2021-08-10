@@ -1,5 +1,7 @@
 import torch
 import pytest
+import rcmodel
+
 
 from rcmodel.tools import InputScaling
 
