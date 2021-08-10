@@ -1,6 +1,7 @@
 import numpy as np
 import torch
 
+
 class RCModel:
     """
     A class containing all the rooms of a building (2D)
