@@ -1,6 +1,8 @@
 import pytest
 import torch
 import numpy as np
+import rcmodel
+
 
 from rcmodel.room import Room
 from rcmodel.RCModel import RCModel
