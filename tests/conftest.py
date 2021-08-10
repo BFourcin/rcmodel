@@ -3,6 +3,9 @@ import pytest
 from rcmodel.room import Room
 from rcmodel.RCModel import RCModel
 
+import sys
+sys.path.append('../src')
+
 @pytest.fixture
 def rooms_n2():
     """
