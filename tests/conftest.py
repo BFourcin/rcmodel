@@ -1,5 +1,6 @@
 import pytest
 
+
 from rcmodel.room import Room
 from rcmodel.RCModel import RCModel
 
