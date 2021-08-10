@@ -4,7 +4,8 @@ from rcmodel.room import Room
 from rcmodel.RCModel import RCModel
 
 import sys
-sys.path.append('../src/rcmodel')
+import os
+sys.path.append(os.path.dirname(os.path.realpath(__file__)) + "/../src")
 
 @pytest.fixture
 def rooms_n2():
