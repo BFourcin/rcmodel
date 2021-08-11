@@ -2,3 +2,4 @@ torch
 torchdiffeq
 numpy
 matplotlib
+pandas
