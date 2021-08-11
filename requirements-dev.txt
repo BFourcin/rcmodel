@@ -1,0 +1,5 @@
+-e . #This installs the actual package
+-r requirements.txt
+pytest
+pytest-lazy-fixture
+setuptools_scm
