@@ -31,6 +31,15 @@ class RCOptimModel(nn.Module):
 
         theta = Scaling_func(self.params)
 
+        # ensures iv has correct dimensions. If iv is a row vector try statement catches and converts to column vector.
+        # If iv has incorrect dim then causes error downstream which is difficult to trace back.
+        try:
+            if iv.shape[0] != len(self.params) or iv.shape[1] != 1:
+                raise ValueError('iv has incorrect dimensions, should be torch.Size([n, 1])')
+        except IndexError:
+            iv = iv.unsqueeze(1)
+
+
         xdot = self.ODE(theta, self.building, Tout_continous, t0)
         fODE = xdot.fODE
 
@@ -55,7 +64,7 @@ class RCOptimModel(nn.Module):
             self.t0 = t0 #starting time
 
         def fODE(self, t, x):
-            
+
             u = self.building.input_vector(self.Tout_continous(t.item() + self.t0), self.Q)
 
             return self.A @ x + self.B @ u
