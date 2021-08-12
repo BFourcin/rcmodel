@@ -34,7 +34,7 @@ class RCOptimModel(nn.Module):
         # ensures iv has correct dimensions. If iv is a row vector try statement catches and converts to column vector.
         # If iv has incorrect dim then causes error downstream which is difficult to trace back.
         try:
-            if iv.shape[0] != len(self.params) or iv.shape[1] != 1:
+            if iv.shape[0] != 2+len(self.building.rooms) or iv.shape[1] != 1:
                 raise ValueError('iv has incorrect dimensions, should be torch.Size([n, 1])')
         except IndexError:
             iv = iv.unsqueeze(1)
