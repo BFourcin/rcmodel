@@ -13,8 +13,6 @@ Install using pip:
 
 ## Installation of latest development version
 
-Install from TestPYPI, select release history and pip install most recent version. 
+Install getting TestPYPI, select release history and pip install most recent version. 
 
 https://test.pypi.org/project/rcmodel/0.1.0/#history
-
-[![PyPI version](https://badge.fury.io/py/rcmodel.svg)]
