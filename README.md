@@ -15,4 +15,4 @@ Install using pip:
 
 Install from GitHub:
 
-'pip install git+https://github.com/BFourcin/rcmodel'
+`pip install git+https://github.com/BFourcin/rcmodel`
