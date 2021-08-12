@@ -143,14 +143,17 @@ class BuildingTemperatureDataset(Dataset):
         # Get pandas df of sample
         df_sample = pd.read_csv(self.csv_path, skiprows=lb, nrows=self.sample_size)
 
-        #convert to tensor
-        sample = torch.tensor(df_sample.values)
+        # Get time column (time must be in the 0th column)
+        t_sample = torch.tensor(df_sample.iloc[:, 0].values)/1000 # units (s)
+
+        # Get temp matrix
+        temp_sample = torch.tensor(df_sample.iloc[:, 1:].values) #pandas needs 1: to get all but first column
 
         #apply transorms if required
         if self.transform:
-            sample = self.transform(sample)
+            temp_sample = self.transform(temp_sample)
 
-        return sample
+        return t_sample, temp_sample
 
     def _get_entries(self):
         """Get total rows/entries in dataset"""
