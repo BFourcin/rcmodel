@@ -13,6 +13,6 @@ Install using pip:
 
 ## Installation of latest development version
 
-Install getting TestPYPI, select release history and pip install most recent version. 
+Install from GitHub:
 
-https://test.pypi.org/project/rcmodel/0.1.0/#history
+'pip install git+https://github.com/BFourcin/rcmodel'
