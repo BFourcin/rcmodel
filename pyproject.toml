@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools_scm]
 write_to = "src/rcmodel/version.py"
-version_scheme = "release-branch-semver"
+version_scheme = "guess-next-dev"
 local_scheme = "no-local-version" #Otherwise PYPI doesnt work
 
 [tool.pytest.ini_options]
