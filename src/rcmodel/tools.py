@@ -102,13 +102,23 @@ from torch.utils.data import Dataset
 import pandas as pd
 
 class BuildingTemperatureDataset(Dataset):
-    def __init__(self, csv_path, sample_size, rows_to_skip=0, transform=None):
+    def __init__(self, csv_path, sample_size, transform=None, train=False, test=False, validation=False):
         self.csv_path = csv_path
         self.transform = transform
         self.sample_size = sample_size
         self.headings = list(pd.read_csv(csv_path, nrows=1)) # list of dataframe headings
-        self.rows_to_skip = rows_to_skip
-        self.entry_count = self._get_entries()
+        self.train = train
+        self.test = test
+        self.validation = validation
+
+        # auto splits data by train, test or validation.
+        # entry count is number of rows to read from csv.
+        # remainder of data e.g. after entry_count//sample_size is lost
+        self.rows_to_skip, self.entry_count = self._split_dataset()
+
+        # Train: 0.7
+        # Test: 0.2
+        # Validation: 0.1
 
     def __len__(self):
         """Get number of batches in the dataset. Returns int"""
@@ -143,11 +153,11 @@ class BuildingTemperatureDataset(Dataset):
         # Get pandas df of sample
         df_sample = pd.read_csv(self.csv_path, skiprows=lb, nrows=self.sample_size)
 
-        # Get time column (time must be in the 0th column)
-        t_sample = torch.tensor(df_sample.iloc[:, 0].values)/1000 # units (s)
+        # Get time column (time must be in the 1th column)
+        t_sample = torch.tensor(df_sample.iloc[:, 1].values, dtype=torch.float64) # units (s)
 
         # Get temp matrix
-        temp_sample = torch.tensor(df_sample.iloc[:, 1:].values) #pandas needs 1: to get all but first column
+        temp_sample = torch.tensor(df_sample.iloc[:, 2:].values, dtype=torch.float32) #pandas needs 2: to get all but first & second column
 
         #apply transorms if required
         if self.transform:
@@ -156,7 +166,7 @@ class BuildingTemperatureDataset(Dataset):
         return t_sample, temp_sample
 
     def _get_entries(self):
-        """Get total rows/entries in dataset"""
+        """Get total rows/entries in csv"""
         from csv import reader
 
         # the rows in the .csv are counted:
@@ -164,4 +174,27 @@ class BuildingTemperatureDataset(Dataset):
             read_f = reader(f,delimiter = ",")
             entry_count = sum(1 for row in read_f) - 1 # minus one to account for heading
 
-        return entry_count - self.rows_to_skip
+        return entry_count
+
+    def _split_dataset(self):
+
+        train_split = 0.7
+        test_split = 0.2
+        val_split = 0.1
+
+        total_entries = self._get_entries() #total rows of data in csv
+
+        if self.train:
+            rows_to_skip = 0
+            entry_count = int(total_entries*train_split)
+            return rows_to_skip, entry_count
+        elif self.test:
+            rows_to_skip = int(total_entries*train_split)
+            entry_count = int(total_entries*test_split)
+            return rows_to_skip, entry_count
+        elif self.validation:
+            rows_to_skip = int(total_entries*train_split) + int(total_entries*test_split)
+            entry_count = total_entries - rows_to_skip
+            return rows_to_skip, entry_count
+        else:
+            raise ValueError('train, test and validation all False')
