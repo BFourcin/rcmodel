@@ -18,9 +18,6 @@ def test_run_model(rooms_n9):
     #Initialise RCModel
     bld = RCModel(rooms_n9, height, Re, Ce, Rint)
 
-    #Initialise RCOptimModel with the building
-    model = RCOptimModel(bld)
-
     #Initialise scaling methods:
     rm_CA = [200, 800] #[min, max] Capacitance/area
     ex_C = [1.5*10**4, 10**6] #Capacitance
@@ -29,7 +26,9 @@ def test_run_model(rooms_n9):
     Q_avg = [0, 0] # Heat/area (W/m^2)
 
     scaling = InputScaling(rm_CA, ex_C, R, Q_avg)
-    scale_f = scaling.physical_scaling
+
+    #Initialise RCOptimModel with the building and InputScaling
+    model = RCOptimModel(bld, scaling)
 
     #Set hyper parameters for forward run:
     iv = 20*torch.ones((2+len(bld.rooms),1))
@@ -44,6 +43,6 @@ def test_run_model(rooms_n9):
                 return -5
 
 
-    output= model.forward(dummy_tout, iv, t_eval, scale_f, torch.tensor(0))
+    output= model(dummy_tout, iv, t_eval)
 
     assert (not torch.any(output<-5).item()) and (not torch.any(output>20).item()), "Model has gained or lost energy from the system"
