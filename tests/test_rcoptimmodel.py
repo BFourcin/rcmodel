@@ -22,13 +22,13 @@ def test_run_model(rooms_n9):
     rm_CA = [200, 800] #[min, max] Capacitance/area
     ex_C = [1.5*10**4, 10**6] #Capacitance
     R = [0.2, 1.2] # Resistance ((K.m^2)/W)
-    #SET HEATING TO ZERO
-    Q_avg = [0, 0] # Heat/area (W/m^2)
 
-    scaling = InputScaling(rm_CA, ex_C, R, Q_avg)
+    scaling = InputScaling(rm_CA, ex_C, R)
 
     #Initialise RCOptimModel with the building and InputScaling
-    model = RCOptimModel(bld, scaling)
+    transform = torch.sigmoid
+    model = RCOptimModel(bld, scaling, transform)
+    model.heating = torch.nn.Parameter(model.heating * 0) #no heating
 
     #Set hyper parameters for forward run:
     iv = 20*torch.ones((2+len(bld.rooms),1))
@@ -44,5 +44,5 @@ def test_run_model(rooms_n9):
 
 
     output= model(dummy_tout, iv, t_eval)
-
+    
     assert (not torch.any(output<-5).item()) and (not torch.any(output>20).item()), "Model has gained or lost energy from the system"

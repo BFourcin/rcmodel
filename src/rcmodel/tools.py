@@ -15,10 +15,10 @@ class InputScaling(RCModel):
     InputScaling(input_range=input_range)
     """
 
-    def __init__(self, rm_CA=None, ex_C=None, R=None, Q_avg=None, input_range=None):
+    def __init__(self, rm_CA=None, ex_C=None, R=None, input_range=None):
 
         if input_range is None:
-            input_range = [rm_CA, ex_C, R, Q_avg]
+            input_range = [rm_CA, ex_C, R]
 
             #check for None
             if None in input_range:
@@ -27,27 +27,23 @@ class InputScaling(RCModel):
 
         self.input_range = torch.tensor(input_range)
 
-
     def physical_scaling(self, theta_scaled):
         """
         Scale from 0-1 back to normal.
         """
 
-        rm_cap, ex_cap, ex_r, wl_r, Q_avg = self.categorise_theta(theta_scaled)
+        rm_cap, ex_cap, ex_r, wl_r = self.categorise_theta(theta_scaled)
 
 
         rm_cap = self.unminmaxscale(rm_cap, self.input_range[0])
         ex_cap = self.unminmaxscale(ex_cap, self.input_range[1])
         ex_r   = self.unminmaxscale(ex_r  , self.input_range[2])
         wl_r   = self.unminmaxscale(wl_r  , self.input_range[2])
-        Q_avg  = self.unminmaxscale(Q_avg , self.input_range[3])
 
         if wl_r.ndim == 0:
             wl_r = torch.unsqueeze(wl_r, 0)
-        if Q_avg.ndim == 0:
-            Q_avg = torch.unsqueeze(Q_avg, 0)
 
-        theta = torch.cat([rm_cap, ex_cap, ex_r, wl_r, Q_avg])
+        theta = torch.cat([rm_cap, ex_cap, ex_r, wl_r])
 
         return theta
 
@@ -57,22 +53,25 @@ class InputScaling(RCModel):
         Scale to 0-1.
         """
 
-        rm_cap, ex_cap, ex_r, wl_r, Q_avg = self.categorise_theta(theta)
+        rm_cap, ex_cap, ex_r, wl_r = self.categorise_theta(theta)
 
         rm_cap = self.minmaxscale(rm_cap, self.input_range[0])
         ex_cap = self.minmaxscale(ex_cap, self.input_range[1])
         ex_r   = self.minmaxscale(ex_r  , self.input_range[2])
         wl_r   = self.minmaxscale(wl_r  , self.input_range[2])
-        Q_avg  = self.minmaxscale(Q_avg , self.input_range[3])
 
         if wl_r.ndim == 0:
             wl_r = torch.unsqueeze(wl_r, 0)
-        if Q_avg.ndim == 0:
-            Q_avg = torch.unsqueeze(Q_avg, 0)
 
-        theta_scaled = torch.cat([rm_cap, ex_cap, ex_r, wl_r, Q_avg])
+        theta_scaled = torch.cat([rm_cap, ex_cap, ex_r, wl_r])
 
         return theta_scaled
+
+    def heat_scaling(self, Q, Q_lim):
+
+        Q_watts = self.unminmaxscale(Q, [-Q_lim, Q_lim])
+
+        return Q_watts
 
 
     def minmaxscale(self, x, x_range):
@@ -166,7 +165,7 @@ class BuildingTemperatureDataset(Dataset):
         return t_sample, temp_sample
 
     def _get_entries(self):
-        """Get total rows/entries in csv"""
+        """Get total rows/entries of data in csv"""
         from csv import reader
 
         # the rows in the .csv are counted:

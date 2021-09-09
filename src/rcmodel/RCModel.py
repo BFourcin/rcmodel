@@ -1,6 +1,6 @@
 import numpy as np
 import torch
-
+from xitorch.interpolate import Interp1D
 
 class RCModel:
     """
@@ -354,10 +354,8 @@ class RCModel:
         ex_r   = theta[indx-3:indx]
         indx += 1
         wl_r   = theta[indx-1]
-        indx += 1
-        Q_avg  = theta[indx-1]
 
-        return rm_cap, ex_cap, ex_r, wl_r, Q_avg
+        return rm_cap, ex_cap, ex_r, wl_r
 
 
     def update_inputs(self, theta):
@@ -372,8 +370,7 @@ class RCModel:
         returns Q_avg: The mean W/m^2 for the building
         """
 
-        rm_cap, ex_cap, ex_r, wl_r, Q_avg = self.categorise_theta(theta)
-
+        rm_cap, ex_cap, ex_r, wl_r = self.categorise_theta(theta)
 
         # update room capacitance
         for i in range(len(self.rooms)):
@@ -394,12 +391,9 @@ class RCModel:
             else:
                 self.Walls[i].resistance = wl_r
 
-
         A = self.make_system_matrix()
 
-        Q = self.proportional_heating(Q_avg)
-
-        return A, Q
+        return A
 
     def get_n_params(self):
         """Find how many parameters the model needs by testing each number."""
@@ -416,21 +410,93 @@ class RCModel:
 
         return n_params
 
-
+    #Heating:
     def proportional_heating(self, Q_avg):
         """
         Input: Q_avg (W/m^2)
-        Outputs: Q (Watts), np array - the energy each room recives.
+        Calc: Q_avg * rm_area
+        Outputs: Q (Watts)
         """
-        if isinstance(Q_avg, list):
-            Q_avg = Q_avg[0]
-
 
         Q = torch.zeros(len(self.rooms))
         for i in range(len(self.rooms)):
-            Q[i] = Q_avg * self.rooms[i].area
+            Q[i] = Q_avg[i] * self.rooms[i].area
 
         return Q
+
+    def time_angle(self, circ):
+        """outputs angle from x axis to point on circle. Used to represent time in a day"""
+
+        theta = np.angle(circ) * 180/np.pi
+        #add 360 if y axis is negative.
+        theta = np.where(circ.imag < 0, theta+360, theta)
+
+        return torch.tensor(theta)
+
+
+    def Q_control(self, t, bound_A, bound_B):
+        """
+        Produces a step function for given timeseries, turn on when time of day is between the thresholds A-B.
+        t is unix epoch time (seconds since 00:00 Jan 1970), t is converted to an angle (degrees 0-360) repeating every 24hrs.
+        Theta_A and Theta_B represent the start and stop day angle.
+
+
+        t - time evaluations, unix epoch time
+        bound_* - enter value between -6:6 this is then scaled up to between 0 and 360 using a sigmoid function.
+
+        Output: step function off (0) or on (1) for each point of the timeseries. Each row is a different room.
+                tensor([[rm1],
+                        [rm2],
+                        ....
+                        [rmn]])
+
+        """
+
+        s_per_day = 24*60**2
+
+        # function which bounds value between 0:360
+        bound = lambda x: 360 * torch.sigmoid(x)
+
+        #scale theta between 0:360 degrees
+        theta_A = bound(bound_A)
+        theta_B = bound(bound_B)
+
+        #get angle (i.e time of day) for timeseries
+        circ = np.e ** (1j*2*np.pi/s_per_day * t)
+        time_degree = self.time_angle(circ)
+
+        #Control logic:
+        #turn Q on if time_degree is between thresholds theta_A and theta_B.
+        #Do this for each room. num rooms = len(theta_A)
+
+        Q_on_off = torch.zeros((len(theta_A), len(t)))
+        stretch = 2e1   # the larger this number the steeper the step function is. But you lose the ability to autograd the gradient.
+                        # 2e1 means the step goes from 0-1 in roughly two minutes and grad is calculated fine.
+        for i in range(len(theta_A)):
+            if theta_A[i] < theta_B[i]:
+                condition1 = torch.sigmoid((time_degree - theta_A[i])*stretch) #True if time>A
+                condition2 = torch.sigmoid((theta_B[i] - time_degree)*stretch) #True if time<B
+                Q_on_off[i] = torch.sigmoid((condition1+condition2-1.9)*stretch) # True if con1 & con2 on between A-B
+            else:
+                condition1 = torch.sigmoid((time_degree - theta_A[i])*stretch)
+                condition2 = torch.sigmoid((theta_B[i] - time_degree)*stretch)
+                Q_on_off[i] = torch.sigmoid((condition1+condition2-0.4)*stretch) # on between B-A
+
+        return Q_on_off
+
+
+    def Q_continuous(self, t, Q_avg, theta_A1, theta_B1):
+
+        Q_on_off = self.Q_control(t, theta_A1, theta_B1) # get control step funciton for each room
+
+        Q = Q_on_off * Q_avg.unsqueeze(1) #multiply by Q_avg for each room
+
+        Q_cont = Interp1D(t, Q, method='linear') #turn continuous
+
+        return Q_cont
+
+
+
 
     class Wall():
         """
