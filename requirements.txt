@@ -3,3 +3,4 @@ torchdiffeq
 numpy
 matplotlib
 pandas
+xitorch
