@@ -462,6 +462,8 @@ class RCModel:
         #get angle (i.e time of day) for timeseries
         circ = np.e ** (1j*2*np.pi/s_per_day * t)
         time_degree = self.time_angle(circ.cpu())
+        device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+        time_degree.to(device) #Put back on cpu if available
 
         #Control logic:
         #turn Q on if time_degree is between thresholds theta_A and theta_B.
