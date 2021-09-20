@@ -40,9 +40,9 @@ def test_run_model(rooms_n9):
                 return -5*torch.ones(len(t))
 
             except TypeError:
-                return -5
+                return torch.tensor(-5)
 
 
     output= model(dummy_tout, iv, t_eval)
-    
+
     assert (not torch.any(output<-5).item()) and (not torch.any(output>20).item()), "Model has gained or lost energy from the system"
