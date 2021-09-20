@@ -463,7 +463,7 @@ class RCModel:
         circ = np.e ** (1j*2*np.pi/s_per_day * t)
         time_degree = self.time_angle(circ.cpu())
         device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-        time_degree.to(device) #Put back on cpu if available
+        time_degree = time_degree.to(device) #Put back on gpu if available
 
         #Control logic:
         #turn Q on if time_degree is between thresholds theta_A and theta_B.
@@ -474,7 +474,6 @@ class RCModel:
                         # 2e1 means the step goes from 0-1 in roughly two minutes and grad is calculated fine.
         for i in range(len(theta_A)):
             if theta_A[i] < theta_B[i]:
-                print(time_degree.is_cuda, theta_A[i].is_cuda)
                 condition1 = torch.sigmoid((time_degree - theta_A[i])*stretch) #True if time>A
                 condition2 = torch.sigmoid((theta_B[i] - time_degree)*stretch) #True if time<B
                 Q_on_off[i] = torch.sigmoid((condition1+condition2-1.9)*stretch) # True if con1 & con2 on between A-B
@@ -489,7 +488,10 @@ class RCModel:
     def Q_continuous(self, t, Q_avg, theta_A1, theta_B1):
 
         Q_on_off = self.Q_control(t, theta_A1, theta_B1) # get control step funciton for each room
-
+        
+        device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+        Q_on_off = Q_on_off.to(device)
+        print(Q_on_off.is_cuda, Q_avg.unsqueeze(1).is_cuda)
         Q = Q_on_off * Q_avg.unsqueeze(1) #multiply by Q_avg for each room
 
         Q_cont = Interp1D(t, Q, method='linear') #turn continuous
