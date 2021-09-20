@@ -156,7 +156,7 @@ def test_matrix_multiplication(rooms_n9):
     bld = getbuilding(rooms_n9)
 
     B = bld.input_matrix()
-    Tout = 15
+    Tout = torch.tensor(15)
     Q = 5 * torch.ones(len(bld.rooms))
     u = bld.input_vector(Tout, Q)
 
