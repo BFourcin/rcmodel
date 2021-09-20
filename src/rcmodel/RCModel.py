@@ -247,10 +247,8 @@ class RCModel:
         Q = Q.unsqueeze(0) #add dim
 
 
-        # Tout = np.array([Tout])
-        # Tout = add_dim(Tout)
 
-        Tout = torch.tensor(Tout, dtype=torch.float32)
+        Tout = Tout.type(torch.float32)
         Tout = torch.reshape(Tout, (1,1))
 
         if len(Q[0]) == len(self.rooms):
@@ -463,7 +461,7 @@ class RCModel:
 
         #get angle (i.e time of day) for timeseries
         circ = np.e ** (1j*2*np.pi/s_per_day * t)
-        time_degree = self.time_angle(circ)
+        time_degree = self.time_angle(circ.cpu())
 
         #Control logic:
         #turn Q on if time_degree is between thresholds theta_A and theta_B.
