@@ -474,6 +474,7 @@ class RCModel:
                         # 2e1 means the step goes from 0-1 in roughly two minutes and grad is calculated fine.
         for i in range(len(theta_A)):
             if theta_A[i] < theta_B[i]:
+                print(time_degree.is_cuda, theta_A[i].is_cuda)
                 condition1 = torch.sigmoid((time_degree - theta_A[i])*stretch) #True if time>A
                 condition2 = torch.sigmoid((theta_B[i] - time_degree)*stretch) #True if time<B
                 Q_on_off[i] = torch.sigmoid((condition1+condition2-1.9)*stretch) # True if con1 & con2 on between A-B
