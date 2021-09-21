@@ -488,10 +488,10 @@ class RCModel:
     def Q_continuous(self, t, Q_avg, theta_A1, theta_B1):
 
         Q_on_off = self.Q_control(t, theta_A1, theta_B1) # get control step funciton for each room
-        
+
         device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
         Q_on_off = Q_on_off.to(device)
-        print(Q_on_off.is_cuda, Q_avg.unsqueeze(1).is_cuda)
+
         Q = Q_on_off * Q_avg.unsqueeze(1) #multiply by Q_avg for each room
 
         Q_cont = Interp1D(t, Q, method='linear') #turn continuous
