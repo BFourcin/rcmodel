@@ -45,8 +45,11 @@ class RCOptimModel(nn.Module):
         #check if t_eval is formatted correctly:
         if t_eval.dim() > 1:
             t_eval = t_eval.squeeze(0)
-
-
+            
+        # Check if Cuda is available
+        device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+        
+        #Transform parameters
         if self.transform:
             theta = self.transform(self.params)
             Q_avg = self.transform(self.heating[:,0]) #W/m2 for each room
@@ -70,8 +73,7 @@ class RCOptimModel(nn.Module):
         t_eval = t_eval - t0
 
         # set initial value as 4 degrees higher than current outside temp
-        iv = (self.Tout_continuous(torch.tensor(t0.item())) + 4) * torch.ones(2+len(self.building.rooms))
-        # iv = (self.Tout_continuous(torch.tensor(t0.item(), device=device)) + 4) * torch.ones(2+len(self.building.rooms), device=device)
+        iv = (self.Tout_continuous(torch.tensor(t0.item(), device=device)) + 4) * torch.ones(2+len(self.building.rooms), device=device)
         iv = iv.unsqueeze(1) #set iv as column vector. Errors caused if Row vector which are difficult to trace.
 
 
@@ -91,10 +93,12 @@ class RCOptimModel(nn.Module):
         """
 
         def __init__(self, theta, building, Tout_continuous, Qrms_continuous, t0):
+            
+            device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
             self.building = building
-            self.A = self.building.update_inputs(theta) #update building and get matrix A
-            self.B = building.input_matrix()
+            self.A = self.building.update_inputs(theta).to(device) #update building and get matrix A
+            self.B = building.input_matrix().to(device)
             self.Tout_continuous = Tout_continuous
             self.Qrms_continuous = Qrms_continuous
             self.t0 = t0 #starting time
@@ -104,11 +108,7 @@ class RCOptimModel(nn.Module):
             Tout = self.Tout_continuous(t.item() + self.t0)
 
             Q = self.Qrms_continuous(t + self.t0)
-            # print(t)
 
             u = self.building.input_vector(Tout, Q)
-            # print('u' , u)
-            # print('A@x ', self.A @ x)
-            # print('B@u', self.B @ u)
-
+             
             return self.A @ x + self.B @ u
