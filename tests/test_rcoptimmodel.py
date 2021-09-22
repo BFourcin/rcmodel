@@ -38,12 +38,8 @@ def test_run_model(rooms_n9):
     model = RCOptimModel(bld, scaling, dummy_tout, transform)
     model.heating = torch.nn.Parameter(model.heating * 0) #no heating
 
-    #Set hyper parameters for forward run:
-    iv = 20*torch.ones((2+len(bld.rooms),1))
+    #Set parameters for forward run:
     t_eval = torch.arange(0, 200000, 30, dtype=torch.float32)
-
-
-
 
     output= model(t_eval)
 
