@@ -25,15 +25,6 @@ def test_run_model(rooms_n9):
 
     scaling = InputScaling(rm_CA, ex_C, R)
 
-    #Initialise RCOptimModel with the building and InputScaling
-    transform = torch.sigmoid
-    model = RCOptimModel(bld, scaling, transform)
-    model.heating = torch.nn.Parameter(model.heating * 0) #no heating
-
-    #Set hyper parameters for forward run:
-    iv = 20*torch.ones((2+len(bld.rooms),1))
-    t_eval = torch.arange(0, 200000, 30, dtype=torch.float32)
-
     #Function for constant outside temperature. try/except allows for broadcasting of value.
     def dummy_tout(t):
             try:
@@ -42,7 +33,18 @@ def test_run_model(rooms_n9):
             except TypeError:
                 return torch.tensor(-5)
 
+    #Initialise RCOptimModel with the building and InputScaling
+    transform = torch.sigmoid
+    model = RCOptimModel(bld, scaling, dummy_tout, transform)
+    model.heating = torch.nn.Parameter(model.heating * 0) #no heating
 
-    output= model(dummy_tout, iv, t_eval)
+    #Set hyper parameters for forward run:
+    iv = 20*torch.ones((2+len(bld.rooms),1))
+    t_eval = torch.arange(0, 200000, 30, dtype=torch.float32)
+
+
+
+
+    output= model(t_eval)
 
     assert (not torch.any(output<-5).item()) and (not torch.any(output>20).item()), "Model has gained or lost energy from the system"
