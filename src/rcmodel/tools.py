@@ -101,11 +101,12 @@ from torch.utils.data import Dataset
 import pandas as pd
 
 class BuildingTemperatureDataset(Dataset):
-    def __init__(self, csv_path, sample_size, transform=None, train=False, test=False, validation=False):
+    def __init__(self, csv_path, sample_size, transform=None, all=True, train=False, test=False, validation=False):
         self.csv_path = csv_path
         self.transform = transform
         self.sample_size = sample_size
         self.headings = list(pd.read_csv(csv_path, nrows=1)) # list of dataframe headings
+        self.all = all
         self.train = train
         self.test = test
         self.validation = validation
@@ -194,6 +195,10 @@ class BuildingTemperatureDataset(Dataset):
         elif self.validation:
             rows_to_skip = int(total_entries*train_split) + int(total_entries*test_split)
             entry_count = total_entries - rows_to_skip
+            return rows_to_skip, entry_count
+        elif self.all:
+            rows_to_skip = 0
+            entry_count = total_entries
             return rows_to_skip, entry_count
         else:
             raise ValueError('train, test and validation all False')
