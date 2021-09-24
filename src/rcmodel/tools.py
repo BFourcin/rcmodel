@@ -111,6 +111,8 @@ class BuildingTemperatureDataset(Dataset):
         self.test = test
         self.validation = validation
 
+        self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+
         # auto splits data by train, test or validation.
         # entry count is number of rows to read from csv.
         # remainder of data e.g. after entry_count//sample_size is lost
@@ -154,10 +156,10 @@ class BuildingTemperatureDataset(Dataset):
         df_sample = pd.read_csv(self.csv_path, skiprows=lb, nrows=self.sample_size)
 
         # Get time column (time must be in the 1th column)
-        t_sample = torch.tensor(df_sample.iloc[:, 1].values, dtype=torch.float64) # units (s)
+        t_sample = torch.tensor(df_sample.iloc[:, 1].values, dtype=torch.float64, device=self.device) # units (s)
 
         # Get temp matrix
-        temp_sample = torch.tensor(df_sample.iloc[:, 2:].values, dtype=torch.float32) #pandas needs 2: to get all but first & second column
+        temp_sample = torch.tensor(df_sample.iloc[:, 2:].values, dtype=torch.float32, device=self.device) #pandas needs 2: to get all but first & second column
 
         #apply transorms if required
         if self.transform:
