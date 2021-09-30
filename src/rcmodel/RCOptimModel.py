@@ -45,10 +45,10 @@ class RCOptimModel(nn.Module):
         #check if t_eval is formatted correctly:
         if t_eval.dim() > 1:
             t_eval = t_eval.squeeze(0)
-            
+
         # Check if Cuda is available
         device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-        
+
         #Transform parameters
         if self.transform:
             theta = self.transform(self.params)
@@ -73,7 +73,8 @@ class RCOptimModel(nn.Module):
         t_eval = t_eval - t0
 
         # set initial value as 4 degrees higher than current outside temp
-        iv = (self.Tout_continuous(torch.tensor(t0.item(), device=device)) + 4) * torch.ones(2+len(self.building.rooms), device=device)
+        iv = 26 * torch.ones(2+len(self.building.rooms), device=device) #set iv at 26 degrees
+        # iv = (self.Tout_continuous(torch.tensor(t0.item(), device=device)) + 4) * torch.ones(2+len(self.building.rooms), device=device)
         iv = iv.unsqueeze(1) #set iv as column vector. Errors caused if Row vector which are difficult to trace.
 
 
@@ -83,7 +84,7 @@ class RCOptimModel(nn.Module):
         # integrate using fixed step (rk4) see torchdiffeq docs for more options.
         integrate = odeint(fODE, iv, t_eval, method='rk4') #https://github.com/rtqichen/torchdiffeq
 
-        return integrate[:,2:] #first two columns are removed, they're external wall nodes. 
+        return integrate[:,2:] #first two columns are removed, they're external wall nodes.
 
 
     class ODE():
@@ -93,7 +94,7 @@ class RCOptimModel(nn.Module):
         """
 
         def __init__(self, theta, building, Tout_continuous, Qrms_continuous, t0):
-            
+
             device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
             self.building = building
@@ -110,5 +111,5 @@ class RCOptimModel(nn.Module):
             Q = self.Qrms_continuous(t + self.t0)
 
             u = self.building.input_vector(Tout, Q)
-             
+
             return self.A @ x + self.B @ u
