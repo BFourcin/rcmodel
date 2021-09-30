@@ -41,6 +41,23 @@ def test_run_model(rooms_n9):
     #Set parameters for forward run:
     t_eval = torch.arange(0, 200000, 30, dtype=torch.float32)
 
-    output= model(t_eval)
+    output = model(t_eval)
 
-    assert (not torch.any(output<-5).item()) and (not torch.any(output>20).item()), "Model has gained or lost energy from the system"
+
+    # from matplotlib import pyplot as plt
+    # output = output.squeeze(0)
+    # plt.plot(t_eval.detach().numpy(), output[:,0].detach().numpy())
+    # plt.show()
+
+    start_temp = output[0][0,0].item() #initial value condition
+    print(start_temp)
+
+    assert (not torch.any(output<-5).item()) and (not torch.any(output>start_temp).item()), "Model has gained or lost energy from the system"
+
+
+
+if __name__ == '__main__':
+
+    pytest.main()
+
+    print("__main__ reached")
