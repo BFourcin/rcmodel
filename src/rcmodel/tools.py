@@ -1,9 +1,9 @@
-from .RCModel import RCModel
+from .building import Building
 import torch
 
 
 
-class InputScaling(RCModel):
+class InputScaling(Building):
     """
     Class to group methods for scaling input parameters.
     Model scaling - scales physical parameters to between 0-1 using min max.
