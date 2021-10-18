@@ -1,10 +1,10 @@
 from . import room
-from . import RCModel
+from . import building
 from . import tools
-from . import RCOptimModel
+from . import RCModel
 
 
 from .room import Room
-from .RCModel import RCModel
+from .building import Building
 from .tools import InputScaling
-from .RCOptimModel import RCOptimModel
+from .RCModel import RCModel
