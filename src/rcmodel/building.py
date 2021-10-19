@@ -34,8 +34,8 @@ class Building:
         self.surf_area = surf_area
         self.n_params = self.get_n_params() #Number of parameters needed for model i.e len(theta)
 
-        self.knect = self.make_connectivity_matrix()
 
+        
 
     def make_connectivity_matrix(self):
         """
@@ -114,7 +114,9 @@ class Building:
 
         """
 
-        n = len(self.knect[0])
+        knect = self.make_connectivity_matrix()
+
+        n = len(knect[0])
 
         off = len(self.Ce)-1 #Num nodes not seen in connection matrix which need to be offset in A.
 
@@ -136,7 +138,7 @@ class Building:
                 c = self.rooms[row-1].capacitance # Heat Capacity (J/K)
 
             for col in range(n):
-                K = self.knect[row,col] #Thermal Conductance (W/K) K = A(m^2)/R(K.m^2/W)
+                K = knect[row,col] #Thermal Conductance (W/K) K = A(m^2)/R(K.m^2/W)
 
                 A[row+off, col+off] = A[row+off, col+off] + K/c
                 A[row+off, row+off] = A[row+off, row+off] - K/c
