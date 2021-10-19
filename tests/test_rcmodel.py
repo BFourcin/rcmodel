@@ -50,7 +50,6 @@ def test_run_model(rooms_n9):
     # plt.show()
 
     start_temp = output[0][0,0].item() #initial value condition
-    print(start_temp)
 
     assert (not torch.any(output<-5).item()) and (not torch.any(output>start_temp).item()), "Model has gained or lost energy from the system"
 
