@@ -37,10 +37,9 @@ class RCModel(nn.Module):
 
         self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
-        #Starting Temperatures of nodes. Column vector of shape ([n,1]) n=rooms+2
-        self.iv = 26 * torch.ones(2+len(self.building.rooms), device=self.device) #set iv at 26 degrees
-        self.iv = self.iv.unsqueeze(1) #set iv as column vector. Errors caused if Row vector which are difficult to trace.
+        self.reset_iv() #sets iv
 
+        
 
     def forward(self, t_eval):
         """
@@ -93,30 +92,10 @@ class RCModel(nn.Module):
 
 
 
-    # class ODE():
-    #     """
-    #     Class to provide the function:
-    #     dy/dx = Ax + Bu
-    #     """
-    #
-    #     def __init__(self, theta, building, Tout_continuous, Qrms_continuous, t0, cooling_policy ):
-    #
-    #         self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    #
-    #         self.building = building
-    #         self.A = self.building.update_inputs(theta).to(self.device) #update building and get matrix A
-    #         self.B = building.input_matrix().to(self.device)
-    #         self.Tout_continuous = Tout_continuous
-    #         self.Qrms_continuous = Qrms_continuous
-    #         self.t0 = t0 #starting time
-    #         self.cooling_policy = cooling_policy
-
-
-
     def decimal_time(self, unix_epoch):
         """Time to percentage of year, week and day"""
 
-        date=datetime.fromtimestamp(unix_epoch)
+        date = datetime.fromtimestamp(unix_epoch)
         _, isoweek, isoweekday = date.isocalendar()
 
         time_of_year = isoweek/52
@@ -124,6 +103,7 @@ class RCModel(nn.Module):
         time_of_day = (date.hour*60**2 + date.minute*60 + date.second)/(60**2*24)
 
         return time_of_year, time_of_week, time_of_day
+
 
 
     def fODE(self, t, x):
@@ -157,3 +137,9 @@ class RCModel(nn.Module):
         u = self.building.input_vector(Tout, Q)
 
         return self.A @ x + self.B @ u
+
+
+    def reset_iv(self):
+        #Starting Temperatures of nodes. Column vector of shape ([n,1]) n=rooms+2
+        self.iv = 26 * torch.ones(2+len(self.building.rooms), device=self.device) #set iv at 26 degrees
+        self.iv = self.iv.unsqueeze(1) #set iv as column vector. Errors caused if Row vector which are difficult to trace.
