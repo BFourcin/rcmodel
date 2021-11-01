@@ -35,7 +35,7 @@ class Building:
         self.n_params = self.get_n_params() #Number of parameters needed for model i.e len(theta)
 
 
-        
+
 
     def make_connectivity_matrix(self):
         """
@@ -248,7 +248,6 @@ class Building:
         # Q = add_dim(Q)
         # Q = torch.tensor(Q, dtype=torch.float32).unsqueeze(0) #add dim
         Q = Q.unsqueeze(0) #add dim
-
 
 
         Tout = Tout.type(torch.float32)
