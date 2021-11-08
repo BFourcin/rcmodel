@@ -2,6 +2,7 @@
 <project version="4">
   <component name="ProjectModuleManager">
     <modules>
+      <module fileurl="file://$USER_HOME$/OneDrive - University of Exeter/PhD/LSI/LSI Simple Thermal Model/.idea/LSI Simple Thermal Model.iml" filepath="$USER_HOME$/OneDrive - University of Exeter/PhD/LSI/LSI Simple Thermal Model/.idea/LSI Simple Thermal Model.iml" />
       <module fileurl="file://$PROJECT_DIR$/.idea/rcmodel.iml" filepath="$PROJECT_DIR$/.idea/rcmodel.iml" />
     </modules>
   </component>
