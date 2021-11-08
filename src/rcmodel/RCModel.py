@@ -7,12 +7,12 @@ from datetime import datetime
 class RCModel(nn.Module):
     """
     Custom Pytorch model for gradient optimization.
-    Initilaises with random parameters.
+    Initialises with random parameters.
 
     scaling - Class containing methods to scale inputs from 0-1 back to their usual values and back again.
     transform - function to transform parameters e.g. sigmoid
 
-    Runs using foward method should be sequential as the output is used as the inital conditon for the next run, unless manually reset using self.iv
+    Runs using forward method should be sequential as the output is used as the inital conditon for the next run, unless manually reset using self.iv
     """
 
     def __init__(self, building, scaling, Tout_continuous, transform=None, cooling_policy=None):
@@ -26,7 +26,7 @@ class RCModel(nn.Module):
 
         self.Tout_continuous = Tout_continuous  # Interp1D object
 
-        self.cooling_policy = cooling_policy  # Neural net: cooling_policy(state) --> action
+        self.cooling_policy = cooling_policy  # Neural net: pi(state) --> action
 
         # initialize weights with random numbers, length of params given from building class
         params = torch.rand(building.n_params, dtype=torch.float32, requires_grad=True)
@@ -36,6 +36,8 @@ class RCModel(nn.Module):
             torch.randn((len(building.rooms), 3), dtype=torch.float32, requires_grad=True))  # [Q, theta_A, theta_B]
 
         self.Q_lim = 500
+
+        self.ode_t = None  # Keeps track of t during integration. None is just to initialise attribute
 
         self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
@@ -47,10 +49,11 @@ class RCModel(nn.Module):
 
         building - Initialised RCModel Class
         Tout_continuous - A scipy interp1d function covering the whole of t_eval. Tout_continuous(t) = Outside temperature at time t
-        iv - Inital value. Starting temperatures of all nodes
-        t_eval - times function should return a solution. e.g. torch.arange(0, 10000, 30). ensure dtype=float32
+        iv - Initial value. Starting temperatures of all nodes
+        t_eval - times function should return a solution. e.g. torch.arrange(0, 10000, 30). ensure dtype=float32
         t0 - starting time if not 0
         """
+        self.ode_t = -30  # Keeps track of t during ODE integration. Needed to assign log probs only when a step occurs
 
         # check if t_eval is formatted correctly:
         if t_eval.dim() > 1:
@@ -86,9 +89,6 @@ class RCModel(nn.Module):
         # integrate using fixed step (rk4) see torchdiffeq docs for more options.
         integrate = odeint(self.fODE, self.iv, t_eval, method='rk4')  # https://github.com/rtqichen/torchdiffeq
 
-        # get last ouput and use for next initial value
-        self.iv = integrate[-1, :]
-
         return integrate  # first two columns are external envelope nodes. i.e not rooms
 
     def decimal_time(self, unix_epoch):
@@ -111,7 +111,6 @@ class RCModel(nn.Module):
         """
 
         # cool_param: [x , time_of_week, time_of_day]
-
         time_of_year, time_of_week, time_of_day = self.decimal_time(t.item() + self.t0.item())
 
         mu = 23.359
@@ -121,19 +120,25 @@ class RCModel(nn.Module):
         x_norm = torch.reshape(x_norm, (-1,))
 
         # Change this to Sin(t/freq), Cos(t/freq)
-        state_cool = torch.cat(
-            (x_norm, torch.tensor([time_of_week, time_of_day], device=self.device, dtype=torch.float32)))
+        state_cool = torch.cat((
+            x_norm,
+            torch.tensor([time_of_week, time_of_day], device=self.device, dtype=torch.float32)
+        ))
 
         value = -16914  # value is learnt by first optimiser
-        if self.cooling_policy:
+
+        # get cooling action if policy is available and 30 seconds has passed since last action
+        if self.cooling_policy and t - self.ode_t >= 30:
             action, log_prob = self.cooling_policy.get_action(state_cool)  # might need state_cool.float()
+            self.ode_t = t
 
-            if self.cooling_policy.training:  # in training mode
-                self.cooling_policy.log_probs_buffer.append(log_prob)
+            if self.cooling_policy.training:  # if in training mode store log_prob
+                self.cooling_policy.log_probs.append(log_prob)
 
-            Q = torch.ones(len(self.building.rooms)) * value * action
         else:  # No cooling
-            Q = torch.zeros(len(self.building.rooms))
+            action = 0
+
+        Q = torch.ones(len(self.building.rooms)) * value * action
 
         # Q = self.Qrms_continuous(t + self.t0)
 
@@ -145,5 +150,5 @@ class RCModel(nn.Module):
     def reset_iv(self):
         # Starting Temperatures of nodes. Column vector of shape ([n,1]) n=rooms+2
         self.iv = 26 * torch.ones(2 + len(self.building.rooms), device=self.device)  # set iv at 26 degrees
-        self.iv = self.iv.unsqueeze(
-            1)  # set iv as column vector. Errors caused if Row vector which are difficult to trace.
+        # Set iv as column vector. Errors caused if Row vector which are difficult to trace.
+        self.iv = self.iv.unsqueeze(1)
