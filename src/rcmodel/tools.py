@@ -1,6 +1,7 @@
 from .building import Building
 import torch
-
+from torch.utils.data import Dataset
+import pandas as pd
 
 
 class InputScaling(Building):
@@ -20,10 +21,9 @@ class InputScaling(Building):
         if input_range is None:
             input_range = [rm_CA, ex_C, R]
 
-            #check for None
+            # check for None
             if None in input_range:
                 raise ValueError('None type in list. Define all inputs or use a predefined input_range instead')
-
 
         self.input_range = torch.tensor(input_range)
 
@@ -46,7 +46,6 @@ class InputScaling(Building):
         theta = torch.cat([rm_cap, ex_cap, ex_r, wl_r])
 
         return theta
-
 
     def model_scaling(self, theta):
         """
@@ -73,7 +72,6 @@ class InputScaling(Building):
 
         return Q_watts
 
-
     def minmaxscale(self, x, x_range):
         if not torch.is_tensor(x_range):
             x_range = torch.tensor(x_range)
@@ -83,7 +81,6 @@ class InputScaling(Building):
         x_scaled = (x - x_range.min()) / (x_range.max() - x_range.min())
 
         return x_scaled
-
 
     def unminmaxscale(self, x_scaled, x_range):
         if not torch.is_tensor(x_range):
@@ -95,10 +92,6 @@ class InputScaling(Building):
 
         return x
 
-
-
-from torch.utils.data import Dataset
-import pandas as pd
 
 class BuildingTemperatureDataset(Dataset):
     def __init__(self, csv_path, sample_size, transform=None, all=True, train=False, test=False, validation=False):
@@ -204,3 +197,66 @@ class BuildingTemperatureDataset(Dataset):
             return rows_to_skip, entry_count
         else:
             raise ValueError('train, test and validation all False')
+
+
+# helper functions:
+
+def pltsolution_1rm(model, dataloader, filename=None):
+    """
+    Plots the first sample of dataloader.
+    """
+
+    # Get solution ---------------
+    time, data_temp = next(iter(dataloader))
+
+    time = time.squeeze(0)
+    data_temp = data_temp.squeeze(0)
+
+    # Find time period
+    t_data = (time - time.min()) / (24 * 60 ** 2)
+
+    pred = model(time)
+    pred = pred.squeeze(-1)
+
+    # Get Heating Control for each room
+
+    Q_avg = model.transform(model.heating[:, 0])
+    Q_avg = model.scaling.heat_scaling(Q_avg, Q_lim=model.Q_lim)
+    Q_on_off = model.building.Q_control(time, model.heating[:, 1],
+                                        model.heating[:, 2])  # get control step funciton for each room
+
+    Q = Q_on_off * Q_avg.unsqueeze(1)  # Q is timeseries of Watts for each room.
+
+    # Compute and print loss.
+    loss_fn = torch.nn.MSELoss()
+    num_cols = len(model.building.rooms)  # number of columns to take from data.
+    loss = loss_fn(pred[:, 2:], data_temp[:, 0:num_cols])
+
+    print(f"Test loss = {loss.item():>8f}")
+
+    # ---------------------------------
+
+    # Plot Solution
+
+    ax2ylim = 250
+
+    fig, axs = plt.subplots(figsize=(20, 15))
+
+    ax2 = axs.twinx()
+    ln1 = axs.plot(t_data.detach().numpy(), pred[:, 2:].detach().numpy(), label='model')
+    ln2 = axs.plot(t_data.detach().numpy(), data_temp[:, 0].detach().numpy(), label='data')
+    ln3 = axs.plot(t_data.detach().numpy(), Tout_continuous(time).detach().numpy(), label='outside')
+    ln4 = ax2.plot(t_data.detach().numpy(), Q[0].detach().numpy(), '--', color='black', alpha=0.5, label='heat')
+    axs.set_title(model.building.rooms[0].name)
+    ax2.set_ylabel(r"Heating/Cooling ($W/m^2$)")
+    ax2.set_ylim(-ax2ylim, ax2ylim)
+
+    lns = ln1 + ln2 + ln3 + ln4
+    labs = [l.get_label() for l in lns]
+    axs.legend(lns, labs, loc=0)
+
+    axs.set(xlabel='Time (days)', ylabel='Temperature ($^\circ$C)')
+
+    plt.show()
+    if filename:
+        plt.savefig(filename)
