@@ -2,6 +2,7 @@ from .building import Building
 import torch
 from torch.utils.data import Dataset
 import pandas as pd
+import matplotlib as plt
 
 
 class InputScaling(Building):
@@ -223,7 +224,7 @@ def pltsolution_1rm(model, dataloader, filename=None):
     Q_avg = model.transform(model.heating[:, 0])
     Q_avg = model.scaling.heat_scaling(Q_avg, Q_lim=model.Q_lim)
     Q_on_off = model.building.Q_control(time, model.heating[:, 1],
-                                        model.heating[:, 2])  # get control step funciton for each room
+                                        model.heating[:, 2])  # get control step function for each room
 
     Q = Q_on_off * Q_avg.unsqueeze(1)  # Q is timeseries of Watts for each room.
 
@@ -245,7 +246,7 @@ def pltsolution_1rm(model, dataloader, filename=None):
     ax2 = axs.twinx()
     ln1 = axs.plot(t_data.detach().numpy(), pred[:, 2:].detach().numpy(), label='model')
     ln2 = axs.plot(t_data.detach().numpy(), data_temp[:, 0].detach().numpy(), label='data')
-    ln3 = axs.plot(t_data.detach().numpy(), Tout_continuous(time).detach().numpy(), label='outside')
+    ln3 = axs.plot(t_data.detach().numpy(), model.Tout_continuous(time).detach().numpy(), label='outside')
     ln4 = ax2.plot(t_data.detach().numpy(), Q[0].detach().numpy(), '--', color='black', alpha=0.5, label='heat')
     axs.set_title(model.building.rooms[0].name)
     ax2.set_ylabel(r"Heating/Cooling ($W/m^2$)")
