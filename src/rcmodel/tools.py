@@ -2,6 +2,7 @@ from .building import Building
 import torch
 from torch.utils.data import Dataset
 import pandas as pd
+import matplotlib as plt
 
 
 class InputScaling(Building):
