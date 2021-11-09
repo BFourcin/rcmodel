@@ -28,12 +28,11 @@ class RCModel(nn.Module):
 
         self.cooling_policy = cooling_policy  # Neural net: pi(state) --> action
 
+        self.params = None  # initialised in init_params()
+        self.heating = None
+
         # initialize weights with random numbers, length of params given from building class
-        params = torch.rand(building.n_params, dtype=torch.float32, requires_grad=True)
-        # make theta torch parameters
-        self.params = nn.Parameter(params)
-        self.heating = nn.Parameter(
-            torch.randn((len(building.rooms), 3), dtype=torch.float32, requires_grad=True))  # [Q, theta_A, theta_B]
+        self.init_params()
 
         self.Q_lim = 500
 
@@ -152,3 +151,10 @@ class RCModel(nn.Module):
         self.iv = 26 * torch.ones(2 + len(self.building.rooms), device=self.device)  # set iv at 26 degrees
         # Set iv as column vector. Errors caused if Row vector which are difficult to trace.
         self.iv = self.iv.unsqueeze(1)
+
+    def init_params(self):
+        params = torch.rand(self.building.n_params, dtype=torch.float32, requires_grad=True)
+        # make theta torch parameters
+        self.params = nn.Parameter(params)
+        self.heating = nn.Parameter(
+            torch.randn((len(self.building.rooms), 3), dtype=torch.float32, requires_grad=True))  # [Q, theta_A, theta_B]
