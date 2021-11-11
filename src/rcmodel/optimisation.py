@@ -9,6 +9,7 @@ def train(model, device, dataloader, optimizer):
     Performs one epoch of training.
     Order of rooms in building and in data must match otherwise model will fit wrong rooms to data.
     """
+    model.reset_iv()  # Reset initial value
     model.train()
     num_cols = len(model.building.rooms)  # number of columns to use from data.
     num_batches = len(dataloader)
@@ -38,7 +39,8 @@ def train(model, device, dataloader, optimizer):
 
 
 def test(model, device, dataloader):
-    model.eval()
+    model.reset_iv()  # Reset initial value
+    model.eval()  # Put model in evaluation mode
     num_batches = len(dataloader)
     num_cols = len(model.building.rooms)  # number of columns to take from data.
     test_loss = 0
