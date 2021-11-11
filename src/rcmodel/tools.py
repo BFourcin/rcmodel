@@ -231,7 +231,7 @@ def pltsolution_1rm(model, dataloader, filename=None):
     Q_avg = model.transform(model.cooling[:, 0])
     Q_avg = model.scaling.heat_scaling(Q_avg, Q_lim=model.Q_lim)
 
-    Q = Q_on_off * Q_avg.unsqueeze(1)  # Q is timeseries of Watts for each room.
+    Q = Q_on_off * -Q_avg.unsqueeze(1)  # Q is timeseries of Watts for each room.
 
     # Compute and print loss.
     loss_fn = torch.nn.MSELoss()
