@@ -12,7 +12,7 @@ class Building:
         self.rooms = rooms #list of Room classes within the building
         self.height = height #height of all Rooms in the building
 
-        #External elements
+        # External elements
         if not len(Re) == 3:
             return print("Re should be in list in form [R1, R2, R3]")
         self.Re = Re
@@ -145,8 +145,6 @@ class Building:
 
         return A
 
-
-
     def sort_walls(self):
         """
         Function which combines 3 seperate functions in the correct order.
@@ -159,7 +157,6 @@ class Building:
         Walls = self.get_external_walls(Walls)
 
         return Walls
-
 
     def get_walls(self):
         """
@@ -193,7 +190,6 @@ class Building:
 
         return Walls
 
-
     def update_rooms(self, Walls):
         """
         Update the Room.walls variable to be an index matching the list Walls which contains the class instances of each unique wall.
@@ -211,7 +207,6 @@ class Building:
                     #Check for no matches
                     elif Walls_indx == len(Walls):
                         print("Error: Room: ", rm, ", Wall: ", wl, ". Was not matched")
-
 
     def get_external_walls(self, Walls):
         """
@@ -234,7 +229,6 @@ class Building:
                 Walls[i].resistance = self.Re[2] #Change resistance of wall
 
         return Walls
-
 
     def input_vector(self, Tout, Q):
         """
@@ -261,7 +255,6 @@ class Building:
         else:
             print("input_vector: Q needs to have 1 column per room")
 
-
     def input_matrix(self):
         """
         Produces the input matrix: B
@@ -282,7 +275,6 @@ class Building:
 
         return B
 
-
     def update_wall(self, wall_ID, resistance=-1):
         """
         Used to update the resistance of the wall.
@@ -292,8 +284,7 @@ class Building:
         """
         is_coord = False
 
-
-        #check if ID is a coordinate or an index
+        # check if ID is a coordinate or an index
         if isinstance(wall_ID,int):
             wl_indx = wall_ID
         elif len(self.Walls[0].coordinates) == len(wall_ID):

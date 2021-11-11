@@ -1,5 +1,7 @@
 from filelock import FileLock
+import torch
 import pandas as pd
+from .tools import BuildingTemperatureDataset
 
 
 def train(model, device, dataloader, optimizer):
@@ -54,7 +56,7 @@ def test(model, device, dataloader):
             test_loss += loss_fn(pred[:, 2:], temp[:, 0:num_cols]).item()
 
     test_loss /= num_batches
-    print(f"Test Error: \n Avg loss: {test_loss:>8f} \n")
+
     return test_loss
 
 
@@ -171,24 +173,31 @@ class OptimiseRC:
         Timestep data will be resampled to.
     lr : float
         Learning rate for optimiser.
+    id : int
+        Unique identifier used when optimising multiple models.
 
     see https://docs.ray.io/en/latest/using-ray-with-pytorch.html
     """
-    def __init__(self, model, csv_path, sample_size, dt=30, lr=1e-3):
+    def __init__(self, model, csv_path, sample_size, dt=30, lr=1e-3, id=0):
         self.model = model
         self.model.init_params()  # randomise parameters
+        self.id = id
         self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
         self.train_dataloader, self.test_dataloader = dataset_creator(csv_path, int(sample_size), int(dt))
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=lr)
 
     def train(self):
-        train(self.model, self.device, self.train_dataloader, self.optimizer)
-        return test(self.model, self.device, self.test_dataloader)
+        avg_loss = train(self.model, self.device, self.train_dataloader, self.optimizer)
+        return avg_loss
+
+    def test(self):
+        test_loss = test(self.model, self.device, self.test_dataloader)
+        return test_loss
 
     def train_loop(self, epochs):
         print(self.model.params)
         for i in range(int(epochs)):
-            print(f"Epoch {i + 1}\n-------------------------------")
+            # print(f"Epoch {i + 1}\n-------------------------------")
             testloss = self.train()
 
         results = [testloss, self.model]
@@ -201,248 +210,11 @@ class OptimiseRC:
         self.model.load_state_dict(weights)
 
     def save(self):
-        torch.save(self.model.state_dict(), "rcmodel_params.pt")
+        from pathlib import Path
+        Path("./outputs/models/").mkdir(parents=True, exist_ok=True)
+        torch.save(self.model.state_dict(), "./outputs/models/rcmodel" + str(self.id) + ".pt")
 
 
-def example_op():
-    import torch
-    from rcmodel.room import Room
-    from rcmodel.building import Building
-    # from rcmodel.RCModel import RCModel
-    from RCModel import RCModel
-    from rcmodel.tools import InputScaling
-    from rcmodel.tools import BuildingTemperatureDataset
-    from xitorch.interpolate import Interp1D
-    import time
-
-
-    def initialise_model(pi):
-        torch.cuda.is_available = lambda: False
-        device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-
-        def change_origin(coords):
-            x0 = 92.07
-            y0 = 125.94
-
-            for i in range(len(coords)):
-                coords[i][0] = round((coords[i][0] - x0) / 10, 2)
-                coords[i][1] = round((coords[i][1] - y0) / 10, 2)
-
-            return coords
-
-        capacitance = 3000  # Variable changed later
-        rooms = []
-
-        name = "seminar_rm_a_t0106"
-        coords = change_origin(
-            [[92.07, 125.94], [92.07, 231.74], [129.00, 231.74], [154.45, 231.74], [172.64, 231.74], [172.64, 125.94]])
-        rooms.append(Room(name, capacitance, coords))
-
-        # Initialise Building
-        height = 1
-        Re = [4, 1, 0.55]  # Sum of R makes Uval=0.18 #Variable changed later
-        Ce = [1.2 * 10 ** 3, 0.8 * 10 ** 3]  # Variable changed later
-        Rint = 0.66  # Uval = 1/R = 1.5 #Variable changed later
-
-        bld = Building(rooms, height, Re, Ce, Rint)
-
-        rm_CA = [200, 800]  # [min, max] Capacitance/area
-        ex_C = [1.5 * 10 ** 4, 10 ** 6]  # Capacitance
-        R = [0.2, 1.2]  # Resistance ((K.m^2)/W)
-
-        scaling = InputScaling(rm_CA, ex_C, R)
-        scale_fn = scaling.physical_scaling  # function to scale parameters back to physical values
-
-        path_Tout = '/Users/benfourcin/OneDrive - University of Exeter/PhD/LSI/Data/Met Office Weather Files/JuneSept.csv'
-        df = pd.read_csv(path_Tout)
-        Tout = torch.tensor(df['Hourly Temperature (°C)'], device=device)
-        t = torch.tensor(df['time'], device=device)
-
-        Tout_continuous = Interp1D(t, Tout, method='linear')
-
-        # Initialise RCOptimModel with the building
-        # transform = torch.sigmoid
-        transform = torch.sigmoid
-        model = RCModel(bld, scaling, Tout_continuous, transform, pi)
-        model.to(device)  # put model on GPU if available
-        model.Q_lim = 10000
-
-        return model, Tout_continuous
-
-    model, _ = initialise_model(None)
-    csv_path = '/Users/benfourcin/OneDrive - University of Exeter/PhD/LSI/Data/DummyData/train5d_sorted.csv'
-    dt = 30
-    sample_size = 2*60**2/dt
-    start = time.time()
-    op = OptimiseRC(model, csv_path, sample_size, dt)
-
-    epochs = 5
-
-    for i in range(epochs):
-        print(f"Epoch {i + 1}\n-------------------------------")
-        op.train()
-
-    print(f'duration {time.time()-start:.1f} s')
-
-
-# @ray.remote
-# class RayActor:
-#     def __init__(self, model, epochs=50, lr=1e-3):
-#         self.model = model
-#
-#     # ----- Training Loop -----
-#     def worker(self):
-#         torch.set_num_threads(1)
-#         model.init_params()
-#
-#         model.Q_lim = 10000
-#
-#         start = time.time()
-#
-#         # hyperparameters:
-#         epochs = 60
-#         learning_rate = 4e-1
-#         loss_fn = torch.nn.MSELoss()
-#         optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
-#
-#         # training loop:
-#         for i in range(self.epochs):
-#             trainloss = train_loop(train_dataloader, model, loss_fn, optimizer)
-#
-#             if (i + 1) % 5 == 0 or i == 0:
-#                 print('runtime: ', round(time.time() - start, 2), '| Epoch ' + str(i + 1) + '/' + str(epochs),
-#                       '  Avg Train Loss: ', round(trainloss, 2))
-#
-#             if i == self.epochs - 1:
-#                 testloss = test_loop(test_dataloader, model, loss_fn)
-#
-#         print(testloss)
-#
-#         params, heating = model.params, model.heating
-#
-#         results = [params, heating, testloss, model]
-#
-#         return results
-#
-#
-# if __name__ == '__main__':
-#
-#     num_cpus = 85
-#     num_jobs = num_cpus
-#
-#     ray.init(num_cpus=num_cpus)
-#
-#     start = time.time()
-#
-#     actors = [Ray_Actor.remote() for _ in range(num_jobs)]
-#
-#     results = ray.get([a.worker.remote() for a in actors])
-#
-#     #     results = ray.get([worker.remote(x) for x in range(num_jobs)])
-#
-#     print("duration =", time.time() - start)
-#     ray.shutdown()
-#
-#     # check if dir exists and make if needed
-#     from pathlib import Path
-#
-#     Path("./models/").mkdir(parents=True, exist_ok=True)
-#
-#     # Save model from every run
-#     for i in range(len(results)):
-#         torch.save(results[i][3].state_dict(), './models/torchmodel' + str(i + 1) + '.pth')
-
-
-if __name__ == '__main__':
-
-    import ray
-    import torch
-    from rcmodel.room import Room
-    from rcmodel.building import Building
-    # from rcmodel.RCModel import RCModel
-    from RCModel import RCModel
-    from rcmodel.tools import InputScaling
-    from rcmodel.tools import BuildingTemperatureDataset
-    from xitorch.interpolate import Interp1D
-    import time
-
-
-    def initialise_model(pi):
-        torch.cuda.is_available = lambda: False
-        device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-
-        def change_origin(coords):
-            x0 = 92.07
-            y0 = 125.94
-
-            for i in range(len(coords)):
-                coords[i][0] = round((coords[i][0] - x0) / 10, 2)
-                coords[i][1] = round((coords[i][1] - y0) / 10, 2)
-
-            return coords
-
-        capacitance = 3000  # Variable changed later
-        rooms = []
-
-        name = "seminar_rm_a_t0106"
-        coords = change_origin(
-            [[92.07, 125.94], [92.07, 231.74], [129.00, 231.74], [154.45, 231.74], [172.64, 231.74], [172.64, 125.94]])
-        rooms.append(Room(name, capacitance, coords))
-
-        # Initialise Building
-        height = 1
-        Re = [4, 1, 0.55]  # Sum of R makes Uval=0.18 #Variable changed later
-        Ce = [1.2 * 10 ** 3, 0.8 * 10 ** 3]  # Variable changed later
-        Rint = 0.66  # Uval = 1/R = 1.5 #Variable changed later
-
-        bld = Building(rooms, height, Re, Ce, Rint)
-
-        rm_CA = [200, 800]  # [min, max] Capacitance/area
-        ex_C = [1.5 * 10 ** 4, 10 ** 6]  # Capacitance
-        R = [0.2, 1.2]  # Resistance ((K.m^2)/W)
-
-        scaling = InputScaling(rm_CA, ex_C, R)
-        scale_fn = scaling.physical_scaling  # function to scale parameters back to physical values
-
-        path_Tout = '/Users/benfourcin/OneDrive - University of Exeter/PhD/LSI/Data/Met Office Weather Files/JuneSept.csv'
-        df = pd.read_csv(path_Tout)
-        Tout = torch.tensor(df['Hourly Temperature (°C)'], device=device)
-        t = torch.tensor(df['time'], device=device)
-
-        Tout_continuous = Interp1D(t, Tout, method='linear')
-
-        # Initialise RCOptimModel with the building
-        # transform = torch.sigmoid
-        transform = torch.sigmoid
-        model = RCModel(bld, scaling, Tout_continuous, transform, pi)
-        model.to(device)  # put model on GPU if available
-        model.Q_lim = 10000
-
-        return model, Tout_continuous
-
-
-    model, _ = initialise_model(None)
-    csv_path = '/Users/benfourcin/OneDrive - University of Exeter/PhD/LSI/Data/DummyData/train5d_sorted.csv'
-    dt = 30
-    sample_size = 2 * 60 ** 2 / dt
-
-    num_cpus = 5
-    num_jobs = num_cpus
-
-    ray.init(num_cpus=num_cpus)
-
-    start = time.time()
-
-    RemoteOptimise = ray.remote(OptimiseRC)  # need if don't use @ray.remote
-
-    actors = [RemoteOptimise.remote(model, csv_path, sample_size, dt) for _ in range(num_jobs)]
-
-    epochs = 2
-    results = ray.get([a.train_loop.remote(epochs) for a in actors])
-
-    time.sleep(3)  # Print is cut short without sleep
-
-    ray.shutdown()
 
 
 
