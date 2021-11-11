@@ -4,3 +4,4 @@ numpy
 matplotlib
 pandas
 xitorch
+filelock
