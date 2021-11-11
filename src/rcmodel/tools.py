@@ -204,6 +204,8 @@ def pltsolution_1rm(model, dataloader, filename=None):
     """
     Plots the first sample of dataloader.
     """
+    model.reset_iv()  # Reset initial value
+    model.eval()  # Put model in evaluation mode
 
     # Get solution ---------------
     time, data_temp = next(iter(dataloader))
