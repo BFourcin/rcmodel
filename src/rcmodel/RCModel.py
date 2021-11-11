@@ -127,7 +127,7 @@ class RCModel(nn.Module):
         else:  # No cooling
             action = 0
 
-        Q = self.heat * action
+        Q = -self.heat * action
         Tout = self.Tout_continuous(t.item() + self.t0)
 
         u = self.building.input_vector(Tout, Q)
