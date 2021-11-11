@@ -36,7 +36,7 @@ def test_run_model(rooms_n9):
     #Initialise RCModel with the building and InputScaling
     transform = torch.sigmoid
     model = RCModel(bld, scaling, dummy_tout, transform)
-    model.heating = torch.nn.Parameter(model.heating * 0) #no heating
+    model.cooling = torch.nn.Parameter(model.cooling * 0) #no heating
 
     #Set parameters for forward run:
     t_eval = torch.arange(0, 200000, 30, dtype=torch.float32)
