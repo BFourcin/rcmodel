@@ -2,7 +2,7 @@ from .building import Building
 import torch
 from torch.utils.data import Dataset
 import pandas as pd
-import matplotlib as plt
+import matplotlib.pyplot as plt
 
 
 class InputScaling(Building):
@@ -95,10 +95,16 @@ class InputScaling(Building):
 
 
 class BuildingTemperatureDataset(Dataset):
+    """
+    Splits dataset up into batches of len(dataset) // sample_size. Note remainder of data is thrown away.
+    train, test, validation tags can be used to select a percentage slice of data in this order, see function _split_dataset() for current % splits.
+
+    If there is insufficient data for one batch, sample_size will be reduced to match the data.
+    """
     def __init__(self, csv_path, sample_size, transform=None, all=True, train=False, test=False, validation=False):
         self.csv_path = csv_path
         self.transform = transform
-        self.sample_size = sample_size
+        self.sample_size = int(sample_size)
         self.headings = list(pd.read_csv(csv_path, nrows=1)) # list of dataframe headings
         self.all = all
         self.train = train
@@ -112,22 +118,20 @@ class BuildingTemperatureDataset(Dataset):
         # remainder of data e.g. after entry_count//sample_size is lost
         self.rows_to_skip, self.entry_count = self._split_dataset()
 
-        # Train: 0.7
-        # Test: 0.2
-        # Validation: 0.1
+        self.__len__()  # Used to initialise logic used in __len__.
 
     def __len__(self):
-        """Get number of batches in the dataset. Returns int"""
+        """
+        Get number of batches in the dataset. Returns int
+        Minimum of 1 batch will be returned.
+        """
 
+        num_samples = self.entry_count//self.sample_size
 
-        # Find how many samples we get from dataset
-#         if entry_count%self.sample_size == 0:
-#             num_samples = int(entry_count/self.sample_size)
-#         else:
-#             num_samples = entry_count//self.sample_size + 1
-
-
-        num_samples = self.entry_count//self.sample_size #clean this up later. Remainder of data is now lost.
+        # Insufficient data for 1 whole sample size. Remainder of data used instead.
+        if num_samples == 0:
+            num_samples = 1
+            self.sample_size = self.entry_count  # Reduce sample to the entries remaining
 
         return num_samples
 
@@ -174,8 +178,8 @@ class BuildingTemperatureDataset(Dataset):
 
     def _split_dataset(self):
 
-        train_split = 0.7
-        test_split = 0.2
+        train_split = 0.8
+        test_split = 0.1
         val_split = 0.1
 
         total_entries = self._get_entries() #total rows of data in csv
@@ -213,18 +217,19 @@ def pltsolution_1rm(model, dataloader, filename=None):
     time = time.squeeze(0)
     data_temp = data_temp.squeeze(0)
 
-    # Find time period
-    t_data = (time - time.min()) / (24 * 60 ** 2)
+    t_days = (time - time.min()) / (24 * 60 ** 2)  # Time in days
 
     pred = model(time)
     pred = pred.squeeze(-1)
 
     # Get Heating Control for each room
 
-    Q_avg = model.transform(model.heating[:, 0])
+    record_action = torch.tensor(model.record_action)
+    Q_tdays = record_action[:, 0] / (24 * 60 ** 2)  # Time in days
+    Q_on_off = record_action[:, 1:]  # Cooling actions
+
+    Q_avg = model.transform(model.cooling[:, 0])
     Q_avg = model.scaling.heat_scaling(Q_avg, Q_lim=model.Q_lim)
-    Q_on_off = model.building.Q_control(time, model.heating[:, 1],
-                                        model.heating[:, 2])  # get control step function for each room
 
     Q = Q_on_off * Q_avg.unsqueeze(1)  # Q is timeseries of Watts for each room.
 
@@ -233,7 +238,7 @@ def pltsolution_1rm(model, dataloader, filename=None):
     num_cols = len(model.building.rooms)  # number of columns to take from data.
     loss = loss_fn(pred[:, 2:], data_temp[:, 0:num_cols])
 
-    print(f"Test loss = {loss.item():>8f}")
+    # print(f"Test loss = {loss.item():>8f}")
 
     # ---------------------------------
 
@@ -241,16 +246,16 @@ def pltsolution_1rm(model, dataloader, filename=None):
 
     ax2ylim = 250
 
-    fig, axs = plt.subplots(figsize=(20, 15))
+    fig, axs = plt.subplots(figsize=(10, 8))
 
     ax2 = axs.twinx()
-    ln1 = axs.plot(t_data.detach().numpy(), pred[:, 2:].detach().numpy(), label='model')
-    ln2 = axs.plot(t_data.detach().numpy(), data_temp[:, 0].detach().numpy(), label='data')
-    ln3 = axs.plot(t_data.detach().numpy(), model.Tout_continuous(time).detach().numpy(), label='outside')
-    ln4 = ax2.plot(t_data.detach().numpy(), Q[0].detach().numpy(), '--', color='black', alpha=0.5, label='heat')
+    ln1 = axs.plot(t_days.detach().numpy(), pred[:, 2:].detach().numpy(), label='model')
+    ln2 = axs.plot(t_days.detach().numpy(), data_temp[:, 0].detach().numpy(), label='data')
+    ln3 = axs.plot(t_days.detach().numpy(), model.Tout_continuous(time).detach().numpy(), label='outside')
+    ln4 = ax2.plot(Q_tdays.detach().numpy(), Q.detach().numpy(), '--', color='black', alpha=0.5, label='heat')
     axs.set_title(model.building.rooms[0].name)
     ax2.set_ylabel(r"Heating/Cooling ($W/m^2$)")
-    ax2.set_ylim(-ax2ylim, ax2ylim)
+    # ax2.set_ylim(-ax2ylim, ax2ylim)
 
     lns = ln1 + ln2 + ln3 + ln4
     labs = [l.get_label() for l in lns]
@@ -258,6 +263,8 @@ def pltsolution_1rm(model, dataloader, filename=None):
 
     axs.set(xlabel='Time (days)', ylabel='Temperature ($^\circ$C)')
 
-    plt.show()
     if filename:
         plt.savefig(filename)
+
+    else:
+        plt.show()
