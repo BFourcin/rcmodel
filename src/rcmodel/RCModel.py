@@ -1,4 +1,5 @@
 import torch
+import numpy as np
 from torch import nn
 from torchdiffeq import odeint
 from datetime import datetime
@@ -29,15 +30,14 @@ class RCModel(nn.Module):
         self.cooling_policy = cooling_policy  # Neural net: pi(state) --> action
 
         self.params = None  # initialised in init_params()
-        self.heating = None
-
-        # initialize weights with random numbers, length of params given from building class
-        self.init_params()
+        self.cooling = None
+        self.init_params()  # initialize weights with random numbers, length of params given from building class
 
         self.Q_lim = 500
 
         self.ode_t = None  # Keeps track of t during integration. None is just to initialise attribute
-
+        self.record_action = None  # records Q and t during integration
+        self.heat = None  # Heat in Watts
         self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
         self.reset_iv()  # sets iv
@@ -53,6 +53,7 @@ class RCModel(nn.Module):
         t0 - starting time if not 0
         """
         self.ode_t = -30  # Keeps track of t during ODE integration. Needed to assign log probs only when a step occurs
+        self.record_action = []  # Keeps track of action at time during ODE integration.
 
         # check if t_eval is formatted correctly:
         if t_eval.dim() > 1:
@@ -64,18 +65,18 @@ class RCModel(nn.Module):
         # Transform parameters
         if self.transform:
             theta = self.transform(self.params)
-            Q_avg = self.transform(self.heating[:, 0])  # W/m2 for each room
+            self.heat = self.transform(self.cooling[:, 0])  # W/m2 for each room
         else:
             theta = self.params
-            Q_avg = self.heating[:, 0]
+            self.heat = self.cooling[:, 0]
 
         # Scale inputs up to their physical values
         theta = self.scaling.physical_scaling(theta)
-        Q_avg = self.scaling.heat_scaling(Q_avg, Q_lim=self.Q_lim)
+        self.heat = self.scaling.heat_scaling(self.heat, Q_lim=self.Q_lim)
 
-        t_eval_plus = torch.cat((t_eval, (t_eval[-1] + 600).unsqueeze(0)),
-                                0)  # added on extra time to avoide error with interp1d(t_end)
-        Qrms_continuous = self.building.Q_continuous(t_eval_plus, Q_avg, self.heating[:, 1], self.heating[:, 2])
+        # t_eval_plus = torch.cat((t_eval, (t_eval[-1] + 600).unsqueeze(0)),
+        #                         0)  # added on extra time to avoid error with interp1d(t_end)
+        # Qrms_continuous = self.building.Q_continuous(t_eval_plus, Q_avg, self.heating[:, 1], self.heating[:, 2])
 
         # t0 stores the starting epoch time and t_eval is array of seconds from start, [0, 1*dt, 2*dt, ...]
         self.t0 = t_eval[0]
@@ -90,27 +91,11 @@ class RCModel(nn.Module):
 
         return integrate  # first two columns are external envelope nodes. i.e not rooms
 
-    def decimal_time(self, unix_epoch):
-        """Time to percentage of year, week and day"""
-
-        date = datetime.fromtimestamp(unix_epoch)
-        _, isoweek, isoweekday = date.isocalendar()
-
-        time_of_year = isoweek / 52
-        time_of_week = (isoweekday - 1) / 7 + (date.hour * 60 ** 2 + date.minute * 60 + date.second) / (
-                60 ** 2 * 24 * 7)
-        time_of_day = (date.hour * 60 ** 2 + date.minute * 60 + date.second) / (60 ** 2 * 24)
-
-        return time_of_year, time_of_week, time_of_day
-
     def fODE(self, t, x):
         """
         Provides the function:
         dy/dx = Ax + Bu
         """
-
-        # cool_param: [x , time_of_week, time_of_day]
-        time_of_year, time_of_week, time_of_day = self.decimal_time(t.item() + self.t0.item())
 
         mu = 23.359
         std_dev = 1.41
@@ -118,18 +103,23 @@ class RCModel(nn.Module):
         x_norm = (x - mu) / std_dev
         x_norm = torch.reshape(x_norm, (-1,))
 
-        # Change this to Sin(t/freq), Cos(t/freq)
-        state_cool = torch.cat((
-            x_norm,
-            torch.tensor([time_of_week, time_of_day], device=self.device, dtype=torch.float32)
-        ))
+        day = 24 * 60 ** 2
+        week = 7 * day
+        # year = (365.2425) * day
 
-        value = -16914  # value is learnt by first optimiser
+        time_signals = [np.sin(t * (2 * np.pi / day)),
+                        np.cos(t * (2 * np.pi / day)),
+                        np.sin(t * (2 * np.pi / week)),
+                        np.cos(t * (2 * np.pi / week))
+                        ]
 
-        # get cooling action if policy is available and 30 seconds has passed since last action
+        state_cool = torch.cat((x_norm, torch.tensor(time_signals, device=self.device, dtype=torch.float32)))
+
+        # get cooling action if policy is not None and 30 seconds has passed since last action
         if self.cooling_policy and t - self.ode_t >= 30:
-            action, log_prob = self.cooling_policy.get_action(state_cool)  # might need state_cool.float()
+            action, log_prob = self.cooling_policy.get_action(state_cool)
             self.ode_t = t
+            self.record_action.append([t, action])
 
             if self.cooling_policy.training:  # if in training mode store log_prob
                 self.cooling_policy.log_probs.append(log_prob)
@@ -137,11 +127,9 @@ class RCModel(nn.Module):
         else:  # No cooling
             action = 0
 
-        Q = torch.ones(len(self.building.rooms)) * value * action
-
-        # Q = self.Qrms_continuous(t + self.t0)
-
+        Q = self.heat * action
         Tout = self.Tout_continuous(t.item() + self.t0)
+
         u = self.building.input_vector(Tout, Q)
 
         return self.A @ x + self.B @ u
@@ -156,5 +144,4 @@ class RCModel(nn.Module):
         params = torch.rand(self.building.n_params, dtype=torch.float32, requires_grad=True)
         # make theta torch parameters
         self.params = nn.Parameter(params)
-        self.heating = nn.Parameter(
-            torch.randn((len(self.building.rooms), 3), dtype=torch.float32, requires_grad=True))  # [Q, theta_A, theta_B]
+        self.cooling = nn.Parameter(torch.rand((len(self.building.rooms), 1), dtype=torch.float32, requires_grad=True))  # [Q]
