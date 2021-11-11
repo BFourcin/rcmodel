@@ -97,11 +97,11 @@ class InputScaling(Building):
 class BuildingTemperatureDataset(Dataset):
     """
     Splits dataset up into batches of len(dataset) // sample_size. Note remainder of data is thrown away.
-    train, test, validation tags can be used to select a percentage slice of data in this order, see function _split_dataset() for current % splits.
+    train and test tags can be used to select a percentage slice of data in this order, see function _split_dataset() for current % splits.
 
     If there is insufficient data for one batch, sample_size will be reduced to match the data.
     """
-    def __init__(self, csv_path, sample_size, transform=None, all=True, train=False, test=False, validation=False):
+    def __init__(self, csv_path, sample_size, transform=None, all=True, train=False, test=False):
         self.csv_path = csv_path
         self.transform = transform
         self.sample_size = int(sample_size)
@@ -109,11 +109,10 @@ class BuildingTemperatureDataset(Dataset):
         self.all = all
         self.train = train
         self.test = test
-        self.validation = validation
 
         self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
-        # auto splits data by train, test or validation.
+        # auto splits data by train and test
         # entry count is number of rows to read from csv.
         # remainder of data e.g. after entry_count//sample_size is lost
         self.rows_to_skip, self.entry_count = self._split_dataset()
@@ -179,8 +178,7 @@ class BuildingTemperatureDataset(Dataset):
     def _split_dataset(self):
 
         train_split = 0.8
-        test_split = 0.1
-        val_split = 0.1
+        test_split = 0.2
 
         total_entries = self._get_entries() #total rows of data in csv
 
@@ -191,10 +189,6 @@ class BuildingTemperatureDataset(Dataset):
         elif self.test:
             rows_to_skip = int(total_entries*train_split)
             entry_count = int(total_entries*test_split)
-            return rows_to_skip, entry_count
-        elif self.validation:
-            rows_to_skip = int(total_entries*train_split) + int(total_entries*test_split)
-            entry_count = total_entries - rows_to_skip
             return rows_to_skip, entry_count
         elif self.all:
             rows_to_skip = 0
