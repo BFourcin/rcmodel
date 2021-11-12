@@ -219,15 +219,18 @@ def pltsolution_1rm(model, dataloader, filename=None):
     pred = pred.squeeze(-1)
 
     # Get Heating Control for each room
+    if model.cooling_policy:
+        record_action = torch.tensor(model.record_action)
+        Q_tdays = record_action[:, 0] / (24 * 60 ** 2)  # Time in days
+        Q_on_off = record_action[:, 1:]  # Cooling actions
 
-    record_action = torch.tensor(model.record_action)
-    Q_tdays = record_action[:, 0] / (24 * 60 ** 2)  # Time in days
-    Q_on_off = record_action[:, 1:]  # Cooling actions
+        Q_avg = model.transform(model.cooling[:, 0])
+        Q_avg = model.scaling.heat_scaling(Q_avg, Q_lim=model.Q_lim)
 
-    Q_avg = model.transform(model.cooling[:, 0])
-    Q_avg = model.scaling.heat_scaling(Q_avg, Q_lim=model.Q_lim)
-
-    Q = Q_on_off * -Q_avg.unsqueeze(1)  # Q is timeseries of Watts for each room.
+        Q = Q_on_off * -Q_avg.unsqueeze(1)  # Q is timeseries of Watts for each room.
+    else:
+        Q_tdays = t_days
+        Q = torch.zeros(len(Q_tdays))
 
     # Compute and print loss.
     loss_fn = torch.nn.MSELoss()
