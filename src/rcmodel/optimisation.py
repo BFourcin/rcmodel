@@ -2,6 +2,7 @@ from filelock import FileLock
 import torch
 import pandas as pd
 from .tools import BuildingTemperatureDataset
+import os
 
 
 def train(model, device, dataloader, optimizer):
@@ -70,7 +71,7 @@ def test(model, device, dataloader):
 
 def dataset_creator(path, sample_size, dt):
     path_sorted = sort_data(path, dt)
-    with FileLock("./data.lock"):
+    with FileLock(f"{os.path.dirname(os.path.abspath(path_sorted))}.lock"):
         training_data = BuildingTemperatureDataset(path_sorted, sample_size, train=True)
         train_dataloader = torch.utils.data.DataLoader(training_data, batch_size=1, shuffle=False)
         test_data = BuildingTemperatureDataset(path_sorted, sample_size, test=True)
