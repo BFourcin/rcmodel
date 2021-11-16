@@ -30,6 +30,9 @@ def train(model, device, dataloader, optimizer):
         loss = loss_fn(pred[:, 2:], temp[:, 0:num_cols])
         train_loss += loss.item()
 
+        # get last output and use for next initial value
+        model.iv = pred[-1, :].unsqueeze(1).detach()  # MUST DETACH GRAD
+
         # Backpropagation
         optimizer.zero_grad()
         loss.backward()
@@ -56,6 +59,9 @@ def test(model, device, dataloader):
             pred = model(time)
             pred = pred.squeeze(-1)  # change from column to row matrix
             test_loss += loss_fn(pred[:, 2:], temp[:, 0:num_cols]).item()
+
+            # get last output and use for next initial value
+            model.iv = pred[-1, :].unsqueeze(1).detach()  # MUST DETACH GRAD
 
     test_loss /= num_batches
 
@@ -211,10 +217,13 @@ class OptimiseRC:
     def set_weights(self, weights):
         self.model.load_state_dict(weights)
 
-    def save(self):
+    def save(self, path=None):
+        if path is None:
+            path = "./outputs/models/"
+
         from pathlib import Path
-        Path("./outputs/models/").mkdir(parents=True, exist_ok=True)
-        torch.save(self.model.state_dict(), "./outputs/models/rcmodel" + str(self.id) + ".pt")
+        Path(path).mkdir(parents=True, exist_ok=True)
+        torch.save(self.model.state_dict(), path + "/rcmodel" + str(self.id) + ".pt")
 
 
 
