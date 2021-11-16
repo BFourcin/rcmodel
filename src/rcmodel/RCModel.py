@@ -143,6 +143,9 @@ class RCModel(nn.Module):
 
     def init_params(self):
         params = torch.rand(self.building.n_params, dtype=torch.float32, requires_grad=True)
+        # enables spread of initial parameters. Otherwise sigmoid(rand) tends towards 0.5.
+        if self.transform == torch.sigmoid:
+            params = torch.logit(params)  # inverse sigmoid
         # make theta torch parameters
         self.params = nn.Parameter(params)
         self.cooling = nn.Parameter(torch.rand((len(self.building.rooms), 1), dtype=torch.float32, requires_grad=True))  # [Q]
