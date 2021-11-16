@@ -35,7 +35,6 @@ class InputScaling(Building):
 
         rm_cap, ex_cap, ex_r, wl_r = self.categorise_theta(theta_scaled)
 
-
         rm_cap = self.unminmaxscale(rm_cap, self.input_range[0])
         ex_cap = self.unminmaxscale(ex_cap, self.input_range[1])
         ex_r   = self.unminmaxscale(ex_r  , self.input_range[2])
