@@ -66,9 +66,9 @@ class InputScaling(Building):
 
         return theta_scaled
 
-    def heat_scaling(self, Q, Q_lim):
+    def cool_scaling(self, Q, Q_lim):
 
-        Q_watts = self.unminmaxscale(Q, [-Q_lim, Q_lim])
+        Q_watts = self.unminmaxscale(Q, [0, Q_lim])
 
         return Q_watts
 
@@ -224,7 +224,7 @@ def pltsolution_1rm(model, dataloader, filename=None):
         Q_on_off = record_action[:, 1:]  # Cooling actions
 
         Q_avg = model.transform(model.cooling[:, 0])
-        Q_avg = model.scaling.heat_scaling(Q_avg, Q_lim=model.Q_lim)
+        Q_avg = model.scaling.cool_scaling(Q_avg, Q_lim=model.Q_lim)
 
         Q = Q_on_off * -Q_avg.unsqueeze(1)  # Q is timeseries of Watts for each room.
     else:

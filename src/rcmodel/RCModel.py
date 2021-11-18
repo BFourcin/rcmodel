@@ -72,7 +72,7 @@ class RCModel(nn.Module):
 
         # Scale inputs up to their physical values
         theta = self.scaling.physical_scaling(theta)
-        self.heat = self.scaling.heat_scaling(self.heat, Q_lim=self.Q_lim)
+        self.heat = self.scaling.cool_scaling(self.heat, Q_lim=self.Q_lim)
 
         # t_eval_plus = torch.cat((t_eval, (t_eval[-1] + 600).unsqueeze(0)),
         #                         0)  # added on extra time to avoid error with interp1d(t_end)
