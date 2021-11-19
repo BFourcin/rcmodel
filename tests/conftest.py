@@ -1,5 +1,6 @@
 import pytest
 
+from rcmodel.building import Building
 from rcmodel.room import Room
 
 
@@ -34,3 +35,27 @@ def rooms_n9():
     rooms.append(Room('rm9', 9e3, [[12,0], [12,2], [12,4], [12,6], [12,8], [12,10], [14,10], [14,0]]))
 
     return rooms
+
+
+@pytest.fixture
+def building_n2(rooms_n2):
+    height = 1
+    Re = [5, 1, 0.5]
+    Ce = [1e3,8e2]
+    Rint = 0.1
+
+    bld = Building(rooms_n2, height, Re, Ce, Rint)
+
+    return bld
+
+
+@pytest.fixture
+def building_n9(rooms_n9):
+    height = 1
+    Re = [5, 1, 0.5]
+    Ce = [1e3, 8e2]
+    Rint = 0.1
+
+    bld = Building(rooms_n9, height, Re, Ce, Rint)
+
+    return bld
