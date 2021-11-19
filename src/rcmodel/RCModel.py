@@ -65,14 +65,14 @@ class RCModel(nn.Module):
         # Transform parameters
         if self.transform:
             theta = self.transform(self.params)
-            self.heat = self.transform(self.cooling[:, 0])  # W/m2 for each room
+            self.heat = self.transform(self.cooling)  # W/m2 for each room
         else:
             theta = self.params
-            self.heat = self.cooling[:, 0]
+            self.heat = self.cooling
 
         # Scale inputs up to their physical values
-        theta = self.scaling.physical_scaling(theta)
-        self.heat = self.scaling.cool_scaling(self.heat, Q_lim=self.Q_lim)
+        theta = self.scaling.physical_param_scaling(theta)
+        self.heat = self.scaling.physical_cooling_scaling(self.heat, Q_lim=self.Q_lim)
 
         # t_eval_plus = torch.cat((t_eval, (t_eval[-1] + 600).unsqueeze(0)),
         #                         0)  # added on extra time to avoid error with interp1d(t_end)
@@ -107,10 +107,10 @@ class RCModel(nn.Module):
         week = 7 * day
         # year = (365.2425) * day
 
-        time_signals = [np.sin(t * (2 * np.pi / day)),
-                        np.cos(t * (2 * np.pi / day)),
-                        np.sin(t * (2 * np.pi / week)),
-                        np.cos(t * (2 * np.pi / week))
+        time_signals = [np.sin((t+self.t0) * (2 * np.pi / day)),
+                        np.cos((t+self.t0) * (2 * np.pi / day)),
+                        np.sin((t+self.t0) * (2 * np.pi / week)),
+                        np.cos((t+self.t0) * (2 * np.pi / week))
                         ]
 
         state_cool = torch.cat((x_norm, torch.tensor(time_signals, device=self.device, dtype=torch.float32)))
@@ -148,4 +148,39 @@ class RCModel(nn.Module):
             params = torch.logit(params)  # inverse sigmoid
         # make theta torch parameters
         self.params = nn.Parameter(params)
-        self.cooling = nn.Parameter(torch.rand((len(self.building.rooms), 1), dtype=torch.float32, requires_grad=True))  # [Q]
+        self.cooling = nn.Parameter(torch.rand((len(self.building.rooms)), dtype=torch.float32, requires_grad=True))  # [Q]
+
+    def save(self, num=0, dir_path=None):
+        """
+        Save the model, but first transform parameters back to their physical values.
+        This makes passing between models with different scaling limits possible.
+        Use load method to load back in. Parameters will be converted back to 0-1 using the current scaling function.
+        """
+        scaled_state_dict = self.state_dict()
+        scaled_state_dict['params'] = self.scaling.physical_param_scaling(self.transform(scaled_state_dict['params']))
+        scaled_state_dict['cooling'] = self.scaling.physical_cooling_scaling(self.transform(scaled_state_dict['cooling']), self.Q_lim)
+
+        if dir_path is None:
+            dir_path = "./outputs/models/"
+
+        from pathlib import Path
+        Path(dir_path).mkdir(parents=True, exist_ok=True)
+        torch.save(scaled_state_dict, dir_path + "/rcmodel" + str(num) + ".pt")
+
+    def load(self, path):
+        """
+        Load in model and convert parameters from their physical values to 0-1 using scaling methods.
+        Only use if model has been saved with self.save() method.
+        """
+        scaled_state_dict = torch.load(path)
+
+        # plus 1e-15 used to stop log(0)=-inf
+        scaled_state_dict['params'] = torch.logit(
+            self.scaling.model_param_scaling(scaled_state_dict['params']) + 1e-15
+        )
+
+        scaled_state_dict['cooling'] = torch.logit(
+            self.scaling.model_cooling_scaling(scaled_state_dict['cooling'], self.Q_lim) + 1e-15
+        )
+
+        self.load_state_dict(scaled_state_dict)
