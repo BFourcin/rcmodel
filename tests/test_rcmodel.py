@@ -104,7 +104,7 @@ def test_save_load(building_n9):
         diff_params = abs(loaded_params-original_params)
         diff_cooling = abs(loaded_cooling-original_cooling)
 
-        assert (diff_params < 1e-3).all() and (diff_cooling < 1e-3).all(), 'model parameters are changing during a save and load'
+    assert (diff_params < 1e-3).all() and (diff_cooling < 1e-3).all(), 'model parameters are changing during a save and load'
 
 
 if __name__ == '__main__':
