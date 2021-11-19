@@ -182,15 +182,15 @@ class OptimiseRC:
         Timestep data will be resampled to.
     lr : float
         Learning rate for optimiser.
-    id : int
+    model_id : int
         Unique identifier used when optimising multiple models.
 
     see https://docs.ray.io/en/latest/using-ray-with-pytorch.html
     """
-    def __init__(self, model, csv_path, sample_size, dt=30, lr=1e-3, id=0):
+    def __init__(self, model, csv_path, sample_size, dt=30, lr=1e-3, model_id=0):
         self.model = model
         self.model.init_params()  # randomise parameters
-        self.id = id
+        self.model_id = model_id
         self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
         self.train_dataloader, self.test_dataloader = dataset_creator(csv_path, int(sample_size), int(dt))
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=lr)
@@ -211,20 +211,6 @@ class OptimiseRC:
 
         results = [testloss, self.model]
         return results
-
-    def get_weights(self):
-        return self.model.state_dict()
-
-    def set_weights(self, weights):
-        self.model.load_state_dict(weights)
-
-    def save(self, path=None):
-        if path is None:
-            path = "./outputs/models/"
-
-        from pathlib import Path
-        Path(path).mkdir(parents=True, exist_ok=True)
-        torch.save(self.model.state_dict(), path + "/rcmodel" + str(self.id) + ".pt")
 
 
 
