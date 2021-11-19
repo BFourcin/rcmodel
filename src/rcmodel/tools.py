@@ -28,7 +28,7 @@ class InputScaling(Building):
 
         self.input_range = torch.tensor(input_range)
 
-    def physical_scaling(self, theta_scaled):
+    def physical_param_scaling(self, theta_scaled):
         """
         Scale from 0-1 back to normal.
         """
@@ -47,7 +47,7 @@ class InputScaling(Building):
 
         return theta
 
-    def model_scaling(self, theta):
+    def model_param_scaling(self, theta):
         """
         Scale to 0-1.
         """
@@ -66,11 +66,17 @@ class InputScaling(Building):
 
         return theta_scaled
 
-    def cool_scaling(self, Q, Q_lim):
+    def physical_cooling_scaling(self, Q, Q_lim):
 
         Q_watts = self.unminmaxscale(Q, [0, Q_lim])
 
         return Q_watts
+
+    def model_cooling_scaling(self, Q_watts, Q_lim):
+
+        Q = self.minmaxscale(Q_watts, [0, Q_lim])
+
+        return Q
 
     def minmaxscale(self, x, x_range):
         if not torch.is_tensor(x_range):
