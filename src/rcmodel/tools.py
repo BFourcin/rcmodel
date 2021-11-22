@@ -229,8 +229,8 @@ def pltsolution_1rm(model, dataloader, filename=None):
         Q_tdays = record_action[:, 0] / (24 * 60 ** 2)  # Time in days
         Q_on_off = record_action[:, 1:]  # Cooling actions
 
-        Q_avg = model.transform(model.cooling[:, 0])
-        Q_avg = model.scaling.cool_scaling(Q_avg, Q_lim=model.Q_lim)
+        Q_avg = model.transform(model.cooling)
+        Q_avg = model.scaling.physical_cooling_scaling(Q_avg, Q_lim=model.Q_lim)
 
         Q = Q_on_off * -Q_avg.unsqueeze(1)  # Q is timeseries of Watts for each room.
     else:
