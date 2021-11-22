@@ -79,8 +79,8 @@ def test_save_load(building_n9):
     with tempfile.TemporaryDirectory() as tmpdirname:
         num = 0
         # save model values
-        model.save(num=num, dir_path=tmpdirname)
-        print(f'model1 {model.params}')
+        model.save(model_id=num, dir_path=tmpdirname)
+
         del model
 
         # Initialise new model with different scaling:
