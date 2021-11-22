@@ -150,7 +150,7 @@ class RCModel(nn.Module):
         self.params = nn.Parameter(params)
         self.cooling = nn.Parameter(torch.rand((len(self.building.rooms)), dtype=torch.float32, requires_grad=True))  # [Q]
 
-    def save(self, num=0, dir_path=None):
+    def save(self, model_id=0, dir_path=None):
         """
         Save the model, but first transform parameters back to their physical values.
         This makes passing between models with different scaling limits possible.
@@ -165,7 +165,7 @@ class RCModel(nn.Module):
 
         from pathlib import Path
         Path(dir_path).mkdir(parents=True, exist_ok=True)
-        torch.save(scaled_state_dict, dir_path + "/rcmodel" + str(num) + ".pt")
+        torch.save(scaled_state_dict, dir_path + "/rcmodel" + str(model_id) + ".pt")
 
     def load(self, path):
         """
