@@ -187,10 +187,10 @@ class OptimiseRC:
 
     see https://docs.ray.io/en/latest/using-ray-with-pytorch.html
     """
-    def __init__(self, model, csv_path, sample_size, dt=30, lr=1e-3, model_id=0):
+    def __init__(self, model, csv_path, sample_size, dt=30, lr=1e-3, opt_id=0):
         self.model = model
         self.model.init_params()  # randomise parameters
-        self.model_id = model_id
+        self.model_id = opt_id
         self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
         self.train_dataloader, self.test_dataloader = dataset_creator(csv_path, int(sample_size), int(dt))
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=lr)

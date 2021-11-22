@@ -7,7 +7,7 @@ from .tools import InputScaling
 from xitorch.interpolate import Interp1D
 
 
-def initialise_model(pi):
+def initialise_model(pi, scaling):
     torch.cuda.is_available = lambda: False
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
@@ -20,7 +20,6 @@ def initialise_model(pi):
             coords[i][1] = round((coords[i][1] - y0) / 10, 2)
 
         return coords
-
     capacitance = 3000  # Variable changed later
     rooms = []
 
@@ -37,13 +36,6 @@ def initialise_model(pi):
 
     bld = Building(rooms, height, Re, Ce, Rint)
 
-    rm_CA = [200, 800]  # [min, max] Capacitance/area
-    ex_C = [1.5 * 10 ** 4, 10 ** 6]  # Capacitance
-    R = [0.2, 1.2]  # Resistance ((K.m^2)/W)
-
-    scaling = InputScaling(rm_CA, ex_C, R)
-    scale_fn = scaling.physical_scaling  # function to scale parameters back to physical values
-
     path_Tout = '/Users/benfourcin/OneDrive - University of Exeter/PhD/LSI/Data/Met Office Weather Files/JuneSept.csv'
     df = pd.read_csv(path_Tout)
     Tout = torch.tensor(df['Hourly Temperature (°C)'], device=device)
@@ -52,7 +44,6 @@ def initialise_model(pi):
     Tout_continuous = Interp1D(t, Tout, method='linear')
 
     # Initialise RCModel with the building
-    # transform = torch.sigmoid
     transform = torch.sigmoid
     model = RCModel(bld, scaling, Tout_continuous, transform, pi)
     model.to(device)  # put model on GPU if available
