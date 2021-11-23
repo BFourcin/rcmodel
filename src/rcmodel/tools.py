@@ -3,6 +3,7 @@ import torch
 from torch.utils.data import Dataset
 import pandas as pd
 import matplotlib.pyplot as plt
+import os
 
 
 class InputScaling(Building):
@@ -107,7 +108,7 @@ class BuildingTemperatureDataset(Dataset):
     If there is insufficient data for one batch, sample_size will be reduced to match the data.
     """
     def __init__(self, csv_path, sample_size, transform=None, all=True, train=False, test=False):
-        self.csv_path = csv_path
+        self.csv_path = os.path.abspath(csv_path)
         self.transform = transform
         self.sample_size = int(sample_size)
         self.headings = list(pd.read_csv(csv_path, nrows=1)) # list of dataframe headings
