@@ -7,4 +7,6 @@ src/rcmodel/data.lock
 .DS_Store
 .idea
 
+src/main.py
+
 **/*cache*

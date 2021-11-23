@@ -269,6 +269,7 @@ def pltsolution_1rm(model, dataloader, filename=None):
 
     if filename:
         plt.savefig(filename)
+        plt.close()
 
     else:
         plt.show()
