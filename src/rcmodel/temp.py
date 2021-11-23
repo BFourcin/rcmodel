@@ -7,7 +7,7 @@ from .tools import InputScaling
 from xitorch.interpolate import Interp1D
 
 
-def initialise_model(pi, scaling):
+def initialise_model(pi, scaling, weather_data_path):
     torch.cuda.is_available = lambda: False
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
@@ -36,8 +36,7 @@ def initialise_model(pi, scaling):
 
     bld = Building(rooms, height, Re, Ce, Rint)
 
-    path_Tout = '/Users/benfourcin/OneDrive - University of Exeter/PhD/LSI/Data/Met Office Weather Files/JuneSept.csv'
-    df = pd.read_csv(path_Tout)
+    df = pd.read_csv(weather_data_path)
     Tout = torch.tensor(df['Hourly Temperature (°C)'], device=device)
     t = torch.tensor(df['time'], device=device)
 
