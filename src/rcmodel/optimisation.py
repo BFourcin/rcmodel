@@ -193,7 +193,8 @@ class OptimiseRC:
         self.model_id = opt_id
         self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
         self.train_dataloader, self.test_dataloader = dataset_creator(csv_path, int(sample_size), int(dt))
-        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=lr)
+
+        self.optimizer = torch.optim.Adam([self.model.params, self.model.cooling], lr=lr)
 
     def train(self):
         avg_loss = train(self.model, self.device, self.train_dataloader, self.optimizer)
