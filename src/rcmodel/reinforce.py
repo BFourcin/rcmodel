@@ -110,6 +110,7 @@ class Reinforce:
             episode_rewards = []
             episode_ER = []
 
+            # Time is increased in steps, with the policy updating after every step.
             while self.env.t_index < len(self.env.time_data) - 1:
                 # takes a step_size forward in time
                 pred = self.env.step(step_size).squeeze(-1)  # state and action produced in step
