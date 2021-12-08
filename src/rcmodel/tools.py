@@ -238,9 +238,9 @@ def pltsolution_1rm(model, dataloader, filename=None):
         Q = torch.zeros(len(Q_tdays))
 
     # Compute and print loss.
-    loss_fn = torch.nn.MSELoss()
-    num_cols = len(model.building.rooms)  # number of columns to take from data.
-    loss = loss_fn(pred[:, 2:], data_temp[:, 0:num_cols])
+    # loss_fn = torch.nn.MSELoss()
+    # num_cols = len(model.building.rooms)  # number of columns to take from data.
+    # loss = loss_fn(pred[:, 2:], data_temp[:, 0:num_cols])
 
     # print(f"Test loss = {loss.item():>8f}")
 
@@ -268,7 +268,7 @@ def pltsolution_1rm(model, dataloader, filename=None):
     axs.set(xlabel='Time (days)', ylabel='Temperature ($^\circ$C)')
 
     if filename:
-        plt.savefig(filename)
+        fig.savefig(filename)
         plt.close()
 
     else:
