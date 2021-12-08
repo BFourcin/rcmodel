@@ -12,6 +12,11 @@ def train(model, device, dataloader, optimizer):
     """
     model.reset_iv()  # Reset initial value
     model.train()
+
+    # Stops Autograd endlessly keeping track of the graph. Memory Leak!
+    for layer in model.cooling_policy.parameters():
+        layer.requires_grad = False
+
     num_cols = len(model.building.rooms)  # number of columns to use from data.
     num_batches = len(dataloader)
     train_loss = 0
@@ -195,6 +200,8 @@ class OptimiseRC:
         self.train_dataloader, self.test_dataloader = dataset_creator(csv_path, int(sample_size), int(dt))
 
         self.optimizer = torch.optim.Adam([self.model.params, self.model.cooling], lr=lr)
+
+
 
     def train(self):
         avg_loss = train(self.model, self.device, self.train_dataloader, self.optimizer)
