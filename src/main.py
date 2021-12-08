@@ -61,7 +61,7 @@ def initialise_model(pi, scaling, weather_data_path):
 
 @ray.remote
 class RayActor:
-    def __init__(self, scaling, weather_data_path, csv_path):
+    def __init__(self, scaling, weather_data_path, csv_path, ):
         self.scaling = scaling
         self.weather_data_path = weather_data_path
         self.csv_path = csv_path
