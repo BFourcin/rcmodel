@@ -59,7 +59,7 @@ def initialise_model(pi, scaling, weather_data_path):
 
     return model
 
-@ray.remote
+
 class RayActor:
     def __init__(self, scaling, weather_data_path, csv_path, ):
         self.scaling = scaling
@@ -227,35 +227,63 @@ class RayActor:
 
 
 if __name__ == '__main__':
-    num_cpus = 4
-    num_jobs = num_cpus
-    epochs = 2
+    use_ray = False
 
-    ray.init(num_cpus=num_cpus)
+    if use_ray:
+        num_cpus = 4
+        num_jobs = num_cpus
+        epochs = 2
 
-    # Initialise scaling class
-    rm_CA = [100, 1e4]  # [min, max] Capacitance/area
-    ex_C = [1e3, 1e8]  # Capacitance
-    R = [0.1, 5]  # Resistance ((K.m^2)/W)
-    scaling = InputScaling(rm_CA, ex_C, R)
-    weather_data_path = '/Users/benfourcin/OneDrive - University of Exeter/PhD/LSI/Data/Met Office Weather Files/JuneSept.csv'
-    csv_path = '/Users/benfourcin/OneDrive - University of Exeter/PhD/LSI/Data/DummyData/test2d_sorted.csv'
+        ray.init(num_cpus=num_cpus)
 
-    actors = [RayActor.remote(scaling, weather_data_path, csv_path) for _ in range(num_jobs)]
+        # Initialise scaling class
+        rm_CA = [100, 1e4]  # [min, max] Capacitance/area
+        ex_C = [1e3, 1e8]  # Capacitance
+        R = [0.1, 5]  # Resistance ((K.m^2)/W)
+        scaling = InputScaling(rm_CA, ex_C, R)
+        weather_data_path = '/Users/benfourcin/OneDrive - University of Exeter/PhD/LSI/Data/Met Office Weather Files/JuneSept.csv'
+        csv_path = '/Users/benfourcin/OneDrive - University of Exeter/PhD/LSI/Data/DummyData/test2d_sorted.csv'
 
-    results = ray.get([a.worker.remote(num, epochs) for num, a in enumerate(actors)])
-    # results = ray.get([a.worker_no_cooling.remote(num, epochs) for num, a in enumerate(actors)])
+        RayActor = ray.remote(RayActor)
 
-    time.sleep(3)  # Print is cut short without sleep
+        actors = [RayActor.remote(scaling, weather_data_path, csv_path) for _ in range(num_jobs)]
 
-    ray.shutdown()
+        results = ray.get([a.worker.remote(num, epochs) for num, a in enumerate(actors)])
+        # results = ray.get([a.worker_no_cooling.remote(num, epochs) for num, a in enumerate(actors)])
 
-    params_heading = ['Rm Cap/m2 (J/K.m2)', 'Ext Wl Cap 1 (J/K)', 'Ext Wl Cap 2 (J/K)', 'Ext Wl Res 1 (K.m2/W)', 'Ext Wl Res 2 (K.m2/W)', 'Ext Wl Res 3 (K.m2/W)', 'Int Wl Res (K.m2/W)']
-    cooling_heading = ['Cooling (W)']
-    headings = [['Run Number'], params_heading, cooling_heading, ['Final Average Train Loss', 'Final Avg Test Loss']]
-    flat_list = [item for sublist in headings for item in sublist]
+        time.sleep(3)  # Print is cut short without sleep
 
-    df = pd.DataFrame(np.array(results), columns=flat_list)
-    df.to_csv('./outputs/results.csv', index=False,)
+        ray.shutdown()
+
+        params_heading = ['Rm Cap/m2 (J/K.m2)', 'Ext Wl Cap 1 (J/K)', 'Ext Wl Cap 2 (J/K)', 'Ext Wl Res 1 (K.m2/W)', 'Ext Wl Res 2 (K.m2/W)', 'Ext Wl Res 3 (K.m2/W)', 'Int Wl Res (K.m2/W)']
+        cooling_heading = ['Cooling (W)']
+        headings = [['Run Number'], params_heading, cooling_heading, ['Final Average Train Loss', 'Final Avg Test Loss']]
+        flat_list = [item for sublist in headings for item in sublist]
+
+        df = pd.DataFrame(np.array(results), columns=flat_list)
+        df.to_csv('./outputs/results.csv', index=False,)
+
+    else:
+        # Initialise scaling class
+        rm_CA = [100, 1e4]  # [min, max] Capacitance/area
+        ex_C = [1e3, 1e8]  # Capacitance
+        R = [0.1, 5]  # Resistance ((K.m^2)/W)
+        scaling = InputScaling(rm_CA, ex_C, R)
+        weather_data_path = '/Users/benfourcin/OneDrive - University of Exeter/PhD/LSI/Data/Met Office Weather Files/JuneSept.csv'
+        csv_path = '/Users/benfourcin/OneDrive - University of Exeter/PhD/LSI/Data/DummyData/test2d_sorted.csv'
+
+        actor = RayActor(scaling, weather_data_path, csv_path)
+
+        results = actor.worker(0, 5)
+
+        params_heading = ['Rm Cap/m2 (J/K.m2)', 'Ext Wl Cap 1 (J/K)', 'Ext Wl Cap 2 (J/K)', 'Ext Wl Res 1 (K.m2/W)',
+                          'Ext Wl Res 2 (K.m2/W)', 'Ext Wl Res 3 (K.m2/W)', 'Int Wl Res (K.m2/W)']
+        cooling_heading = ['Cooling (W)']
+        headings = [['Run Number'], params_heading, cooling_heading,
+                    ['Final Average Train Loss', 'Final Avg Test Loss']]
+        flat_list = [item for sublist in headings for item in sublist]
+
+        df = pd.DataFrame(np.array(results), columns=flat_list)
+        df.to_csv('./outputs/results.csv', index=False, )
 
 

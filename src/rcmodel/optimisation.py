@@ -12,6 +12,7 @@ def train(model, device, dataloader, optimizer):
     """
     model.reset_iv()  # Reset initial value
     model.train()
+    model.cooling_policy.eval()
 
     # Stops Autograd endlessly keeping track of the graph. Memory Leak!
     for layer in model.cooling_policy.parameters():
@@ -38,6 +39,8 @@ def train(model, device, dataloader, optimizer):
 
         # get last output and use for next initial value
         model.iv = pred[-1, :].unsqueeze(1).detach()  # MUST DETACH GRAD
+
+        del pred
 
         # Backpropagation
         optimizer.zero_grad()
