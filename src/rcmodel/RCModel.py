@@ -119,7 +119,7 @@ class RCModel(nn.Module):
         if self.cooling_policy and t - self.ode_t >= 30:
             action, log_prob = self.cooling_policy.get_action(state_cool)
             self.ode_t = t
-            self.record_action.append([t, action])
+            self.record_action.append([t, action])  # This is just used for plotting the cooling after.
 
             if self.cooling_policy.training:  # if in training mode store log_prob
                 self.cooling_policy.log_probs.append(log_prob)
