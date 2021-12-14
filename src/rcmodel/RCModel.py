@@ -115,8 +115,8 @@ class RCModel(nn.Module):
 
         state_cool = torch.cat((x_norm, torch.tensor(time_signals, device=self.device, dtype=torch.float32)))
 
-        # get cooling action if policy is not None and 30 seconds has passed since last action
-        if self.cooling_policy and t - self.ode_t >= 30:
+        # get cooling action if policy is not None and 15 minutes has passed since last action
+        if self.cooling_policy and t - self.ode_t >= 60*15:
             action, log_prob = self.cooling_policy.get_action(state_cool)
             self.ode_t = t
             self.record_action.append([t, action])  # This is just used for plotting the cooling after.
