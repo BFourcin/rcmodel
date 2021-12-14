@@ -169,14 +169,16 @@ class LSIEnv(gym.Env):
             dtype=np.float32
         )
 
-#                  action
+    #                  action
     def step(self, step_size):
         # Execute a chunk of timeseries
         t_eval = self.time_data[self.t_index:int(self.t_index + step_size)]
 
         # actions are decided and stored by the policy while integrating the ODE:
         pred = self.RC(t_eval)
-        return pred
+
+        return pred.detach()  # No need for grad
+
     #          (observation, reward, done, info)
     # self.state, reward, done, {}
 
@@ -191,7 +193,6 @@ class LSIEnv(gym.Env):
         # Render the environment to the screen
 
         return
-
 
 if __name__ == '__main__':
 
