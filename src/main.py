@@ -283,7 +283,7 @@ if __name__ == '__main__':
                     ['Final Average Train Loss', 'Final Avg Test Loss']]
         flat_list = [item for sublist in headings for item in sublist]
 
-        df = pd.DataFrame(np.array(results), columns=flat_list)
+        df = pd.DataFrame(np.array([results]), columns=flat_list)
         df.to_csv('./outputs/results.csv', index=False, )
 
 
