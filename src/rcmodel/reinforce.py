@@ -66,6 +66,8 @@ class Reinforce:
 
     def update_policy(self, rewards, log_probs):
 
+        rewards = torch.tensor([window.mean() for window in torch.tensor_split(rewards, len(log_probs))])
+
         # Calculate Discounted Reward:
         discounted_rewards = torch.zeros(len(rewards))
 
