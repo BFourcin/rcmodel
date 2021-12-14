@@ -204,7 +204,6 @@ class BuildingTemperatureDataset(Dataset):
 
 
 # helper functions:
-
 def pltsolution_1rm(model, dataloader, filename=None):
     """
     Plots the first sample of dataloader.
