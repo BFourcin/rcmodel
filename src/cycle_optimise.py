@@ -8,13 +8,19 @@ from tqdm.auto import tqdm, trange
 from rcmodel import *
 from main import initialise_model, RayActor
 
+# Laptop
+weather_data_path = '/Users/benfourcin/OneDrive - University of Exeter/PhD/LSI/Data/Met Office Weather Files/JuneSept.csv'
+csv_path = '/Users/benfourcin/OneDrive - University of Exeter/PhD/LSI/Data/DummyData/train5d_sorted.csv'
+
+# Hydra:
+# weather_data_path = '/home/benf/LSI/Data/Met Office Weather Files/JuneSept.csv'
+# csv_path = '/home/benf/LSI/Data/DummyData/train5d_sorted.csv'  # where building data
+
 opt_id = 0
-weather_data_path = '/home/benf/LSI/Data/Met Office Weather Files/JuneSept.csv'
-csv_path = '/home/benf/LSI/Data/DummyData/train5wk_sorted.csv'  # where building data
 dir_path = f'./outputs/run{opt_id}/models/'  # where to save
 # Load model?
-load_model_path = 'rcmodel_start.pt'  # or None
-
+# load_model_path = 'rcmodel_start.pt'  # or None
+load_model_path = None
 
 def do_plots():
     fig = plt.figure(figsize=(10, 7), dpi=400)
@@ -63,7 +69,7 @@ model.save(0, dir_path)  # save initial model
 
 # Initialise Optimise Class - for training physical model
 dt = 30
-sample_size = 7 * 24 * 60 ** 2 / dt  # ONE WEEK
+sample_size = 24 * 60 ** 2 / dt  # ONE DAY
 op = OptimiseRC(model, csv_path, sample_size, dt, lr=1e-3, opt_id=opt_id)
 
 # Initialise Reinforcement Class - for training policy
@@ -94,11 +100,11 @@ if load_model_path:
 start_num = 0  # Number of cycles to start at. Used if resuming the run. i.e. the first cycle is (start_num + 1)
 
 # Convergence happens when the mean gradient of loss/reward is < tol.
-tol_phys = 5e-3
-tol_policy = 50
+tol_phys = 0.01  # 1%
+tol_policy = 0.02  # 2%
+window_len = 10.  # Length of convergence look-back window.
 
-
-cycles = 200
+cycles = 50
 max_epochs = 200
 
 plt.ioff()  # Reduces memory usage by matplotlib
@@ -106,31 +112,31 @@ for cycle in trange(cycles):
 
     # -------- Physical model training --------
     tqdm.write('Physical Model Training:')
-    diff = torch.ones(5) * 10
+    r_prev = (torch.arange(window_len) + 1) * 10  # dummy rewards to prevent convergence on first epochs
     loss_prev = 0
     for epoch in range(max_epochs):
         avg_train_loss = op.train()
         avg_train_loss_plot.append(avg_train_loss)
 
         # Get difference from previous
-        indx = epoch % len(diff)  # cycles the indexes in array
-        diff[indx] = abs(loss_prev - avg_train_loss)  # keeps track of a window of differences
-        loss_prev = avg_train_loss
+        indx = epoch % len(r_prev)  # cycles the indexes in array
+        r_prev[indx] = avg_train_loss  # keeps track of a window of differences
+
 
         # Test Loss
         avg_test_loss = op.test()
         avg_test_loss_plot.append(avg_test_loss)
 
         tqdm.write(
-            f'Epoch {count}, Train/Test Loss: {avg_train_loss:.2f}/{avg_test_loss:.2f}, Mean diff: {diff.mean():.3f}')
+            f'Epoch {count}, Train/Test Loss: {avg_train_loss:.2f}/{avg_test_loss:.2f}, Mean diff: {abs((r_prev.mean() - r_prev[indx]) / r_prev[indx]) * 100:.3f} %')
 
         # Save Model
         model_id = count + start_num
         model.save(model_id, dir_path)
         count += 1
 
-        # check if mean of difference is less than tol. i.e. convergence
-        if diff.mean() < tol_phys:
+        # check if percentage change from mean is less than tol. i.e. convergence
+        if abs((r_prev.mean() - r_prev[indx]) / r_prev[indx]) < tol_phys:
             break
 
     tqdm.write(f'Physical converged in {epoch + 1} epochs. Total epochs: {count - 1}\n')
@@ -141,26 +147,25 @@ for cycle in trange(cycles):
 
     # -------- Policy training --------
     tqdm.write('Policy Training:')
-    diff = torch.ones(5) * 1000
-    rewards_prev = 0
+    r_prev = (torch.arange(window_len) + 1) * 1000
     for epoch in range(max_epochs):
         rewards, ER = rl.train(1, sample_size)
 
-        indx = epoch % len(diff)
-        diff[indx] = abs(rewards_prev - torch.tensor(rewards))  # keeps track of a window of differences
-        rewards_prev = torch.tensor(rewards)
+        indx = epoch % len(r_prev)
+        r_prev[indx] = torch.tensor(rewards)  # keeps track of a window of differences
         rewards_plot.append(rewards)
         ER_plot.append(ER)
 
         tqdm.write(
-            f'Epoch {count}, Rewards/Expected Rewards: {torch.tensor(rewards).sum().item():.2f}/{torch.tensor(ER).sum().item():.2f}, Mean diff: {torch.mean(diff):.2f}')
+            f'Epoch {count}, Rewards/Expected Rewards: {torch.tensor(rewards).sum().item():.2f}/{torch.tensor(ER).sum().item():.2f}, Mean diff: {abs((r_prev.mean() - r_prev[indx]) / r_prev[indx]) * 100:.3f} %')
 
         # Save Model
         model_id = count + start_num
         model.save(model_id, dir_path)
         count += 1
 
-        if torch.mean(diff) < tol_policy:
+        # check if percentage change from mean is less than tol. i.e. convergence
+        if abs((torch.mean(r_prev) - r_prev[indx]) / r_prev[indx]) < tol_policy:
             break
 
     tqdm.write(f'Policy converged in {epoch + 1} epochs. Total epochs: {count - 1}\n')
