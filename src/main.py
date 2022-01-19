@@ -17,8 +17,6 @@ from rcmodel.reinforce import LSIEnv
 
 
 def initialise_model(pi, scaling, weather_data_path):
-    torch.cuda.is_available = lambda: False
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
     def change_origin(coords):
         x0 = 92.07
@@ -29,33 +27,26 @@ def initialise_model(pi, scaling, weather_data_path):
             coords[i][1] = round((coords[i][1] - y0) / 10, 2)
 
         return coords
-    capacitance = 3000  # Variable changed later
+
     rooms = []
 
     name = "seminar_rm_a_t0106"
     coords = change_origin(
         [[92.07, 125.94], [92.07, 231.74], [129.00, 231.74], [154.45, 231.74], [172.64, 231.74], [172.64, 125.94]])
-    rooms.append(Room(name, capacitance, coords))
+    rooms.append(Room(name, coords))
 
     # Initialise Building
-    height = 1
-    Re = [4, 1, 0.55]  # Sum of R makes Uval=0.18 #Variable changed later
-    Ce = [1.2 * 10 ** 3, 0.8 * 10 ** 3]  # Variable changed later
-    Rint = 0.66  # Uval = 1/R = 1.5 #Variable changed later
-
-    bld = Building(rooms, height, Re, Ce, Rint)
+    bld = Building(rooms)
 
     df = pd.read_csv(weather_data_path)
-    Tout = torch.tensor(df['Hourly Temperature (°C)'], device=device)
-    t = torch.tensor(df['time'], device=device)
+    Tout = torch.tensor(df['Hourly Temperature (°C)'])
+    t = torch.tensor(df['time'])
 
     Tout_continuous = Interp1D(t, Tout, method='linear')
 
     # Initialise RCModel with the building
     transform = torch.sigmoid
     model = RCModel(bld, scaling, Tout_continuous, transform, pi)
-    model.to(device)  # put model on GPU if available
-    model.Q_lim = 10000
 
     return model
 
@@ -88,7 +79,7 @@ class RayActor:
         temp_data = torch.tensor(pd.read_csv(self.csv_path, skiprows=0).iloc[:, 2:].to_numpy(dtype=np.float32), dtype=torch.float32)
 
         env = LSIEnv(model, time_data)
-        reinforce = Reinforce(env, time_data, temp_data, alpha=1e-2)
+        do_reinforce = Reinforce(env, time_data, temp_data, alpha=1e-2)
 
         avg_train_loss_plot = []
         avg_test_loss_plot = []
@@ -109,7 +100,7 @@ class RayActor:
             # Policy Training:
             num_episodes = 1
             step_size = sample_size
-            rewards, ER = reinforce.train(num_episodes, step_size)
+            rewards, ER = do_reinforce.train(num_episodes, step_size)
             rewards_plot.append(rewards)
             ER_plot.append(ER)
 
@@ -159,7 +150,6 @@ class RayActor:
         final_cooling = model.transform(model.cooling).detach().numpy()
 
         return np.concatenate(([opt_id], final_params, final_cooling, [final_train_loss, final_test_loss]))
-
 
     def worker_no_cooling(self, opt_id, epochs=100):
         torch.set_num_threads(1)
@@ -240,7 +230,8 @@ if __name__ == '__main__':
         rm_CA = [100, 1e4]  # [min, max] Capacitance/area
         ex_C = [1e3, 1e8]  # Capacitance
         R = [0.1, 5]  # Resistance ((K.m^2)/W)
-        scaling = InputScaling(rm_CA, ex_C, R)
+        Q_limit = [-10000, 10000]  # Cooling limit in W and gain limit in W/m2
+        scaling = InputScaling(rm_CA, ex_C, R, Q_limit)
         weather_data_path = '/Users/benfourcin/OneDrive - University of Exeter/PhD/LSI/Data/Met Office Weather Files/JuneSept.csv'
         csv_path = '/Users/benfourcin/OneDrive - University of Exeter/PhD/LSI/Data/DummyData/test2d_sorted.csv'
 
@@ -268,7 +259,8 @@ if __name__ == '__main__':
         rm_CA = [100, 1e4]  # [min, max] Capacitance/area
         ex_C = [1e3, 1e8]  # Capacitance
         R = [0.1, 5]  # Resistance ((K.m^2)/W)
-        scaling = InputScaling(rm_CA, ex_C, R)
+        Q_limit = [-10000, 10000]  # Cooling limit in W and gain limit in W/m2
+        scaling = InputScaling(rm_CA, ex_C, R, Q_limit)
         weather_data_path = '/Users/benfourcin/OneDrive - University of Exeter/PhD/LSI/Data/Met Office Weather Files/JuneSept.csv'
         csv_path = '/Users/benfourcin/OneDrive - University of Exeter/PhD/LSI/Data/DummyData/test2d_sorted.csv'
 
@@ -277,7 +269,7 @@ if __name__ == '__main__':
         results = actor.worker(0, 5)
 
         params_heading = ['Rm Cap/m2 (J/K.m2)', 'Ext Wl Cap 1 (J/K)', 'Ext Wl Cap 2 (J/K)', 'Ext Wl Res 1 (K.m2/W)',
-                          'Ext Wl Res 2 (K.m2/W)', 'Ext Wl Res 3 (K.m2/W)', 'Int Wl Res (K.m2/W)']
+                          'Ext Wl Res 2 (K.m2/W)', 'Ext Wl Res 3 (K.m2/W)', 'Int Wl Res (K.m2/W)', 'Offset Gain (W/m2)']
         cooling_heading = ['Cooling (W)']
         headings = [['Run Number'], params_heading, cooling_heading,
                     ['Final Average Train Loss', 'Final Avg Test Loss']]
