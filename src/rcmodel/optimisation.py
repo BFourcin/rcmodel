@@ -4,7 +4,8 @@ import pandas as pd
 from .tools import BuildingTemperatureDataset
 import os
 
-def train(model, device, dataloader, optimizer):
+
+def train(model, dataloader, optimizer):
     """
     Performs one epoch of training.
     Order of rooms in building and in data must match otherwise model will fit wrong rooms to data.
@@ -23,8 +24,6 @@ def train(model, device, dataloader, optimizer):
     loss_fn = torch.nn.MSELoss()
 
     for batch, (time, temp) in enumerate(dataloader):
-        time, temp = time.to(device), temp.to(device)  # Put on GPU if available
-
         # Get model arguments:
         time = time.squeeze(0)
         temp = temp.squeeze(0)
@@ -47,7 +46,7 @@ def train(model, device, dataloader, optimizer):
     return train_loss / num_batches
 
 
-def test(model, device, dataloader):
+def test(model, dataloader):
     model.reset_iv()  # Reset initial value
     model.eval()  # Put model in evaluation mode
     num_batches = len(dataloader)
@@ -57,7 +56,6 @@ def test(model, device, dataloader):
 
     with torch.no_grad():
         for (time, temp) in dataloader:
-            time, temp = time.to(device), temp.to(device)  # Put on GPU if available
 
             time = time.squeeze(0)
             temp = temp.squeeze(0)
@@ -196,7 +194,6 @@ class OptimiseRC:
         self.model = model
         self.model.init_params()  # randomise parameters
         self.model_id = opt_id
-        self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
         self.train_dataloader, self.test_dataloader = dataset_creator(csv_path, int(sample_size), int(dt))
 
         self.optimizer = torch.optim.Adam([self.model.params, self.model.cooling], lr=lr)
@@ -204,11 +201,11 @@ class OptimiseRC:
 
 
     def train(self):
-        avg_loss = train(self.model, self.device, self.train_dataloader, self.optimizer)
+        avg_loss = train(self.model, self.train_dataloader, self.optimizer)
         return avg_loss
 
     def test(self):
-        test_loss = test(self.model, self.device, self.test_dataloader)
+        test_loss = test(self.model, self.test_dataloader)
         return test_loss
 
     def train_loop(self, epochs):

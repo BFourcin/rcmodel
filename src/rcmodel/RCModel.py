@@ -13,7 +13,7 @@ class RCModel(nn.Module):
     scaling - Class containing methods to scale inputs from 0-1 back to their usual values and back again.
     transform - function to transform parameters e.g. sigmoid
 
-    Runs using forward method should be sequential as the output is used as the inital conditon for the next run, unless manually reset using self.iv
+    Runs using forward method should be sequential as the output is used as the initial condition for the next run, unless manually reset using self.iv
     """
 
     def __init__(self, building, scaling, Tout_continuous, transform=None, cooling_policy=None):
@@ -21,7 +21,7 @@ class RCModel(nn.Module):
         super().__init__()
         self.building = building
 
-        self.transform = transform  # transform - on parameters e.g. sigmoid
+        self.transform = transform  # transform performed on parameters e.g. sigmoid
 
         self.scaling = scaling  # InputScaling class (helper class to go between machine (0-1) and physical values)
 
@@ -33,12 +33,9 @@ class RCModel(nn.Module):
         self.cooling = None
         self.init_params()  # initialize weights with random numbers, length of params given from building class
 
-        self.Q_lim = 500
-
         self.ode_t = None  # Keeps track of t during integration. None is just to initialise attribute
         self.record_action = None  # records Q and t during integration
         self.heat = None  # Heat in Watts
-        self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
         self.reset_iv()  # sets iv
 
@@ -59,20 +56,17 @@ class RCModel(nn.Module):
         if t_eval.dim() > 1:
             t_eval = t_eval.squeeze(0)
 
-        # Check if Cuda is available
-        device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-
         # Transform parameters
         if self.transform:
             theta = self.transform(self.params)
-            self.heat = self.transform(self.cooling)  # W/m2 for each room
+            self.heat = self.transform(self.cooling)  # Watts for each room
         else:
             theta = self.params
             self.heat = self.cooling
 
         # Scale inputs up to their physical values
         theta = self.scaling.physical_param_scaling(theta)
-        self.heat = self.scaling.physical_cooling_scaling(self.heat, Q_lim=self.Q_lim)
+        self.heat = self.scaling.physical_cooling_scaling(self.heat)
 
         # t_eval_plus = torch.cat((t_eval, (t_eval[-1] + 600).unsqueeze(0)),
         #                         0)  # added on extra time to avoid error with interp1d(t_end)
@@ -83,8 +77,8 @@ class RCModel(nn.Module):
         t_eval = t_eval - self.t0
 
         # Produce matrix A and B from current parameters
-        self.A = self.building.update_inputs(theta).to(self.device)
-        self.B = self.building.input_matrix().to(self.device)
+        self.A = self.building.update_inputs(theta)
+        self.B = self.building.input_matrix()
 
         # integrate using fixed step (rk4) see torchdiffeq docs for more options.
         integrate = odeint(self.fODE, self.iv, t_eval, method='rk4')  # https://github.com/rtqichen/torchdiffeq
@@ -113,7 +107,7 @@ class RCModel(nn.Module):
                         np.cos((t+self.t0) * (2 * np.pi / week))
                         ]
 
-        state_cool = torch.cat((x_norm, torch.tensor(time_signals, device=self.device, dtype=torch.float32)))
+        state_cool = torch.cat((x_norm, torch.tensor(time_signals, dtype=torch.float32)))
 
         # get cooling action if policy is not None and 15 minutes has passed since last action
         if self.cooling_policy and t - self.ode_t >= 60*15:
@@ -129,6 +123,9 @@ class RCModel(nn.Module):
 
         Q = -self.heat * action
 
+        # Q + gain
+        Q = Q + self.building.proportional_heating(self.building.gain)
+
         Tout = self.Tout_continuous(t.item() + self.t0)
 
         u = self.building.input_vector(Tout, Q)
@@ -137,15 +134,17 @@ class RCModel(nn.Module):
 
     def reset_iv(self):
         # Starting Temperatures of nodes. Column vector of shape ([n,1]) n=rooms+2
-        self.iv = 26 * torch.ones(2 + len(self.building.rooms), device=self.device)  # set iv at 26 degrees
+        self.iv = 26 * torch.ones(2 + len(self.building.rooms))  # set iv at 26 degrees
         # Set iv as column vector. Errors caused if Row vector which are difficult to trace.
         self.iv = self.iv.unsqueeze(1)
 
     def init_params(self):
         params = torch.rand(self.building.n_params, dtype=torch.float32, requires_grad=True)
+
         # enables spread of initial parameters. Otherwise sigmoid(rand) tends towards 0.5.
         if self.transform == torch.sigmoid:
             params = torch.logit(params)  # inverse sigmoid
+
         # make theta torch parameters
         self.params = nn.Parameter(params)
         self.cooling = nn.Parameter(torch.rand((len(self.building.rooms)), dtype=torch.float32, requires_grad=True))  # [Q]
@@ -158,7 +157,7 @@ class RCModel(nn.Module):
         """
         scaled_state_dict = self.state_dict()
         scaled_state_dict['params'] = self.scaling.physical_param_scaling(self.transform(scaled_state_dict['params']))
-        scaled_state_dict['cooling'] = self.scaling.physical_cooling_scaling(self.transform(scaled_state_dict['cooling']), self.Q_lim)
+        scaled_state_dict['cooling'] = self.scaling.physical_cooling_scaling(self.transform(scaled_state_dict['cooling']))
 
         if dir_path is None:
             dir_path = "./outputs/models/"
@@ -180,7 +179,7 @@ class RCModel(nn.Module):
         )
 
         scaled_state_dict['cooling'] = torch.logit(
-            self.scaling.model_cooling_scaling(scaled_state_dict['cooling'], self.Q_lim) + 1e-15
+            self.scaling.model_cooling_scaling(scaled_state_dict['cooling']) + 1e-15
         )
 
         self.load_state_dict(scaled_state_dict)

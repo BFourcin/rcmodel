@@ -8,19 +8,21 @@ import matplotlib.pyplot as plt
 class InputScaling(Building):
     """
     Class to group methods for scaling input parameters.
+    Provide the limits for each variable. e.g. rm_CA = [100, 1000]
+
     Model scaling - scales physical parameters to between 0-1 using min max.
     Physical scaling - returns parameters back to their physical meaning.
 
     Initialise with:
-    InputScaling(rm_CA ex_C, R, QA)
+    InputScaling(rm_CA ex_C, R, Q_limit)
     or
     InputScaling(input_range=input_range)
     """
 
-    def __init__(self, rm_CA=None, ex_C=None, R=None, input_range=None):
+    def __init__(self, rm_CA=None, ex_C=None, R=None, Q_limit=None, input_range=None):
 
         if input_range is None:
-            input_range = [rm_CA, ex_C, R]
+            input_range = [rm_CA, ex_C, R, Q_limit]
 
             # check for None
             if None in input_range:
@@ -33,17 +35,20 @@ class InputScaling(Building):
         Scale from 0-1 back to normal.
         """
 
-        rm_cap, ex_cap, ex_r, wl_r = self.categorise_theta(theta_scaled)
+        rm_cap, ex_cap, ex_r, wl_r, gain = self.categorise_theta(theta_scaled)
 
         rm_cap = self.unminmaxscale(rm_cap, self.input_range[0])
         ex_cap = self.unminmaxscale(ex_cap, self.input_range[1])
-        ex_r   = self.unminmaxscale(ex_r  , self.input_range[2])
-        wl_r   = self.unminmaxscale(wl_r  , self.input_range[2])
+        ex_r   = self.unminmaxscale(ex_r,   self.input_range[2])
+        wl_r   = self.unminmaxscale(wl_r,   self.input_range[2])
+        gain   = self.unminmaxscale(gain,   self.input_range[3])
 
         if wl_r.ndim == 0:
             wl_r = torch.unsqueeze(wl_r, 0)
+        if gain.ndim == 0:
+            gain = torch.unsqueeze(gain, 0)
 
-        theta = torch.cat([rm_cap, ex_cap, ex_r, wl_r])
+        theta = torch.cat([rm_cap, ex_cap, ex_r, wl_r, gain])
 
         return theta
 
@@ -52,29 +57,32 @@ class InputScaling(Building):
         Scale to 0-1.
         """
 
-        rm_cap, ex_cap, ex_r, wl_r = self.categorise_theta(theta)
+        rm_cap, ex_cap, ex_r, wl_r, gain = self.categorise_theta(theta)
 
         rm_cap = self.minmaxscale(rm_cap, self.input_range[0])
         ex_cap = self.minmaxscale(ex_cap, self.input_range[1])
         ex_r   = self.minmaxscale(ex_r  , self.input_range[2])
         wl_r   = self.minmaxscale(wl_r  , self.input_range[2])
+        gain   = self.minmaxscale(gain  , self.input_range[3])
 
         if wl_r.ndim == 0:
             wl_r = torch.unsqueeze(wl_r, 0)
+        if gain.ndim == 0:
+            gain = torch.unsqueeze(gain, 0)
 
-        theta_scaled = torch.cat([rm_cap, ex_cap, ex_r, wl_r])
+        theta_scaled = torch.cat([rm_cap, ex_cap, ex_r, wl_r, gain])
 
         return theta_scaled
 
-    def physical_cooling_scaling(self, Q, Q_lim):
+    def physical_cooling_scaling(self, Q):
 
-        Q_watts = self.unminmaxscale(Q, [0, Q_lim])
+        Q_watts = self.unminmaxscale(Q, [0, self.input_range[3].max()])
 
         return Q_watts
 
-    def model_cooling_scaling(self, Q_watts, Q_lim):
+    def model_cooling_scaling(self, Q_watts):
 
-        Q = self.minmaxscale(Q_watts, [0, Q_lim])
+        Q = self.minmaxscale(Q_watts, [0, self.input_range[3].max()])
 
         return Q
 
@@ -114,8 +122,6 @@ class BuildingTemperatureDataset(Dataset):
         self.all = all
         self.train = train
         self.test = test
-
-        self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
         # auto splits data by train and test
         # entry count is number of rows to read from csv.
@@ -158,10 +164,10 @@ class BuildingTemperatureDataset(Dataset):
         df_sample = pd.read_csv(self.csv_path, skiprows=lb, nrows=self.sample_size)
 
         # Get time column (time must be in the 1th column)
-        t_sample = torch.tensor(df_sample.iloc[:, 1].values, dtype=torch.float64, device=self.device) # units (s)
+        t_sample = torch.tensor(df_sample.iloc[:, 1].values, dtype=torch.float64) # units (s)
 
         # Get temp matrix
-        temp_sample = torch.tensor(df_sample.iloc[:, 2:].values, dtype=torch.float32, device=self.device) #pandas needs 2: to get all but first & second column
+        temp_sample = torch.tensor(df_sample.iloc[:, 2:].values, dtype=torch.float32) #pandas needs 2: to get all but first & second column
 
         #apply transorms if required
         if self.transform:
@@ -229,7 +235,7 @@ def pltsolution_1rm(model, dataloader, filename=None):
         Q_on_off = record_action[:, 1:]  # Cooling actions
 
         Q_avg = model.transform(model.cooling)
-        Q_avg = model.scaling.physical_cooling_scaling(Q_avg, Q_lim=model.Q_lim)
+        Q_avg = model.scaling.physical_cooling_scaling(Q_avg)
 
         Q = Q_on_off * -Q_avg.unsqueeze(1)  # Q is timeseries of Watts for each room.
     else:

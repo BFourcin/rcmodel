@@ -65,7 +65,7 @@ class Reinforce:
         self.optimiser = torch.optim.Adam(self.env.RC.cooling_policy.parameters(), lr=self.alpha)
 
     def update_policy(self, rewards, log_probs):
-
+        # downsample rewards by averaging each window.
         rewards = torch.tensor([window.mean() for window in torch.tensor_split(rewards, len(log_probs))])
 
         # Calculate Discounted Reward:
@@ -197,60 +197,7 @@ class LSIEnv(gym.Env):
         return
 
 if __name__ == '__main__':
-
-    def initialise_model(pi):
-        torch.cuda.is_available = lambda: False
-        device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-
-        def change_origin(coords):
-            x0 = 92.07
-            y0 = 125.94
-
-            for i in range(len(coords)):
-                coords[i][0] = round((coords[i][0] - x0) / 10, 2)
-                coords[i][1] = round((coords[i][1] - y0) / 10, 2)
-
-            return coords
-
-        capacitance = 3000  # Variable changed later
-        rooms = []
-
-        name = "seminar_rm_a_t0106"
-        coords = change_origin(
-            [[92.07, 125.94], [92.07, 231.74], [129.00, 231.74], [154.45, 231.74], [172.64, 231.74], [172.64, 125.94]])
-        rooms.append(Room(name, capacitance, coords))
-
-        # Initialise Building
-        height = 1
-        Re = [4, 1, 0.55]  # Sum of R makes Uval=0.18 #Variable changed later
-        Ce = [1.2 * 10 ** 3, 0.8 * 10 ** 3]  # Variable changed later
-        Rint = 0.66  # Uval = 1/R = 1.5 #Variable changed later
-
-        bld = Building(rooms, height, Re, Ce, Rint)
-
-        rm_CA = [200, 800]  # [min, max] Capacitance/area
-        ex_C = [1.5 * 10 ** 4, 10 ** 6]  # Capacitance
-        R = [0.2, 1.2]  # Resistance ((K.m^2)/W)
-
-        scaling = InputScaling(rm_CA, ex_C, R)
-        scale_fn = scaling.physical_scaling  # function to scale parameters back to physical values
-
-        path_Tout = '/Users/benfourcin/OneDrive - University of Exeter/PhD/LSI/Data/Met Office Weather Files/JuneSept.csv'
-        df = pd.read_csv(path_Tout)
-        Tout = torch.tensor(df['Hourly Temperature (°C)'], device=device)
-        t = torch.tensor(df['time'], device=device)
-
-        Tout_continuous = Interp1D(t, Tout, method='linear')
-
-        # Initialise RCModel with the building
-        # transform = torch.sigmoid
-        transform = torch.sigmoid
-        model = RCModel(bld, scaling, Tout_continuous, transform, pi)
-        model.to(device)  # put model on GPU if available
-        model.Q_lim = 10000
-
-        return model, Tout_continuous
-
+    from main import initialise_model
 
     path_sorted = '/Users/benfourcin/OneDrive - University of Exeter/PhD/LSI/Data/210813data_sorted.csv'
     time_data = torch.tensor(pd.read_csv(path_sorted, skiprows=0).iloc[:, 1], dtype=torch.float64)

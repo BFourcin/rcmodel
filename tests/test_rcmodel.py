@@ -30,8 +30,9 @@ def test_run_model(building):
     rm_CA = [200, 800]  # [min, max] Capacitance/area
     ex_C = [1.5 * 10 ** 4, 10 ** 6]  # Capacitance
     R = [0.2, 1.2]  # Resistance ((K.m^2)/W)
+    Q_limit = [0, 0]  # gain limit (W/m^2) no additional energy
 
-    scaling = InputScaling(rm_CA, ex_C, R)
+    scaling = InputScaling(rm_CA, ex_C, R, Q_limit)
 
     # Initialise RCModel with the building and InputScaling
     transform = torch.sigmoid
@@ -58,23 +59,24 @@ def test_save_load(building_n9):
     rm_CA = [200, 800]  # [min, max] Capacitance/area
     ex_C = [1e3, 1e6]  # Capacitance
     R = [0.1, 1.3]  # Resistance ((K.m^2)/W)
+    Q_limit = [-10000, 10000]  # gain limit (W/m^2)
 
-    scaling = InputScaling(rm_CA, ex_C, R)
+    scaling = InputScaling(rm_CA, ex_C, R, Q_limit)
     transform = torch.sigmoid
 
     model = RCModel(building_n9, scaling, dummy_tout, transform)
-    model.Q_lim = 10000
 
     rm_cap = 500
     ex_cap = [1e4, 2e4]
     ex_r = [0.2, 0.5, 1.2]
     wl_r = 0.8
+    gain = 2400
 
-    original_params = torch.tensor([rm_cap, ex_cap[0], ex_cap[1], ex_r[0], ex_r[1], ex_r[2], wl_r])
+    original_params = torch.tensor([rm_cap, ex_cap[0], ex_cap[1], ex_r[0], ex_r[1], ex_r[2], wl_r, gain])
     original_cooling = 3000 * torch.rand(len(model.building.rooms))
 
     model.params = torch.nn.Parameter(torch.logit(model.scaling.model_param_scaling(original_params)))
-    model.cooling = torch.nn.Parameter(torch.logit(model.scaling.model_cooling_scaling(original_cooling, model.Q_lim)))
+    model.cooling = torch.nn.Parameter(torch.logit(model.scaling.model_cooling_scaling(original_cooling)))
 
     with tempfile.TemporaryDirectory() as tmpdirname:
         num = 0
@@ -87,19 +89,18 @@ def test_save_load(building_n9):
         rm_CA = [50, 901]
         ex_C = [1e2, 1e5]
         R = [0.2, 2]
+        Q_limit = [-5200, 8100]
 
-        scaling = InputScaling(rm_CA, ex_C, R)
+        scaling = InputScaling(rm_CA, ex_C, R, Q_limit)
         transform = torch.sigmoid
 
         model2 = RCModel(building_n9, scaling, dummy_tout, transform)
-        model2.Q_lim = 7500
-        print(f'model2 {model2.params}')
 
         path = f"{tmpdirname}/rcmodel{num}.pt"
         model2.load(path=path)
 
         loaded_params = model2.scaling.physical_param_scaling(transform(model2.params))
-        loaded_cooling = model2.scaling.physical_cooling_scaling(transform(model2.cooling), model2.Q_lim)
+        loaded_cooling = model2.scaling.physical_cooling_scaling(transform(model2.cooling))
 
         diff_params = abs(loaded_params-original_params)
         diff_cooling = abs(loaded_cooling-original_cooling)

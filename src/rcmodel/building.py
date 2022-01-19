@@ -8,23 +8,19 @@ class Building:
     A class containing all the rooms of a building (2D)
     """
 
-    def __init__(self, rooms, height, Re, Ce, Rint):
+    def __init__(self, rooms, height=1):
 
         self.rooms = rooms  # list of Room classes within the building
         self.height = height  # height of all Rooms in the building
 
-        # External elements
-        if not len(Re) == 3:
-            return print("Re should be in list in form [R1, R2, R3]")
-        self.Re = Re
-
-        if not len(Ce) == 2:
-            return print("Ce should be in list in form [C1, C2]")
-        self.Ce = Ce
-
-        self.Rint = Rint
+        #  Parameters to be properly initialised later in self.update_inputs()
+        self.Re = [0, 0, 0]      # external resistance
+        self.Ce = [0, 0]      # external capacitance
+        self.Rint = 0    # internal wall resistance
+        self.gain = 0    # constant heat gain (W/m^2)
 
         self.Walls = self.sort_walls()
+
 
         # get total external area:
         surf_area = 0
@@ -52,6 +48,7 @@ class Building:
         [Tn]
 
         """
+
         n = len(self.rooms)
 
         knect = torch.zeros([n, n])
@@ -140,7 +137,7 @@ class Building:
 
     def sort_walls(self):
         """
-        Function which combines 3 seperate functions in the correct order.
+        Function which combines 3 separate functions in the correct order.
         All unique walls in the building are represented in a list of Wall class instances.
         Walls previously defined in the Room class are also updated to be an index of this list.
         """
@@ -227,7 +224,7 @@ class Building:
         u = [Tout, QA, QB, ... Qn]
         """
         # Check and make 2d matrix if 1d.
-        add_dim = lambda x: torch.tensor([x]) if x.ndim == 1 else x
+        # add_dim = lambda x: torch.tensor([x]) if x.ndim == 1 else x
 
         # Q = np.array(Q)
         # Q = add_dim(Q)
@@ -243,7 +240,7 @@ class Building:
             return u
 
         else:
-            print("input_vector: Q needs to have 1 column per room")
+            raise ValueError("input_vector: Q needs to have 1 column per room")
 
     def input_matrix(self):
         """
@@ -321,10 +318,9 @@ class Building:
         Function to split theta into its different categories.
 
         theta is a 1D vector with categories in the following order:
-        theta = [room capacitance, external capacitance, external resistance, each wall resistance, Q_avg]
+        theta = [room capacitance, external capacitance, external resistance, internal wall resistance, gain]
         """
 
-        # indx = len(self.rooms) #index number
         indx = 1
         rm_cap = theta[0:indx]
         indx += 2
@@ -333,26 +329,28 @@ class Building:
         ex_r = theta[indx - 3:indx]
         indx += 1
         wl_r = theta[indx - 1]
+        indx += 1
+        gain = theta[indx - 1]
 
-        return rm_cap, ex_cap, ex_r, wl_r
+        return rm_cap, ex_cap, ex_r, wl_r, gain
 
     def update_inputs(self, theta):
         """
-        Funtion to update the instance with new variables, theta. Must be structured correctly.
-        Note: system matricies will have to be reproduced e.g. A, B
+        Function to update the instance with new variables, theta. Must be structured correctly.
+        Note: system matrices will have to be reproduced e.g. A, B
 
         theta is a 1D vector with categories in the following order:
-        theta = [room capacitance, external capacitance, external resistance, each wall resistance, Q_avg]
+        theta = [room capacitance, external capacitance, external resistance, each wall resistance, gain]
 
 
         returns Q_avg: The mean W/m^2 for the building
         """
 
-        rm_cap, ex_cap, ex_r, wl_r = self.categorise_theta(theta)
+        rm_cap, ex_cap, ex_r, wl_r, gain = self.categorise_theta(theta)
 
         # update room capacitance
         for i in range(len(self.rooms)):
-            self.rooms[i].capacitance = rm_cap * self.rooms[i].area
+            self.rooms[i].capacitance = rm_cap[0] * self.rooms[i].area
 
         # update external capacitance
         self.Ce = ex_cap
@@ -361,12 +359,17 @@ class Building:
         self.Re = ex_r
 
         # update wall resistance
+        self.Rint = wl_r
         # This code is not great, need way of assigning wall resistance individually in the future
         for i in range(len(self.Walls)):
             if self.Walls[i].is_external:
                 self.Walls[i].resistance = ex_r[2]
             else:
                 self.Walls[i].resistance = wl_r
+
+
+        # update gain
+        self.gain = gain
 
         A = self.make_system_matrix()
 
@@ -397,7 +400,7 @@ class Building:
 
         Q = torch.zeros(len(self.rooms))
         for i in range(len(self.rooms)):
-            Q[i] = Q_avg[i] * self.rooms[i].area
+            Q[i] = Q_avg * self.rooms[i].area
 
         return Q
 
@@ -440,8 +443,6 @@ class Building:
         # get angle (i.e time of day) for timeseries
         circ = np.e ** (1j * 2 * np.pi / s_per_day * t)
         time_degree = self.time_angle(circ.cpu())
-        device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-        time_degree = time_degree.to(device)  # Put back on gpu if available
 
         # Control logic:
         # turn Q on if time_degree is between thresholds theta_A and theta_B.
@@ -467,8 +468,7 @@ class Building:
 
         Q_on_off = self.Q_control(t, theta_A1, theta_B1)  # get control step funciton for each room
 
-        device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-        Q_on_off = Q_on_off.to(device)
+        Q_on_off = Q_on_off
 
         Q = Q_on_off * Q_avg.unsqueeze(1)  # multiply by Q_avg for each room
 
