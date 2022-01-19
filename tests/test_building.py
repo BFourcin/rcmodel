@@ -62,67 +62,69 @@ def test_surf_area(building, external_area):
                        [28.0000, 0.0000, 0.0000, 0.0000, 20.0000, 20.0000, 20.0000, 20.0000, 20.0000, 0.0000]])),
     ])
 def test_connectivity_matrix(building, K):
+    Re = [5, 1, 0.5]
+    Ce = [1e3,8e2]
+    Rint = 0.1
+
     k = building.make_connectivity_matrix()
 
     assert torch.equal(rounded(K), rounded(k))
 
 
-def test_make_system_matrix_rooms_n2(rooms_n2):
-    height = 1
-    Re = [5, 1, 0.5]
-    Ce = [1e3, 8e2]
-    Rint = 0.1
-
-    b = Building(rooms_n2, height, Re, Ce, Rint)
+def test_make_system_matrix_rooms_n2(building_n2):
+    Re = building_n2.Re
+    Ce = building_n2.Ce
+    Rint = building_n2.Rint
+    Crm1 = building_n2.rooms[0].capacitance
+    Crm2 = building_n2.rooms[1].capacitance
 
     A = [[-30 / (Re[0] * Ce[0]) - 30 / (Re[1] * Ce[0]), 30 / (Re[1] * Ce[0]), 0, 0],
          [30 / (Re[1] * Ce[1]), -30 / (Re[1] * Ce[1]) - 30 / (Re[2] * Ce[1]), 15 / (Re[2] * Ce[1]),
           15 / (Re[2] * Ce[1])],
-         [0, 15 / (Re[2] * 1e3), -15 / (Re[2] * 1e3) - 5 / (Rint * 1e3), 5 / (Rint * 1e3)],
-         [0, 15 / (Re[2] * 2e3), 5 / (Rint * 2e3), -15 / (Re[2] * 2e3) - 5 / (Rint * 2e3)]]
+         [0, 15 / (Re[2] * Crm1), -15 / (Re[2] * Crm1) - 5 / (Rint * Crm1), 5 / (Rint * Crm1)],
+         [0, 15 / (Re[2] * Crm2), 5 / (Rint * Crm2), -15 / (Re[2] * Crm2) - 5 / (Rint * Crm2)]]
 
     A = torch.tensor(A, dtype=torch.float32)
 
-    assert torch.equal(rounded(A), rounded(b.make_system_matrix()))
+    assert torch.equal(rounded(A), rounded(building_n2.make_system_matrix()))
 
 
-def test_make_system_matrix_rooms_n9(rooms_n9):
-    height = 1
-    Re = [5, 1, 0.5]
-    Ce = [1e3, 8e2]
-    Rint = 0.1
+def test_make_system_matrix_rooms_n9(building_n9):
+    Re = building_n9.Re
+    Ce = building_n9.Ce
+    Rint = building_n9.Rint
 
-    b = Building(rooms_n9, height, Re, Ce, Rint)
+    Crm = [room.capacitance for room in building_n9.rooms]
 
-    sa = b.surf_area.item()  # Need .item() otherwise error
+    sa = building_n9.surf_area.item()  # Need .item() otherwise error
 
     A = [[-sa / (Re[0] * Ce[0]) - sa / (Re[1] * Ce[0]), sa / (Re[1] * Ce[0]), 0, 0, 0, 0, 0, 0, 0, 0, 0],  # ex1
          [sa / (Re[1] * Ce[1]), -sa / (Re[1] * Ce[1]) - sa / (Re[2] * Ce[1]), 10 / (Re[2] * Ce[1]), 5 / (Re[2] * Ce[1]),
           np.sqrt(10 ** 2 + 5 ** 2) / (Re[2] * Ce[1]), 2 / (Re[2] * Ce[1]), 0, 0, 0, 2 / (Re[2] * Ce[1]),
           14 / (Re[2] * Ce[1])],  # ex2
-         [0, 10 / (Re[2] * 1e3), -10 / (Re[2] * 1e3) - 10 / (Rint * 1e3), 5 / (Rint * 1e3), 5 / (Rint * 1e3), 0, 0, 0,
+         [0, 10 / (Re[2] * Crm[0]), -10 / (Re[2] * Crm[0]) - 10 / (Rint * Crm[0]), 5 / (Rint * Crm[0]), 5 / (Rint * Crm[0]), 0, 0, 0,
           0, 0, 0],  # rm1
-         [0, 5 / (Re[2] * 2e3), 5 / (Rint * 2e3), -5 / (Re[2] * 2e3) - 15 / (Rint * 2e3), 5 / (Rint * 2e3), 0, 0,
-          1 / (Rint * 2e3), 2 / (Rint * 2e3), 2 / (Rint * 2e3), 0],  # rm2
-         [0, np.sqrt(10 ** 2 + 5 ** 2) / (Re[2] * 3e3), 5 / (Rint * 3e3), 5 / (Rint * 3e3),
-          -np.sqrt(10 ** 2 + 5 ** 2) / (Re[2] * 3e3) - 15 / (Rint * 3e3), 2 / (Rint * 3e3), 2 / (Rint * 3e3),
-          1 / (Rint * 3e3), 0, 0, 0],  # rm3
-         [0, 2 / (Re[2] * 4e3), 0, 0, 2 / (Rint * 4e3), -2 / (Re[2] * 4e3) - 6 / (Rint * 4e3), 2 / (Rint * 4e3), 0, 0,
-          0, 2 / (Rint * 4e3)],  # rm4
-         [0, 0, 0, 0, 2 / (Rint * 5e3), 2 / (Rint * 5e3), -8 / (Rint * 5e3), 2 / (Rint * 5e3), 0, 0, 2 / (Rint * 5e3)],
+         [0, 5 / (Re[2] * Crm[1]), 5 / (Rint * Crm[1]), -5 / (Re[2] * Crm[1]) - 15 / (Rint * Crm[1]), 5 / (Rint * Crm[1]), 0, 0,
+          1 / (Rint * Crm[1]), 2 / (Rint * Crm[1]), 2 / (Rint * Crm[1]), 0],  # rm2
+         [0, np.sqrt(10 ** 2 + 5 ** 2) / (Re[2] * Crm[2]), 5 / (Rint * Crm[2]), 5 / (Rint * Crm[2]),
+          -np.sqrt(10 ** 2 + 5 ** 2) / (Re[2] * Crm[2]) - 15 / (Rint * Crm[2]), 2 / (Rint * Crm[2]), 2 / (Rint * Crm[2]),
+          1 / (Rint * Crm[2]), 0, 0, 0],  # rm3
+         [0, 2 / (Re[2] * Crm[3]), 0, 0, 2 / (Rint * Crm[3]), -2 / (Re[2] * Crm[3]) - 6 / (Rint * Crm[3]), 2 / (Rint * Crm[3]), 0, 0,
+          0, 2 / (Rint * Crm[3])],  # rm4
+         [0, 0, 0, 0, 2 / (Rint * Crm[4]), 2 / (Rint * Crm[4]), -8 / (Rint * Crm[4]), 2 / (Rint * Crm[4]), 0, 0, 2 / (Rint * Crm[4])],
          # rm5
-         [0, 0, 0, 1 / (Rint * 6e3), 1 / (Rint * 6e3), 0, 2 / (Rint * 6e3), -8 / (Rint * 6e3), 2 / (Rint * 6e3), 0,
-          2 / (Rint * 6e3)],  # rm6
-         [0, 0, 0, 2 / (Rint * 7e3), 0, 0, 0, 2 / (Rint * 7e3), -8 / (Rint * 7e3), 2 / (Rint * 7e3), 2 / (Rint * 7e3)],
+         [0, 0, 0, 1 / (Rint * Crm[5]), 1 / (Rint * Crm[5]), 0, 2 / (Rint * Crm[5]), -8 / (Rint * Crm[5]), 2 / (Rint * Crm[5]), 0,
+          2 / (Rint * Crm[5])],  # rm6
+         [0, 0, 0, 2 / (Rint * Crm[6]), 0, 0, 0, 2 / (Rint * Crm[6]), -8 / (Rint * Crm[6]), 2 / (Rint * Crm[6]), 2 / (Rint * Crm[6])],
          # rm7
-         [0, 2 / (Re[2] * 8e3), 0, 2 / (Rint * 8e3), 0, 0, 0, 0, 2 / (Rint * 8e3),
-          -2 / (Re[2] * 8e3) - 6 / (Rint * 8e3), 2 / (Rint * 8e3)],  # rm8
-         [0, 14 / (Re[2] * 9e3), 0, 0, 0, 2 / (Rint * 9e3), 2 / (Rint * 9e3), 2 / (Rint * 9e3), 2 / (Rint * 9e3),
-          2 / (Rint * 9e3), -14 / (Re[2] * 9e3) - 10 / (Rint * 9e3)]]  # rm9
+         [0, 2 / (Re[2] * Crm[7]), 0, 2 / (Rint * Crm[7]), 0, 0, 0, 0, 2 / (Rint * Crm[7]),
+          -2 / (Re[2] * Crm[7]) - 6 / (Rint * Crm[7]), 2 / (Rint * Crm[7])],  # rm8
+         [0, 14 / (Re[2] * Crm[8]), 0, 0, 0, 2 / (Rint * Crm[8]), 2 / (Rint * Crm[8]), 2 / (Rint * Crm[8]), 2 / (Rint * Crm[8]),
+          2 / (Rint * Crm[8]), -14 / (Re[2] * Crm[8]) - 10 / (Rint * Crm[8])]]  # rm9
 
     A = torch.tensor(A, dtype=torch.float32)
 
-    assert torch.equal(rounded(A), rounded(b.make_system_matrix()))
+    assert torch.equal(rounded(A), rounded(building_n9.make_system_matrix()))
 
 
 @pytest.mark.parametrize(
