@@ -10,11 +10,11 @@ class Room:
     Coordinates must be entered in a clockwise or anti-clockwise order.
     """
 
-    def __init__(self, name: str, capacitance: float, coordinates):
+    def __init__(self, name, coordinates):
 
         self.name = name
-        self.capacitance = capacitance
         self.coordinates = torch.tensor(coordinates)
+        self.capacitance = 0  # Dummy Value, is changed during optimisation process.
 
         self.hull = ConvexHull(coordinates)
         self.area = self.hull.area
