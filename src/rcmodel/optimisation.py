@@ -12,12 +12,14 @@ def train(model, dataloader, optimizer):
     """
     model.reset_iv()  # Reset initial value
     model.train()
+
+    # if policy exists:
     if model.cooling_policy:
         model.cooling_policy.eval()
 
-    # Stops Autograd endlessly keeping track of the graph. Memory Leak!
-    for layer in model.cooling_policy.parameters():
-        layer.requires_grad = False
+        # Stops Autograd endlessly keeping track of the graph. Memory Leak!
+        for layer in model.cooling_policy.parameters():
+            layer.requires_grad = False
 
     num_cols = len(model.building.rooms)  # number of columns to use from data.
     num_batches = len(dataloader)
