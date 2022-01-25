@@ -230,7 +230,7 @@ if __name__ == '__main__':
         rm_CA = [100, 1e4]  # [min, max] Capacitance/area
         ex_C = [1e3, 1e8]  # Capacitance
         R = [0.1, 5]  # Resistance ((K.m^2)/W)
-        Q_limit = [-10000, 10000]  # Cooling limit in W and gain limit in W/m2
+        Q_limit = [-500, 500]  # Cooling limit in W and gain limit in W/m2
         scaling = InputScaling(rm_CA, ex_C, R, Q_limit)
         weather_data_path = '/Users/benfourcin/OneDrive - University of Exeter/PhD/LSI/Data/Met Office Weather Files/JuneSept.csv'
         csv_path = '/Users/benfourcin/OneDrive - University of Exeter/PhD/LSI/Data/DummyData/test2d_sorted.csv'
@@ -260,7 +260,7 @@ if __name__ == '__main__':
         rm_CA = [100, 1e4]  # [min, max] Capacitance/area
         ex_C = [1e3, 1e8]  # Capacitance
         R = [0.1, 5]  # Resistance ((K.m^2)/W)
-        Q_limit = [-10000, 10000]  # Cooling limit in W and gain limit in W/m2
+        Q_limit = [-500, 500]  # Cooling limit in W and gain limit in W/m2
         scaling = InputScaling(rm_CA, ex_C, R, Q_limit)
         weather_data_path = '/Users/benfourcin/OneDrive - University of Exeter/PhD/LSI/Data/Met Office Weather Files/JuneSept.csv'
         csv_path = '/Users/benfourcin/OneDrive - University of Exeter/PhD/LSI/Data/DummyData/test2d_sorted.csv'

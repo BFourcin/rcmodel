@@ -211,7 +211,7 @@ class Building:
         for i in rm_wls:
             occurrences = torch.count_nonzero(torch.tensor(rm_wls) == i)
 
-            # Occurance of 1 means the wall is only seen in a single room meaning it must be an external wall.
+            # Occurrence of 1 means the wall is only seen in a single room meaning it must be an external wall.
             if occurrences == 1:
                 Walls[i].is_external = True
                 Walls[i].resistance = self.Re[2]  # Change resistance of wall
@@ -289,7 +289,6 @@ class Building:
             if resistance != -1:
                 self.Walls[wl_indx].resistance = resistance
 
-
         except:
             print("Could not find the wall")
 
@@ -343,7 +342,7 @@ class Building:
         theta = [room capacitance, external capacitance, external resistance, each wall resistance, gain]
 
 
-        returns Q_avg: The mean W/m^2 for the building
+        returns A: The updated System Matrix
         """
 
         rm_cap, ex_cap, ex_r, wl_r, gain = self.categorise_theta(theta)
@@ -366,7 +365,6 @@ class Building:
                 self.Walls[i].resistance = ex_r[2]
             else:
                 self.Walls[i].resistance = wl_r
-
 
         # update gain
         self.gain = gain
@@ -391,18 +389,31 @@ class Building:
         return n_params
 
     # Heating:
-    def proportional_heating(self, Q_avg):
+    def proportional_heating(self, Q_area):
         """
-        Input: Q_avg (W/m^2)
-        Calc: Q_avg * rm_area
+        Input: Q_area (W/m^2)
+        Calc: Q_area * rm_area
         Outputs: Q (Watts)
         """
 
-        Q = torch.zeros(len(self.rooms))
+        Q_watts = torch.zeros(len(self.rooms))
         for i in range(len(self.rooms)):
-            Q[i] = Q_avg * self.rooms[i].area
+            Q_watts[i] = Q_area[i] * self.rooms[i].area
 
-        return Q
+        return Q_watts
+
+    def inverse_proportional_heating(self, Q_watts):
+        """
+        Input: Q (Watts)
+        Calc: Q / rm_area
+        Outputs: Q_area (W/m^2)
+        """
+
+        Q_area = torch.zeros(len(self.rooms))
+        for i in range(len(self.rooms)):
+            Q_area[i] = Q_watts[i] / self.rooms[i].area
+
+        return Q_area
 
     def time_angle(self, circ):
         """outputs angle from x axis to point on circle. Used to represent time in a day"""

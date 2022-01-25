@@ -16,13 +16,13 @@ class InputScaling(Building):
     Initialise with:
     InputScaling(rm_CA ex_C, R, Q_limit)
     or
-    InputScaling(input_range=input_range)
+    InputScaling(input_range=[rm_CA, ex_C, R, Q_limit])
     """
 
     def __init__(self, rm_CA=None, ex_C=None, R=None, Q_limit=None, input_range=None):
 
         if input_range is None:
-            input_range = [rm_CA, ex_C, R, Q_limit]
+            input_range = [rm_CA, ex_C, R, Q_limit]  # Q_limit is in W/m2
 
             # check for None
             if None in input_range:
@@ -32,7 +32,7 @@ class InputScaling(Building):
 
     def physical_param_scaling(self, theta_scaled):
         """
-        Scale from 0-1 back to normal.
+        Scale from 0-1 back to physical value.
         """
 
         rm_cap, ex_cap, ex_r, wl_r, gain = self.categorise_theta(theta_scaled)
@@ -75,14 +75,20 @@ class InputScaling(Building):
         return theta_scaled
 
     def physical_cooling_scaling(self, Q):
+        """
+        Scale from 0-1 back to physical value in W/m2
+        """
 
-        Q_watts = self.unminmaxscale(Q, [0, self.input_range[3].max()])
+        Q_area = self.unminmaxscale(Q, [0, self.input_range[3].max()])
 
-        return Q_watts
+        return Q_area
 
-    def model_cooling_scaling(self, Q_watts):
+    def model_cooling_scaling(self, Q_area):
+        """
+        Scale to 0-1.
+        """
 
-        Q = self.minmaxscale(Q_watts, [0, self.input_range[3].max()])
+        Q = self.minmaxscale(Q_area, [0, self.input_range[3].max()])
 
         return Q
 
@@ -234,15 +240,18 @@ def pltsolution_1rm(model, dataloader, filename=None):
         Q_tdays = record_action[:, 0] / (24 * 60 ** 2)  # Time in days
         Q_on_off = record_action[:, 1:]  # Cooling actions
 
-        Q_avg = model.transform(model.cooling)
-        Q_avg = model.scaling.physical_cooling_scaling(Q_avg)
+        Q_area = model.transform(model.cooling)
+        Q_area = model.scaling.physical_cooling_scaling(Q_area)
+        Q_watts = model.building.proportional_heating(Q_area)  # convert from W/m2 to W
 
-        Q = Q_on_off * -Q_avg.unsqueeze(1)  # Q is timeseries of Watts for each room.
+        Q = Q_on_off * -Q_watts.unsqueeze(1)  # Q is timeseries of Watts for each room.
+
     else:
         Q_tdays = t_days
         Q = torch.zeros(len(Q_tdays))
 
     gain = model.scaling.physical_param_scaling(model.transform(model.params))[7]
+    gain_watts = gain * model.building.rooms[0].area
 
     # Compute and print loss.
     # loss_fn = torch.nn.MSELoss()
@@ -264,9 +273,9 @@ def pltsolution_1rm(model, dataloader, filename=None):
     ln2 = axs.plot(t_days.detach().numpy(), data_temp[:, 0].detach().numpy(), label='data ($^\circ$C)')
     ln3 = axs.plot(t_days.detach().numpy(), model.Tout_continuous(time).detach().numpy(), label='outside ($^\circ$C)')
     ln4 = ax2.plot(Q_tdays.detach().numpy(), Q.detach().numpy(), '--', color='black', alpha=0.5, label='heat ($W$)')
-    ln5 = ax2.axhline(gain.detach().numpy(), linestyle='-.', color='black', label='gain ($W/m^2$)')
+    ln5 = ax2.axhline(gain_watts.detach().numpy(), linestyle='-.', color='black', alpha=0.5, label='gain ($W$)')
     axs.set_title(model.building.rooms[0].name)
-    ax2.set_ylabel(r"Heating/Cooling ($W/m^2$)")
+    ax2.set_ylabel(r"Heating/Cooling ($W$)")
     # ax2.set_ylim(-ax2ylim, ax2ylim)
 
     lns = ln1 + ln2 + ln3 + ln4 + [ln5]  # for some reason ln5 isn't auto put into a list
