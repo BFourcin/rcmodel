@@ -6,7 +6,7 @@ from pathlib import Path
 from tqdm.auto import tqdm, trange
 
 from rcmodel import *
-from main import initialise_model, RayActor
+from main import initialise_model
 
 # Laptop
 weather_data_path = '/Users/benfourcin/OneDrive - University of Exeter/PhD/LSI/Data/Met Office Weather Files/JuneSept.csv'
@@ -56,7 +56,8 @@ def init_scaling():
     rm_CA = [100, 1e4]  # [min, max] Capacitance/area
     ex_C = [1e3, 1e8]  # Capacitance
     R = [0.1, 5]  # Resistance ((K.m^2)/W)
-    scaling = InputScaling(rm_CA, ex_C, R)
+    Q_limit = [-10000, 10000]
+    scaling = InputScaling(rm_CA, ex_C, R, Q_limit)
     return scaling
 
 
@@ -104,8 +105,8 @@ tol_phys = 0.01  # 1%
 tol_policy = 0.02  # 2%
 window_len = 10.  # Length of convergence look-back window.
 
-cycles = 50
-max_epochs = 200
+cycles = 40
+max_epochs = 150
 
 plt.ioff()  # Reduces memory usage by matplotlib
 for cycle in trange(cycles):

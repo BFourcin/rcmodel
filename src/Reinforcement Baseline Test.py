@@ -14,7 +14,7 @@ from torch import Tensor
 from tqdm.auto import tqdm, trange
 
 from rcmodel import *
-from main import initialise_model, RayActor
+from main import initialise_model
 
 
 # In[2]:
@@ -126,7 +126,8 @@ def init_scaling():
     rm_CA = [100, 1e4]  # [min, max] Capacitance/area
     ex_C = [1e3, 1e8]  # Capacitance
     R = [0.1, 5]  # Resistance ((K.m^2)/W)
-    scaling = InputScaling(rm_CA, ex_C, R)
+    Q_limit = [-10000, 10000]
+    scaling = InputScaling(rm_CA, ex_C, R, Q_limit)
     return scaling
 
 

@@ -12,7 +12,8 @@ def train(model, dataloader, optimizer):
     """
     model.reset_iv()  # Reset initial value
     model.train()
-    model.cooling_policy.eval()
+    if model.cooling_policy:
+        model.cooling_policy.eval()
 
     # Stops Autograd endlessly keeping track of the graph. Memory Leak!
     for layer in model.cooling_policy.parameters():
