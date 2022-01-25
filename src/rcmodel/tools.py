@@ -269,7 +269,7 @@ def pltsolution_1rm(model, dataloader, filename=None):
     ax2.set_ylabel(r"Heating/Cooling ($W/m^2$)")
     # ax2.set_ylim(-ax2ylim, ax2ylim)
 
-    lns = ln1 + ln2 + ln3 + ln4 + ln5
+    lns = ln1 + ln2 + ln3 + ln4 + [ln5]  # for some reason ln5 isn't auto put into a list
     labs = [l.get_label() for l in lns]
     axs.legend(lns, labs, loc=0)
 
