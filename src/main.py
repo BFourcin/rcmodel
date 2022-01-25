@@ -246,7 +246,8 @@ if __name__ == '__main__':
 
         ray.shutdown()
 
-        params_heading = ['Rm Cap/m2 (J/K.m2)', 'Ext Wl Cap 1 (J/K)', 'Ext Wl Cap 2 (J/K)', 'Ext Wl Res 1 (K.m2/W)', 'Ext Wl Res 2 (K.m2/W)', 'Ext Wl Res 3 (K.m2/W)', 'Int Wl Res (K.m2/W)']
+        params_heading = ['Rm Cap/m2 (J/K.m2)', 'Ext Wl Cap 1 (J/K)', 'Ext Wl Cap 2 (J/K)', 'Ext Wl Res 1 (K.m2/W)',
+                          'Ext Wl Res 2 (K.m2/W)', 'Ext Wl Res 3 (K.m2/W)', 'Int Wl Res (K.m2/W)', 'Offset Gain (W/m2)']
         cooling_heading = ['Cooling (W)']
         headings = [['Run Number'], params_heading, cooling_heading, ['Final Average Train Loss', 'Final Avg Test Loss']]
         flat_list = [item for sublist in headings for item in sublist]
