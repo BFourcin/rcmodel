@@ -264,7 +264,7 @@ def pltsolution_1rm(model, dataloader, filename=None):
     ln2 = axs.plot(t_days.detach().numpy(), data_temp[:, 0].detach().numpy(), label='data ($^\circ$C)')
     ln3 = axs.plot(t_days.detach().numpy(), model.Tout_continuous(time).detach().numpy(), label='outside ($^\circ$C)')
     ln4 = ax2.plot(Q_tdays.detach().numpy(), Q.detach().numpy(), '--', color='black', alpha=0.5, label='heat ($W$)')
-    ln5 = ax2.axhline(gain, linestyle='-.', color='grey', label='gain ($W/m^2$)')
+    ln5 = ax2.axhline(gain.detach().numpy(), linestyle='-.', color='grey', label='gain ($W/m^2$)')
     axs.set_title(model.building.rooms[0].name)
     ax2.set_ylabel(r"Heating/Cooling ($W/m^2$)")
     # ax2.set_ylim(-ax2ylim, ax2ylim)
