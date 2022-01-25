@@ -121,14 +121,14 @@ class RCModel(nn.Module):
         else:  # No cooling
             action = 0
 
-        Q = -self.heat * action
-
-        # Q + gain
-        Q = Q + self.building.proportional_heating(self.building.gain)
+        # Get energy input at timestep:
+        Q_area = -self.heat * action  # W/m2
+        Q_area = Q_area + self.building.gain  # add the constant gain term
+        Q_watts = self.building.proportional_heating(Q_area)
 
         Tout = self.Tout_continuous(t.item() + self.t0)
 
-        u = self.building.input_vector(Tout, Q)
+        u = self.building.input_vector(Tout, Q_watts)
 
         return self.A @ x + self.B @ u
 
