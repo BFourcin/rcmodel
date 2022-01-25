@@ -266,7 +266,8 @@ if __name__ == '__main__':
 
         actor = RayActor(scaling, weather_data_path, csv_path)
 
-        results = actor.worker(0, 5)
+        epochs = 20
+        results = actor.worker(0, epochs)
 
         params_heading = ['Rm Cap/m2 (J/K.m2)', 'Ext Wl Cap 1 (J/K)', 'Ext Wl Cap 2 (J/K)', 'Ext Wl Res 1 (K.m2/W)',
                           'Ext Wl Res 2 (K.m2/W)', 'Ext Wl Res 3 (K.m2/W)', 'Int Wl Res (K.m2/W)', 'Offset Gain (W/m2)']
