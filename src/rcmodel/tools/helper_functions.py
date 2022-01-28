@@ -43,14 +43,14 @@ def initialise_model(pi, scaling, weather_data_path):
     return model
 
 
-def initialise_prior(scaling, weather_data_path):
-
-    # policy = PolicyNetwork(7,2)
-    prior = PriorCoolingPolicy()
-
-    model = initialise_model(prior, scaling, weather_data_path)
-
-    dt = 30
-    sample_size = 24 * 60 ** 2 / dt
-
-    op = OptimiseRC(model, csv_path, sample_size, dt, lr=1e-3, opt_id=opt_id)
+# def initialise_prior(scaling, weather_data_path):
+#
+#     # policy = PolicyNetwork(7,2)
+#     prior = PriorCoolingPolicy()
+#
+#     model = initialise_model(prior, scaling, weather_data_path)
+#
+#     dt = 30
+#     sample_size = 24 * 60 ** 2 / dt
+#
+#     op = OptimiseRC(model, csv_path, sample_size, dt, lr=1e-3, opt_id=opt_id)
