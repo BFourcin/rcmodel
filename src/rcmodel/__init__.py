@@ -10,6 +10,9 @@ from .room import Room
 from .building import Building
 from .tools import InputScaling
 from .tools import pltsolution_1rm
+from .tools import BuildingTemperatureDataset
+from .tools import PriorCoolingPolicy
+from .tools import initialise_model
 from .RCModel import RCModel
 from .optimisation import OptimiseRC
 from .reinforce import PolicyNetwork

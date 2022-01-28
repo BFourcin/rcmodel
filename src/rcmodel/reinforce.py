@@ -18,8 +18,12 @@ from rcmodel.tools import BuildingTemperatureDataset
 
 
 class PolicyNetwork(nn.Module):
-    def __init__(self, in_dim, out_dim):
+    def __init__(self, in_dim, out_dim, mu=23.359, std_dev=1.41):
         super().__init__()
+        # used to normalise temperature from the model, obtain values from data:
+        self.mu = mu
+        self.std_dev = std_dev
+
         n = 10
         self.flatten = nn.Flatten()
         self.linear_relu_stack = nn.Sequential(
@@ -37,12 +41,43 @@ class PolicyNetwork(nn.Module):
 
         return logits
 
-    def get_action(self, state):
+    def get_action(self, x, unix_time):
+
+        state = self.inputs_to_state(x, unix_time)
+
         pd = torch.distributions.categorical.Categorical(logits=self.forward(state))  # make a probability distribution
 
         action = pd.sample()  # sample from distribution pi(a|s) (action given state)
 
         return action, pd.log_prob(action)
+
+    def inputs_to_state(self, x, unix_time):
+        """
+        Convenience function to transform raw input from model into the NN state.
+
+        x: torch.tensor,
+            Tensor of temperatures from the model.
+
+        unix_time: float,
+            Unix epoch time in seconds.
+        """
+
+        # normalise x using info obtained from data.
+        x_norm = (x - self.mu) / self.std_dev
+        x_norm = torch.reshape(x_norm, (-1,))
+
+        day = 24 * 60 ** 2
+        week = 7 * day
+        # year = (365.2425) * day
+
+        time_signals = [np.sin(unix_time * (2 * np.pi / day)),
+                        np.cos(unix_time * (2 * np.pi / day)),
+                        np.sin(unix_time * (2 * np.pi / week)),
+                        np.cos(unix_time * (2 * np.pi / week))
+                        ]
+        state = torch.cat((x_norm, torch.tensor(time_signals, dtype=torch.float32)))
+
+        return state
 
     def on_policy_reset(self):
         # this stores log_probs during an integration step.
@@ -196,7 +231,9 @@ class LSIEnv(gym.Env):
 
         return
 
+
 if __name__ == '__main__':
+
     from main import initialise_model
 
     path_sorted = '/Users/benfourcin/OneDrive - University of Exeter/PhD/LSI/Data/210813data_sorted.csv'
