@@ -174,7 +174,7 @@ if __name__ == '__main__':
         df = pd.DataFrame(np.array(results), columns=flat_list)
     else:
         df = pd.DataFrame([np.array(results)], columns=flat_list)
-    
+
     df.to_csv('./outputs/results.csv', index=False, )
 
 
