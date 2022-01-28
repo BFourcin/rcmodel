@@ -36,6 +36,9 @@ class RCModel(nn.Module):
         self.ode_t = None  # Keeps track of t during integration. None is just to initialise attribute
         self.record_action = None  # records Q and t during integration
         self.heat = None  # Heat in Watts
+        self.t0 = None  # unix epoch start time in seconds
+        self.A = None  # System Matrix
+        self.B = None  # Input Matrix
 
         self.reset_iv()  # sets iv
 
@@ -91,27 +94,9 @@ class RCModel(nn.Module):
         dy/dx = Ax + Bu
         """
 
-        mu = 23.359
-        std_dev = 1.41
-
-        x_norm = (x - mu) / std_dev
-        x_norm = torch.reshape(x_norm, (-1,))
-
-        day = 24 * 60 ** 2
-        week = 7 * day
-        # year = (365.2425) * day
-
-        time_signals = [np.sin((t+self.t0) * (2 * np.pi / day)),
-                        np.cos((t+self.t0) * (2 * np.pi / day)),
-                        np.sin((t+self.t0) * (2 * np.pi / week)),
-                        np.cos((t+self.t0) * (2 * np.pi / week))
-                        ]
-
-        state_cool = torch.cat((x_norm, torch.tensor(time_signals, dtype=torch.float32)))
-
         # get cooling action if policy is not None and 15 minutes has passed since last action
         if self.cooling_policy and t - self.ode_t >= 60*15:
-            action, log_prob = self.cooling_policy.get_action(state_cool)
+            action, log_prob = self.cooling_policy.get_action(x, t + self.t0)
             self.ode_t = t
             self.record_action.append([t, action])  # This is just used for plotting the cooling after.
 
