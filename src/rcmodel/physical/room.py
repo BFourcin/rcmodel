@@ -4,6 +4,7 @@ import matplotlib.path as mpltPath
 from scipy.spatial import ConvexHull
 import torch
 
+
 class Room:
     """
     A room in a building (2D).

@@ -2,6 +2,7 @@ from torch.utils.data import Dataset
 import torch
 import pandas as pd
 
+
 class BuildingTemperatureDataset(Dataset):
     """
     Splits dataset up into batches of len(dataset) // sample_size. Note remainder of data is thrown away.

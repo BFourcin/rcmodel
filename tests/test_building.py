@@ -2,7 +2,7 @@ import pytest
 import torch
 import numpy as np
 
-from rcmodel.building import Building
+from rcmodel import Building
 
 
 def rounded(x):
