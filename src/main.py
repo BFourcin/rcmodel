@@ -9,11 +9,6 @@ from xitorch.interpolate import Interp1D
 from pathlib import Path
 
 from rcmodel import *
-from rcmodel.optimisation import dataset_creator
-
-from rcmodel.reinforce import PolicyNetwork
-from rcmodel.reinforce import Reinforce
-from rcmodel.reinforce import LSIEnv
 
 
 class RayActor:
@@ -49,7 +44,7 @@ class RayActor:
         avg_train_loss_plot = []
         avg_test_loss_plot = []
 
-        plot_results_data = tools.BuildingTemperatureDataset(self.csv_path, 5 * sample_size, all=True)
+        plot_results_data = BuildingTemperatureDataset(self.csv_path, 5 * sample_size, all=True)
         plot_dataloader = torch.utils.data.DataLoader(plot_results_data, batch_size=1, shuffle=False)
 
         # check if dir exists and make if needed
@@ -143,9 +138,14 @@ if __name__ == '__main__':
     Q_limit = [-100, 100]  # Cooling limit and gain limit in W/m2
     scaling = InputScaling(rm_CA, ex_C, R, Q_limit)
 
+    # Laptop:
     weather_data_path = '/Users/benfourcin/OneDrive - University of Exeter/PhD/LSI/Data/Met Office Weather ' \
                         'Files/JuneSept.csv'
     csv_path = '/Users/benfourcin/OneDrive - University of Exeter/PhD/LSI/Data/DummyData/test2d_sorted.csv'
+
+    # Hydra:
+    # weather_data_path = '/home/benf/LSI/Data/Met Office Weather Files/JuneSept.csv'
+    # csv_path = '/home/benf/LSI/Data/DummyData/train5d_sorted.csv'
 
     prior = PriorCoolingPolicy()
     model = initialise_model(prior, scaling, weather_data_path)

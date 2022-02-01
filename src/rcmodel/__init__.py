@@ -1,21 +1,24 @@
-from . import room
-from . import building
-from . import tools
-from . import RCModel
 from . import optimisation
-from . import reinforce
+from . import physical
+from . import tools
+from . import rc_model
 
 
-from .room import Room
-from .building import Building
+from .optimisation import OptimiseRC
+from .optimisation import Reinforce
+from .optimisation import PolicyNetwork
+from .optimisation import LSIEnv
+from .physical import Building
+from .physical import Room
 from .tools import InputScaling
 from .tools import pltsolution_1rm
 from .tools import BuildingTemperatureDataset
 from .tools import PriorCoolingPolicy
 from .tools import initialise_model
-from .RCModel import RCModel
-from .optimisation import OptimiseRC
-from .reinforce import PolicyNetwork
-from .reinforce import Reinforce
-from .reinforce import LSIEnv
+from .rc_model import RCModel
 
+
+__all__ = ["RCModel"]
+__all__.extend(optimisation.__all__)
+__all__.extend(physical.__all__)
+__all__.extend(tools.__all__)

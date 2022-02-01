@@ -1,7 +1,7 @@
 import pytest
 
-from rcmodel.building import Building
-from rcmodel.room import Room
+from rcmodel import Building
+from rcmodel import Room
 
 
 @pytest.fixture

@@ -3,10 +3,10 @@ import torch
 import tempfile
 import numpy as np
 
-from rcmodel.building import Building
-from rcmodel.RCModel import RCModel
-from rcmodel.tools import InputScaling
-from rcmodel.optimisation import OptimiseRC
+from rcmodel import Building
+from rcmodel import RCModel
+from rcmodel import InputScaling
+from rcmodel import OptimiseRC
 
 
 # Function for constant outside temperature. try/except allows for broadcasting of value.

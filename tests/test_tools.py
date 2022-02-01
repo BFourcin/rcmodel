@@ -1,7 +1,7 @@
 import pytest
 import torch
 
-from rcmodel.tools import InputScaling
+from rcmodel import InputScaling
 
 
 @pytest.fixture

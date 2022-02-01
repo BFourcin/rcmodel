@@ -10,12 +10,6 @@ from xitorch.interpolate import Interp1D
 from tqdm.auto import tqdm, trange
 import time
 
-from rcmodel.room import Room
-from rcmodel.building import Building
-from rcmodel.RCModel import RCModel
-from rcmodel.tools import InputScaling
-from rcmodel.tools import BuildingTemperatureDataset
-
 
 class PolicyNetwork(nn.Module):
     def __init__(self, in_dim, out_dim, mu=23.359, std_dev=1.41):
@@ -86,14 +80,12 @@ class PolicyNetwork(nn.Module):
 
 
 class Reinforce:
-    def __init__(self, env, time_data, temp_data, gamma=0.99, alpha=1e-3):
+    def __init__(self, env, gamma=0.99, alpha=1e-3):
 
         assert len(time_data) == len(temp_data)
 
         self.env = env
         # self.pi = pi
-        self.time_data = time_data
-        self.temp_data = temp_data
         self.gamma = gamma
         self.alpha = alpha
 
@@ -150,12 +142,7 @@ class Reinforce:
             # Time is increased in steps, with the policy updating after every step.
             while self.env.t_index < len(self.env.time_data) - 1:
                 # takes a step_size forward in time
-                pred = self.env.step(step_size).squeeze(-1)  # state and action produced in step
-
-                actual = self.temp_data[self.env.t_index:int(self.env.t_index + step_size), 0:self.env.n_rooms]
-
-                # negative so reward can be maximised
-                reward = -loss_fn(pred[:, 2:], actual)
+                pred, reward = self.env.step(step_size).squeeze(-1)  # state and action produced in step
 
                 # Do gradient decent on sample
                 ER = self.update_policy(reward, self.env.RC.cooling_policy.log_probs)
@@ -182,11 +169,12 @@ class LSIEnv(gym.Env):
     """Custom Environment that follows gym interface"""
     metadata = {'render.modes': ['human']}
 
-    def __init__(self, RC, time_data):
+    def __init__(self, RC, time_data, temp_data):
         super().__init__()
 
         self.RC = RC  # RCModel Class
         self.time_data = time_data  # timeseries
+        self.temp_data = temp_data
         self.t_index = 0  # used to keep track of index through timeseries
 
         # ----- GYM Stuff -----
@@ -214,8 +202,12 @@ class LSIEnv(gym.Env):
         # actions are decided and stored by the policy while integrating the ODE:
         pred = self.RC(t_eval)
 
-        return pred.detach()  # No need for grad
+        actual = self.temp_data[self.t_index:int(self.t_index + step_size), 0:self.n_rooms]
 
+        # negative so reward can be maximised
+        reward = -torch.nn.MSELoss(pred[:, 2:], actual, reduction='none')  # Squared Error
+
+        return pred.detach(), reward  # No need for grad on pred
     #          (observation, reward, done, info)
     # self.state, reward, done, {}
 
@@ -232,49 +224,119 @@ class LSIEnv(gym.Env):
         return
 
 
+class PriorEnv(gym.Env):
+    """Custom Environment that follows gym interface"""
+    metadata = {'render.modes': ['human']}
+
+    def __init__(self, RC, time_data, temp_data):
+        super().__init__()
+
+        self.RC = RC  # RCModel Class
+        self.time_data = time_data  # timeseries
+        self.temp_data = temp_data
+        self.t_index = 0  # used to keep track of index through timeseries
+
+        # ----- GYM Stuff -----
+        self.n_rooms = len(self.RC.building.rooms)
+        self.low_state = -10
+        self.high_state = 50
+        # Define action and observation space
+        # They must be gym.spaces objects
+        # Example when using discrete actions:
+        self.action_space = spaces.Discrete(2, )
+
+        # Observation is temperature of each room.
+        self.observation_space = spaces.Box(
+            low=self.low_state,
+            high=self.high_state,
+            shape=(self.n_rooms,),
+            dtype=np.float32
+        )
+
+    #                  action
+    def step(self, step_size):
+        # Execute a chunk of timeseries
+        t_eval = self.time_data[self.t_index:int(self.t_index + step_size)]
+
+        # actions are decided and stored by the policy while integrating the ODE:
+        pred = self.RC(t_eval)
+
+        actual = self.temp_data[self.t_index:int(self.t_index + step_size), 0:self.n_rooms]
+
+        # negative so reward can be maximised
+        reward = -torch.nn.MSELoss(pred[:, 2:], actual, reduction='none')  # Squared Error
+
+        return pred.detach(), reward  # No need for grad on pred
+    #          (observation, reward, done, info)
+    # self.state, reward, done, {}
+
+    def reset(self):
+        # Reset the state of the environment to an initial state
+        self.t_index = 0
+        self.RC.reset_iv()
+
+        self.RC.cooling_policy.on_policy_reset()
+
+    def render(self, mode='human', close=False):
+        # Render the environment to the screen
+
+        return
+
+
+
+
+
 if __name__ == '__main__':
+    from rcmodel import tools
+    from tools import initialise_model
+    from tools import PriorCoolingPolicy
 
-    from main import initialise_model
+    # path_sorted = '/Users/benfourcin/OneDrive - University of Exeter/PhD/LSI/Data/210813data_sorted.csv'
+    # time_data = torch.tensor(pd.read_csv(path_sorted, skiprows=0).iloc[:, 1], dtype=torch.float64)
+    # temp_data = torch.tensor(pd.read_csv(path_sorted, skiprows=0).iloc[:, 2:].to_numpy(dtype=np.float32),
+    #                          dtype=torch.float32)
+    #
+    # ######
+    # path = '/Users/benfourcin/OneDrive - University of Exeter/PhD/LSI/Data/DummyData/'
+    # dt = 30  # timestep (seconds), data and the model are sampled at this frequency
+    # sample_size = int(5 * (60 ** 2 * 24) / dt)  # one day of data
+    #
+    # training_data = BuildingTemperatureDataset(path + 'train5d.csv', sample_size)
+    # train_dataloader = torch.utils.data.DataLoader(training_data, batch_size=1, shuffle=False)
+    # ######
+    #
+    # time_data = time_data[0:100]
+    # temp_data = temp_data[0:100, :]
+    #
+    # policy = PolicyNetwork(7, 2)
+    # RC = initialise_model(policy)
+    # env = LSIEnv(RC, time_data)
+    # reinforce = Reinforce(env, time_data, temp_data, alpha=1e-2)
+    #
+    # num_episodes = 10
+    # step_size = 24*60**2 / 30  # timesteps in 1 day
+    # start_time = time.time()
+    # plot_total_rewards, plot_ER = reinforce.train(num_episodes, step_size)
+    #
+    # print(f'fin, duration: {(time.time() - start_time) / 60:.1f} minutes')
+    #
+    # fig, axs = plt.subplots(1, 2, figsize=(10, 7),)
+    # axs[0].plot(torch.stack(plot_ER).detach().numpy(), label='expected rewards')
+    # axs[0].legend()
+    #
+    # axs[1].plot(torch.stack(plot_total_rewards).detach().numpy(), label='total rewards')
+    # axs[1].legend()
+    #
+    # plt.savefig('Rewards.png')
+    # plt.show()
 
-    path_sorted = '/Users/benfourcin/OneDrive - University of Exeter/PhD/LSI/Data/210813data_sorted.csv'
-    time_data = torch.tensor(pd.read_csv(path_sorted, skiprows=0).iloc[:, 1], dtype=torch.float64)
-    temp_data = torch.tensor(pd.read_csv(path_sorted, skiprows=0).iloc[:, 2:].to_numpy(dtype=np.float32),
-                             dtype=torch.float32)
 
-    ######
-    path = '/Users/benfourcin/OneDrive - University of Exeter/PhD/LSI/Data/DummyData/'
-    dt = 30  # timestep (seconds), data and the model are sampled at this frequency
-    sample_size = int(5 * (60 ** 2 * 24) / dt)  # one day of data
+    prior = PriorCoolingPolicy()
 
-    training_data = BuildingTemperatureDataset(path + 'train5d.csv', sample_size)
-    train_dataloader = torch.utils.data.DataLoader(training_data, batch_size=1, shuffle=False)
-    ######
+    x = [0,1,2]
+    unix_time = 0
 
 
+    out = prior.get_action(x, unix_time)
 
-
-    time_data = time_data[0:100]
-    temp_data = temp_data[0:100, :]
-
-    policy = PolicyNetwork(7, 2)
-    RC, Tout_continuous = initialise_model(policy)
-    env = LSIEnv(RC, time_data)
-    reinforce = Reinforce(env, time_data, temp_data, alpha=1e-2)
-
-    num_episodes = 10
-    step_size = 24*60**2 / 30  # timesteps in 1 day
-    start_time = time.time()
-    plot_total_rewards, plot_ER = reinforce.train(num_episodes, step_size)
-
-    print(f'fin, duration: {(time.time() - start_time) / 60:.1f} minutes')
-
-    fig, axs = plt.subplots(1, 2, figsize=(10, 7),)
-    axs[0].plot(torch.stack(plot_ER).detach().numpy(), label='expected rewards')
-    axs[0].legend()
-
-    axs[1].plot(torch.stack(plot_total_rewards).detach().numpy(), label='total rewards')
-    axs[1].legend()
-
-    plt.savefig('Rewards.png')
-    plt.show()
-
+    print(out)
