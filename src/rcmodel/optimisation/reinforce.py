@@ -39,11 +39,11 @@ class PolicyNetwork(nn.Module):
 
         state = self.inputs_to_state(x, unix_time)
 
-        pd = torch.distributions.categorical.Categorical(logits=self.forward(state))  # make a probability distribution
+        prob_dist = torch.distributions.categorical.Categorical(logits=self.forward(state))  # make a probability distribution
 
-        action = pd.sample()  # sample from distribution pi(a|s) (action given state)
+        action = prob_dist.sample()  # sample from distribution pi(a|s) (action given state)
 
-        return action, pd.log_prob(action)
+        return action, prob_dist.log_prob(action)
 
     def inputs_to_state(self, x, unix_time):
         """
@@ -58,18 +58,25 @@ class PolicyNetwork(nn.Module):
 
         # normalise x using info obtained from data.
         x_norm = (x - self.mu) / self.std_dev
-        x_norm = torch.reshape(x_norm, (-1,))
+        # x_norm = torch.reshape(x_norm, (1,))
 
         day = 24 * 60 ** 2
         week = 7 * day
         # year = (365.2425) * day
 
-        time_signals = [np.sin(unix_time * (2 * np.pi / day)),
-                        np.cos(unix_time * (2 * np.pi / day)),
-                        np.sin(unix_time * (2 * np.pi / week)),
-                        np.cos(unix_time * (2 * np.pi / week))
-                        ]
-        state = torch.cat((x_norm, torch.tensor(time_signals, dtype=torch.float32)))
+        time_signals = torch.stack([np.sin(unix_time * (2 * np.pi / day)),
+                                    np.cos(unix_time * (2 * np.pi / day)),
+                                    np.sin(unix_time * (2 * np.pi / week)),
+                                    np.cos(unix_time * (2 * np.pi / week))])
+
+        try:  # Adds broadcasting to function.
+            if len(unix_time) > 1:
+                time_signals = time_signals.T
+
+        except TypeError:  # Occurs when no len()
+            pass
+
+        state = torch.cat((x_norm, time_signals), dim=1)
 
         return state
 
@@ -92,6 +99,8 @@ class Reinforce:
         self.optimiser = torch.optim.Adam(self.env.RC.cooling_policy.parameters(), lr=self.alpha)
 
     def update_policy(self, rewards, log_probs):
+        log_probs = torch.stack(log_probs).squeeze()  # get into right format regardless of whether single or multiple states have been used
+
         # downsample rewards by averaging each window.
         rewards = torch.tensor([window.mean() for window in torch.tensor_split(rewards, len(log_probs))])
 
@@ -112,7 +121,7 @@ class Reinforce:
 
         # discounted_rewards = torch.tensor(np.array(discounted_rewards.detach().numpy()))
 
-        expected_reward = -torch.stack(log_probs) * discounted_rewards  # negative for maximising
+        expected_reward = -log_probs * discounted_rewards  # negative for maximising
         expected_reward = torch.sum(expected_reward)
         # print(f'ER {expected_reward}')
 
@@ -130,8 +139,6 @@ class Reinforce:
         total_ER = []
         total_rewards = []
 
-        loss_fn = torch.nn.MSELoss(reduction='none')  # Squared Error
-
         # with tqdm(total=len(self.env.time_data) * num_episodes, position=0, leave=False) as pbar:  # progress bar
         for episode in range(num_episodes):
             self.env.reset()
@@ -142,7 +149,7 @@ class Reinforce:
             # Time is increased in steps, with the policy updating after every step.
             while self.env.t_index < len(self.env.time_data) - 1:
                 # takes a step_size forward in time
-                pred, reward = self.env.step(step_size).squeeze(-1)  # state and action produced in step
+                pred, reward = self.env.step(step_size)  # state and action produced in step
 
                 # Do gradient decent on sample
                 ER = self.update_policy(reward, self.env.RC.cooling_policy.log_probs)
@@ -176,6 +183,7 @@ class LSIEnv(gym.Env):
         self.time_data = time_data  # timeseries
         self.temp_data = temp_data
         self.t_index = 0  # used to keep track of index through timeseries
+        self.loss_fn = torch.nn.MSELoss(reduction='none')
 
         # ----- GYM Stuff -----
         self.n_rooms = len(self.RC.building.rooms)
@@ -205,7 +213,7 @@ class LSIEnv(gym.Env):
         actual = self.temp_data[self.t_index:int(self.t_index + step_size), 0:self.n_rooms]
 
         # negative so reward can be maximised
-        reward = -torch.nn.MSELoss(pred[:, 2:], actual, reduction='none')  # Squared Error
+        reward = -self.loss_fn(pred[:, 2:], actual)  # Squared Error
 
         return pred.detach(), reward  # No need for grad on pred
     #          (observation, reward, done, info)
@@ -228,13 +236,24 @@ class PriorEnv(gym.Env):
     """Custom Environment that follows gym interface"""
     metadata = {'render.modes': ['human']}
 
-    def __init__(self, RC, time_data, temp_data):
+    def __init__(self, RC, time_data, temp_data, prior):
         super().__init__()
 
         self.RC = RC  # RCModel Class
         self.time_data = time_data  # timeseries
-        self.temp_data = temp_data
+        self.temp_data = temp_data  # temp at timeseries
+        self.prior = prior
         self.t_index = 0  # used to keep track of index through timeseries
+        self.loss_fn = torch.nn.MSELoss(reduction='none')
+
+        print('Getting actions from prior policy.')
+        prior_data = []
+        for i in range(len(temp_data)):
+            action, _ = prior.get_action(temp_data[i], time_data[i])
+            prior_data.append(action)
+
+        self.prior_data = torch.tensor(prior_data).unsqueeze(0).T  # Data can be reused each epoch.
+
 
         # ----- GYM Stuff -----
         self.n_rooms = len(self.RC.building.rooms)
@@ -257,16 +276,30 @@ class PriorEnv(gym.Env):
     def step(self, step_size):
         # Execute a chunk of timeseries
         t_eval = self.time_data[self.t_index:int(self.t_index + step_size)]
+        dummy_temp = self.temp_data[self.t_index:int(self.t_index + step_size)]
 
-        # actions are decided and stored by the policy while integrating the ODE:
-        pred = self.RC(t_eval)
+        policy_action, log_prob = self.RC.cooling_policy.get_action(dummy_temp, t_eval)  # Do them all with broadcasting
 
-        actual = self.temp_data[self.t_index:int(self.t_index + step_size), 0:self.n_rooms]
+        if self.RC.cooling_policy.training:  # if in training mode store log_prob
+            self.RC.cooling_policy.log_probs.append(log_prob)
+
+
+        # for i in range(len(dummy_temp)):
+        #     policy_action, log_prob = self.RC.cooling_policy.get_action(dummy_temp[i], t_eval[i])
+        #
+        #     if self.RC.cooling_policy.training:  # if in training mode store log_prob
+        #         self.RC.cooling_policy.log_probs.append(log_prob)
+        #
+        #     policy_actions.append(policy_action)
+
+        prior_actions = self.prior_data[self.t_index:int(self.t_index + step_size), 0:self.n_rooms]  # read in
+        policy_actions = torch.tensor(policy_action).unsqueeze(0).T
 
         # negative so reward can be maximised
-        reward = -torch.nn.MSELoss(pred[:, 2:], actual, reduction='none')  # Squared Error
+        reward = -self.loss_fn(policy_actions, prior_actions)  # Squared Error
 
-        return pred.detach(), reward  # No need for grad on pred
+        pred = torch.zeros((1,5))  # Fake pred to be compatible with Reinforce
+        return pred, reward  # No need for grad on pred
     #          (observation, reward, done, info)
     # self.state, reward, done, {}
 
@@ -287,56 +320,77 @@ class PriorEnv(gym.Env):
 
 
 if __name__ == '__main__':
-    from rcmodel import tools
-    from tools import initialise_model
-    from tools import PriorCoolingPolicy
+    # Remember to pip install latest package as following import uses compiled package not relative imports
+    from rcmodel import initialise_model, PriorCoolingPolicy, InputScaling
 
-    # path_sorted = '/Users/benfourcin/OneDrive - University of Exeter/PhD/LSI/Data/210813data_sorted.csv'
+    import matplotlib.pyplot as plt
+    from pathlib import Path
+
+    path_sorted = '/Users/benfourcin/OneDrive - University of Exeter/PhD/LSI/Data/210813data_sorted.csv'
     # time_data = torch.tensor(pd.read_csv(path_sorted, skiprows=0).iloc[:, 1], dtype=torch.float64)
     # temp_data = torch.tensor(pd.read_csv(path_sorted, skiprows=0).iloc[:, 2:].to_numpy(dtype=np.float32),
     #                          dtype=torch.float32)
-    #
-    # ######
-    # path = '/Users/benfourcin/OneDrive - University of Exeter/PhD/LSI/Data/DummyData/'
-    # dt = 30  # timestep (seconds), data and the model are sampled at this frequency
-    # sample_size = int(5 * (60 ** 2 * 24) / dt)  # one day of data
-    #
-    # training_data = BuildingTemperatureDataset(path + 'train5d.csv', sample_size)
-    # train_dataloader = torch.utils.data.DataLoader(training_data, batch_size=1, shuffle=False)
-    # ######
-    #
-    # time_data = time_data[0:100]
-    # temp_data = temp_data[0:100, :]
-    #
-    # policy = PolicyNetwork(7, 2)
-    # RC = initialise_model(policy)
-    # env = LSIEnv(RC, time_data)
-    # reinforce = Reinforce(env, time_data, temp_data, alpha=1e-2)
-    #
-    # num_episodes = 10
-    # step_size = 24*60**2 / 30  # timesteps in 1 day
-    # start_time = time.time()
-    # plot_total_rewards, plot_ER = reinforce.train(num_episodes, step_size)
-    #
-    # print(f'fin, duration: {(time.time() - start_time) / 60:.1f} minutes')
-    #
-    # fig, axs = plt.subplots(1, 2, figsize=(10, 7),)
-    # axs[0].plot(torch.stack(plot_ER).detach().numpy(), label='expected rewards')
-    # axs[0].legend()
-    #
-    # axs[1].plot(torch.stack(plot_total_rewards).detach().numpy(), label='total rewards')
-    # axs[1].legend()
-    #
-    # plt.savefig('Rewards.png')
-    # plt.show()
+
+    actions = []
+    hot_rm = []
+
+    day = 24*60**2
+
+    pi = PolicyNetwork(5, 2)
+    rm_CA = [100, 1e4]  # [min, max] Capacitance/area
+    ex_C = [1e3, 1e8]  # Capacitance
+    R = [0.1, 5]  # Resistance ((K.m^2)/W)
+    Q_limit = [-100, 100]  # Cooling limit and gain limit in W/m2
+    scaling = InputScaling(rm_CA, ex_C, R, Q_limit)
+    weather_data_path = '/Users/benfourcin/OneDrive - University of Exeter/PhD/LSI/Data/Met Office Weather ' \
+                        'Files/JuneSept.csv'
+    model = initialise_model(pi, scaling, weather_data_path)
+
+    time_data = torch.arange(0, 30 * day, 30)
+    temp_data = 3.5*torch.sin(time_data * (2 * np.pi/day) - 2/3*day) + 22.5  # dummy rm temperature data.
+    temp_data = temp_data.unsqueeze(0).T
+    env = PriorEnv(model, time_data, temp_data, PriorCoolingPolicy())
+
+    rl = Reinforce(env)
+
+    # rl.train(1, day)
+
+    rewards_plot = []
+    ER_plot = []
+    opt_id = 0
+    Path(f'./outputs/run{opt_id}/plots/results/').mkdir(parents=True, exist_ok=True)
+
+    epochs = 400
+
+    for epoch in trange(epochs):
+
+        # Policy Training:
+        num_episodes = 1
+        step_size = day
+        rewards, ER = rl.train(num_episodes, step_size)
+        rewards_plot.append(rewards)
+        ER_plot.append(ER)
+
+        tqdm.write(f'Epoch {epoch + 1}, Policy Rewards {sum(rewards).item():.1f}, Policy Expected Rewards {sum(ER).item():.1f}')
+
+    fig, axs = plt.subplots(1, 2, figsize=(10, 7), dpi=400)
+    axs[0].plot(range(1, epochs + 1), torch.flatten(torch.tensor(ER_plot)).detach().numpy(), 'b',
+                label='expected rewards')
+    axs[0].legend()
+
+    axs[1].plot(range(1, epochs + 1), torch.flatten(torch.tensor(rewards_plot)).detach().numpy(), 'r',
+                label='total rewards')
+    axs[1].legend()
+    fig.suptitle('Rewards', fontsize=16)
+    axs[0].set_xlabel('Epoch')
+    axs[1].set_xlabel('Epoch')
+    axs[0].set_ylabel('Reward')
+    axs[1].set_ylabel('Reward')
+
+    plt.savefig(f'./outputs/run{opt_id}/plots/RewardsPlot.png')
+    plt.show()
+    # plt.close()
 
 
-    prior = PriorCoolingPolicy()
-
-    x = [0,1,2]
-    unix_time = 0
 
 
-    out = prior.get_action(x, unix_time)
-
-    print(out)
