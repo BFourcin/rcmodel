@@ -96,7 +96,7 @@ class RCModel(nn.Module):
 
         # get cooling action if policy is not None and 15 minutes has passed since last action
         if self.cooling_policy and t - self.ode_t >= 60*15:
-            action, log_prob = self.cooling_policy.get_action(x, t + self.t0)
+            action, log_prob = self.cooling_policy.get_action(x[2:], t + self.t0)
             self.ode_t = t
             self.record_action.append([t, action])  # This is just used for plotting the cooling after.
 
