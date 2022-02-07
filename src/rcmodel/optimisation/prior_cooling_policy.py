@@ -42,7 +42,8 @@ class PriorCoolingPolicy:
         Parameters
         ----------
         x : torch.tensor,
-            Temperature output of the model. Array length num rooms + 2.
+            Temperature output of the rooms in the model. Do not include the latent wall temperatures,
+            len(x) == len(building.rooms)
 
         unix_time : float or int,
             Unix epoch time.
@@ -52,11 +53,12 @@ class PriorCoolingPolicy:
         int: 1 or 0, cooling on or off
         """
 
-        rm_temp_array = x[2:]
+        if x.ndim == 0:
+            x = x.unsqueeze(0)
 
-        action = torch.zeros(len(rm_temp_array))
+        action = torch.zeros(len(x))
 
-        for i, rm_temp in enumerate(rm_temp_array):
+        for i, rm_temp in enumerate(x):
 
             if self.time_on > 24 or self.time_off > 24:
                 raise ValueError('Ensure time_on and time_off are valid.')
