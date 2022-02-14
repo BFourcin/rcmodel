@@ -12,6 +12,7 @@ from ..tools import InputScaling, BuildingTemperatureDataset, pltsolution_1rm
 class RayActor:
     """
     Class provides basic framework to call ray for multiprocessing.
+    Trains Physical then Policy one after the other.
     """
     def __init__(self, model, csv_path, physical_training=True, policy_training=True):
         self.model = model
