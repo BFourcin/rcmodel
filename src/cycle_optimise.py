@@ -6,7 +6,6 @@ from pathlib import Path
 from tqdm.auto import tqdm, trange
 
 from rcmodel import *
-from main import initialise_model
 
 # Laptop
 weather_data_path = '/Users/benfourcin/OneDrive - University of Exeter/PhD/LSI/Data/Met Office Weather Files/JuneSept.csv'
@@ -115,8 +114,8 @@ tol_phys = 0.01  # 1%
 tol_policy = 0.02  # 2%
 window_len = 10.  # Length of convergence look-back window.
 
-cycles = 2
-max_epochs = 2
+cycles = 40
+max_epochs = 150
 
 plt.ioff()  # Reduces memory usage by matplotlib
 for cycle in trange(cycles):
@@ -152,8 +151,8 @@ for cycle in trange(cycles):
     tqdm.write(f'Physical converged in {epoch + 1} epochs. Total epochs: {count - 1}\n')
 
     # Save a plot of results after physical training
-    # pltsolution_1rm(model, plot_dataloader,
-    #                 f'./outputs/run{opt_id}/plots/results/Result_Cycle{start_num + cycle + 1}a.png')
+    pltsolution_1rm(model, plot_dataloader,
+                    f'./outputs/run{opt_id}/plots/results/Result_Cycle{start_num + cycle + 1}a.png')
 
     # -------- Policy training --------
     tqdm.write('Policy Training:')
