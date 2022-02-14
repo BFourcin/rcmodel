@@ -19,8 +19,9 @@ csv_path = '/Users/benfourcin/OneDrive - University of Exeter/PhD/LSI/Data/Dummy
 opt_id = 0
 dir_path = f'./outputs/run{opt_id}/models/'  # where to save
 # Load model?
-# load_model_path = 'rcmodel_start.pt'  # or None
-load_model_path = None
+load_model_path_physical = './physical_model.pt'  # or None
+load_model_path_policy = './prior_policy.pt'
+
 
 def do_plots():
     fig = plt.figure(figsize=(10, 7), dpi=400)
@@ -63,7 +64,7 @@ def init_scaling():
 
 # Initialise Model
 scaling = init_scaling()
-policy = PolicyNetwork(7, 2)
+policy = PolicyNetwork(5, 2)
 model = initialise_model(policy, scaling, weather_data_path)
 
 model.save(0, dir_path)  # save initial model
@@ -76,8 +77,8 @@ op = OptimiseRC(model, csv_path, sample_size, dt, lr=1e-3, opt_id=opt_id)
 # Initialise Reinforcement Class - for training policy
 time_data = torch.tensor(pd.read_csv(csv_path, skiprows=0).iloc[:, 1], dtype=torch.float64)
 temp_data = torch.tensor(pd.read_csv(csv_path, skiprows=0).iloc[:, 2:].to_numpy(dtype=np.float32), dtype=torch.float32)
-env = LSIEnv(model, time_data)
-rl = Reinforce(env, time_data, temp_data, alpha=1e-2)
+env = LSIEnv(model, time_data, temp_data)
+rl = Reinforce(env, alpha=1e-2)
 
 # lists to keep track of process, used for plot at the end
 avg_train_loss_plot = []
@@ -87,15 +88,24 @@ ER_plot = []
 count = 1  # Counts number of epochs since start.
 
 # Dataloader to be used when plotting a model run. This is just for info.
-plot_results_data = tools.BuildingTemperatureDataset(csv_path, 5 * sample_size, all=True)
+plot_results_data = BuildingTemperatureDataset(csv_path, 5 * sample_size, all=True)
 plot_dataloader = torch.utils.data.DataLoader(plot_results_data, batch_size=1, shuffle=False)
 
 # check if dir exists and make if needed
 Path(f'./outputs/run{opt_id}/plots/results/').mkdir(parents=True, exist_ok=True)
 
+# load physical and policy models if available
+if load_model_path_policy:
+    if load_model_path_physical:
 
-if load_model_path:
-    model.load(load_model_path)
+        model.load(load_model_path_policy)  # load policy
+
+        m = initialise_model(None, scaling, weather_data_path)  # dummy model to load physical params on to.
+        m.load(load_model_path_physical)
+
+        model.params = m.params  # put loaded physical parameters onto model.
+
+        del m
 
 
 start_num = 0  # Number of cycles to start at. Used if resuming the run. i.e. the first cycle is (start_num + 1)
@@ -105,8 +115,8 @@ tol_phys = 0.01  # 1%
 tol_policy = 0.02  # 2%
 window_len = 10.  # Length of convergence look-back window.
 
-cycles = 40
-max_epochs = 150
+cycles = 2
+max_epochs = 2
 
 plt.ioff()  # Reduces memory usage by matplotlib
 for cycle in trange(cycles):
@@ -122,7 +132,6 @@ for cycle in trange(cycles):
         # Get difference from previous
         indx = epoch % len(r_prev)  # cycles the indexes in array
         r_prev[indx] = avg_train_loss  # keeps track of a window of differences
-
 
         # Test Loss
         avg_test_loss = op.test()
@@ -143,8 +152,8 @@ for cycle in trange(cycles):
     tqdm.write(f'Physical converged in {epoch + 1} epochs. Total epochs: {count - 1}\n')
 
     # Save a plot of results after physical training
-    pltsolution_1rm(model, plot_dataloader,
-                    f'./outputs/run{opt_id}/plots/results/Result_Cycle{start_num + cycle + 1}a.png')
+    # pltsolution_1rm(model, plot_dataloader,
+    #                 f'./outputs/run{opt_id}/plots/results/Result_Cycle{start_num + cycle + 1}a.png')
 
     # -------- Policy training --------
     tqdm.write('Policy Training:')

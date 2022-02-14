@@ -5,7 +5,7 @@ from rcmodel import *
 
 if __name__ == '__main__':
 
-    use_ray = True
+    use_ray = False
 
     epochs = 2
 
@@ -35,7 +35,7 @@ if __name__ == '__main__':
 
     if use_ray:
         RayActor = ray.remote(RayActor)
-        actors = [RayActor.remote(model, csv_path, policy_training=False) for _ in range(num_jobs)]
+        actors = [RayActor.remote(model, csv_path, policy_training=True) for _ in range(num_jobs)]
 
         results = ray.get([a.worker.remote(num, epochs) for num, a in enumerate(actors)])
         ray.shutdown()
