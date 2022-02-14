@@ -7,3 +7,4 @@ xitorch
 filelock
 gym
 tqdm
+ray
