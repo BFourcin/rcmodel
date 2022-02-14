@@ -68,6 +68,7 @@ class PolicyNetwork(nn.Module):
                                     np.cos(unix_time * (2 * np.pi / day)),
                                     np.sin(unix_time * (2 * np.pi / week)),
                                     np.cos(unix_time * (2 * np.pi / week))])
+        time_signals = time_signals.to(torch.float32)
 
         try:  # Adds broadcasting to function.
             if len(unix_time) > 1:
@@ -76,7 +77,12 @@ class PolicyNetwork(nn.Module):
         except TypeError:  # Occurs when no len()
             pass
 
-        state = torch.cat((x_norm, time_signals), dim=1)
+        try:
+            state = torch.cat((x_norm, time_signals), dim=1)
+
+        except RuntimeError:
+            # Occurs when single time is being simulated
+            state = torch.cat((x_norm, time_signals.unsqueeze(0)), dim=1)
 
         return state
 
@@ -207,6 +213,7 @@ class LSIEnv(gym.Env):
 
         # actions are decided and stored by the policy while integrating the ODE:
         pred = self.RC(t_eval)
+        pred = pred.squeeze()
 
         actual = self.temp_data[self.t_index:int(self.t_index + step_size), 0:self.n_rooms]
 
