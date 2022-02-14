@@ -8,6 +8,7 @@ from .optimisation import OptimiseRC
 from .optimisation import Reinforce
 from .optimisation import PolicyNetwork
 from .optimisation import LSIEnv
+from .optimisation import PriorEnv
 from .optimisation import PriorCoolingPolicy
 from .physical import Building
 from .physical import Room
