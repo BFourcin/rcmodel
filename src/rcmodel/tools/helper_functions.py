@@ -145,14 +145,25 @@ def sort_data(path, dt):
     return path_sorted
 
 
-# def initialise_prior(scaling, weather_data_path):
-#
-#     # policy = PolicyNetwork(7,2)
-#     prior = PriorCoolingPolicy()
-#
-#     model = initialise_model(prior, scaling, weather_data_path)
-#
-#     dt = 30
-#     sample_size = 24 * 60 ** 2 / dt
-#
-#     op = OptimiseRC(model, csv_path, sample_size, dt, lr=1e-3, opt_id=opt_id)
+def model_to_csv(model, t_eval, output_path):
+    """
+    Produces a .csv of the given models output. To then be u
+    """
+    # Compute prediction
+    pred = model(t_eval)
+    pred = pred.squeeze(-1)  # change from column to row matrix
+
+    # Produce a .csv in the same format as current data, retains compatibility with dataloader
+    titles = [['date-time', 'time'], [f'Rm{i}' for i in range(pred[:, 2:].shape[1])]]
+    titles = [item for sublist in titles for item in sublist]
+
+    df = torch.hstack((torch.zeros(len(pred), 1)*torch.nan, t_eval.unsqueeze(1), pred[:, 2:]))
+    df = pd.DataFrame(df.detach().numpy())
+    df.to_csv(output_path, index=False, header=titles)
+
+    return pred
+
+
+
+
+

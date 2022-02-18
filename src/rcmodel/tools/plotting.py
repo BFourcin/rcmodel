@@ -4,23 +4,34 @@ import matplotlib.pyplot as plt
 
 
 # helper functions:
-def pltsolution_1rm(model, dataloader, filename=None):
+def pltsolution_1rm(model, dataloader=None, filename=None, prediction=None, time=None):
     """
-    Plots the first sample of dataloader.
+    Runs model and plots the first sample from a given dataloader.
+    pltsolution_1rm(model, dataloader, filename)
+
+    Or
+
+    Plot a pre run prediction. dt is used to produce the x-axis
+    pltsolution_1rm(model, filename, prediction, time)
     """
     model.reset_iv()  # Reset initial value
     model.eval()  # Put model in evaluation mode
 
     # Get solution ---------------
-    time, data_temp = next(iter(dataloader))
+    if dataloader:
+        time, data_temp = next(iter(dataloader))
 
-    time = time.squeeze(0)
-    data_temp = data_temp.squeeze(0)
+        time = time.squeeze(0)
+        data_temp = data_temp.squeeze(0)
 
-    t_days = (time - time.min()) / (24 * 60 ** 2)  # Time in days
+        t_days = (time - time.min()) / (24 * 60 ** 2)  # Time in days
 
-    pred = model(time)
-    pred = pred.squeeze(-1)
+        prediction = model(time)
+        prediction = prediction.squeeze(-1)
+
+    else:
+        t_days = (time - time.min()) / (24 * 60 ** 2)  # Time in days
+        data_temp = (t_days*torch.nan).unsqueeze(0).T
 
     # Get Heating Control for each room
     if model.cooling_policy:
@@ -44,7 +55,7 @@ def pltsolution_1rm(model, dataloader, filename=None):
     # Compute and print loss.
     # loss_fn = torch.nn.MSELoss()
     # num_cols = len(model.building.rooms)  # number of columns to take from data.
-    # loss = loss_fn(pred[:, 2:], data_temp[:, 0:num_cols])
+    # loss = loss_fn(prediction[:, 2:], data_temp[:, 0:num_cols])
 
     # print(f"Test loss = {loss.item():>8f}")
 
@@ -57,7 +68,7 @@ def pltsolution_1rm(model, dataloader, filename=None):
     fig, axs = plt.subplots(figsize=(10, 8))
 
     ax2 = axs.twinx()
-    ln1 = axs.plot(t_days.detach().numpy(), pred[:, 2:].detach().numpy(), label='model ($^\circ$C)')
+    ln1 = axs.plot(t_days.detach().numpy(), prediction[:, 2:].detach().numpy(), label='model ($^\circ$C)')
     ln2 = axs.plot(t_days.detach().numpy(), data_temp[:, 0].detach().numpy(), label='data ($^\circ$C)')
     ln3 = axs.plot(t_days.detach().numpy(), model.Tout_continuous(time).detach().numpy(), label='outside ($^\circ$C)')
     ln4 = ax2.plot(Q_tdays.detach().numpy(), Q.detach().numpy(), '--', color='black', alpha=0.5, label='heat ($W$)')

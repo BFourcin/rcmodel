@@ -1,25 +1,55 @@
-import pandas as pd
-import matplotlib.pyplot as plt
 import torch
+import matplotlib.pyplot as plt
+import pandas as pd
 import numpy as np
 from pathlib import Path
 from tqdm.auto import tqdm, trange
 
 from rcmodel import *
+from rcmodel.tools.helper_functions import model_to_csv
+
+
+# ----- Create Original model and produce a dummy data csv file: -----
+
+pi = PriorCoolingPolicy()
+
+# Initialise scaling class
+rm_CA = [100, 1e4]  # [min, max] Capacitance/area
+ex_C = [1e3, 1e8]  # Capacitance
+R = [0.1, 5]  # Resistance ((K.m^2)/W)
+Q_limit = [-1000, 1000]  # Cooling limit and gain limit in W/m2
+scaling = InputScaling(rm_CA, ex_C, R, Q_limit)
 
 # Laptop
 weather_data_path = '/Users/benfourcin/OneDrive - University of Exeter/PhD/LSI/Data/Met Office Weather Files/JuneSept.csv'
-csv_path = '/Users/benfourcin/OneDrive - University of Exeter/PhD/LSI/Data/DummyData/train5d_sorted.csv'
 
 # Hydra:
 # weather_data_path = '/home/benf/LSI/Data/Met Office Weather Files/JuneSept.csv'
-# csv_path = '/home/benf/LSI/Data/DummyData/train5d_sorted.csv'  # where building data
 
+
+model_origin = initialise_model(pi, scaling, weather_data_path)
+model_origin.state_dict()['params'][7] = 0.001  # manually lower 'gain'
+print(model_origin.params)
+
+
+t_eval = torch.arange(0, 1 * 24 * 60 ** 2, 30, dtype=torch.float64) + 1622505600  # + min start time of weather data
+
+output_path = './return_to_sender_out_sorted.csv'
+
+pred = model_to_csv(model_origin, t_eval, output_path)
+
+# see what the random model looks like:
+pltsolution_1rm(model_origin, prediction=pred, time=t_eval)
+
+# -----------------------------------------------------
+
+
+# Run current optimisation process and see if we can find the original parameters
+
+csv_path = output_path
 # Load model?
-load_model_path_physical = './physical_model.pt'  # or None
-load_model_path_policy = './prior_policy.pt'
-
-# opt_id = 0
+load_model_path_physical = None  # or None
+load_model_path_policy = None
 
 
 def worker(opt_id):
@@ -188,30 +218,27 @@ def worker(opt_id):
     final_params = model.transform(model.params).detach().numpy()
     final_cooling = model.transform(model.cooling).detach().numpy()
 
-    return np.concatenate(([opt_id], final_params, final_cooling, [torch.tensor(rewards).sum().item()]))
+    return model, np.concatenate(([opt_id], final_params, final_cooling, [torch.tensor(rewards).sum().item()]))
 
 
-if __name__ == '__main__':
-    import ray
+trained_model, results = worker(0)
 
-    num_cpus = 2
-    num_jobs = num_cpus
-    ray.init(num_cpus=num_cpus)
+print('\n\n\n')
 
-    worker = ray.remote(worker)
+print('Original Parameters: ')
+print(model_origin.params, model_origin.cooling)
 
-    results = ray.get([worker.remote(num) for num in range(num_jobs)])
-    ray.shutdown()
+print('\n')
 
-    params_heading = ['Rm Cap/m2 (J/K.m2)', 'Ext Wl Cap 1 (J/K)', 'Ext Wl Cap 2 (J/K)', 'Ext Wl Res 1 (K.m2/W)',
-                      'Ext Wl Res 2 (K.m2/W)', 'Ext Wl Res 3 (K.m2/W)', 'Int Wl Res (K.m2/W)', 'Offset Gain (W/m2)']
+print('Trained Parameters: ')
+print(trained_model.params, trained_model.cooling)
 
-    cooling_heading = ['Cooling (W)']
-    headings = [['Run Number'], params_heading, cooling_heading,
-                ['Final Reward']]
-    flat_list = [item for sublist in headings for item in sublist]
 
-    df = pd.DataFrame(np.array(results), columns=flat_list)
 
-    df.to_csv('./outputs/results.csv', index=False, )
+
+
+
+
+
+
 

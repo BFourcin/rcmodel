@@ -100,7 +100,8 @@ class OptimiseRC:
     """
     def __init__(self, model, csv_path, sample_size, dt=30, lr=1e-3, opt_id=0):
         self.model = model
-        self.model.init_params()  # randomise parameters
+        # self.model.init_policy()  # randomise parameters - DO WE WANT THIS?
+        # self.model.init_physical()
         self.model_id = opt_id
         self.train_dataloader, self.test_dataloader = dataset_creator(csv_path, int(sample_size), int(dt))
 
