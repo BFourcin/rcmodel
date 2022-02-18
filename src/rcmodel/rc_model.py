@@ -29,9 +29,10 @@ class RCModel(nn.Module):
 
         self.cooling_policy = cooling_policy  # Neural net: pi(state) --> action
 
-        self.params = None  # initialised in init_params()
+        self.params = None  # initialised in init_***()
         self.cooling = None
-        self.init_params()  # initialize weights with random numbers, length of params given from building class
+        self.init_physical()  # initialize with random numbers, length of params given from building class
+        self.init_policy()  # initialize policy with random numbers
 
         self.ode_t = None  # Keeps track of t during integration. None is just to initialise attribute
         self.record_action = None  # records Q and t during integration
@@ -49,7 +50,7 @@ class RCModel(nn.Module):
         building - Initialised RCModel Class
         Tout_continuous - A scipy interp1d function covering the whole of t_eval. Tout_continuous(t) = Outside temperature at time t
         iv - Initial value. Starting temperatures of all nodes
-        t_eval - times function should return a solution. e.g. torch.arrange(0, 10000, 30). ensure dtype=float32
+        t_eval - times function should return a solution. e.g. torch.arange(0, 10000, 30). ensure dtype=float32
         t0 - starting time if not 0
         """
         self.ode_t = -30  # Keeps track of t during ODE integration. Needed to assign log probs only when a step occurs
@@ -123,7 +124,7 @@ class RCModel(nn.Module):
         # Set iv as column vector. Errors caused if Row vector which are difficult to trace.
         self.iv = self.iv.unsqueeze(1)
 
-    def init_params(self):
+    def init_physical(self):
         params = torch.rand(self.building.n_params, dtype=torch.float32, requires_grad=True)
 
         # enables spread of initial parameters. Otherwise sigmoid(rand) tends towards 0.5.
@@ -132,7 +133,10 @@ class RCModel(nn.Module):
 
         # make theta torch parameters
         self.params = nn.Parameter(params)
-        self.cooling = nn.Parameter(torch.rand((len(self.building.rooms)), dtype=torch.float32, requires_grad=True))  # [Q]
+
+    def init_policy(self):
+        # [Q]
+        self.cooling = nn.Parameter(torch.rand((len(self.building.rooms)), dtype=torch.float32, requires_grad=True))
 
     def save(self, model_id=0, dir_path=None):
         """
