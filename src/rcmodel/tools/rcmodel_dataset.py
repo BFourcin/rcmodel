@@ -60,12 +60,12 @@ class BuildingTemperatureDataset(Dataset):
         df_sample = pd.read_csv(self.csv_path, skiprows=lb, nrows=self.sample_size)
 
         # Get time column (time must be in the 1th column)
-        t_sample = torch.tensor(df_sample.iloc[:, 1].values, dtype=torch.float64) # units (s)
+        t_sample = torch.tensor(df_sample.iloc[:, 1].values, dtype=torch.float64)  # units (s)
 
         # Get temp matrix
-        temp_sample = torch.tensor(df_sample.iloc[:, 2:].values, dtype=torch.float32) #pandas needs 2: to get all but first & second column
+        temp_sample = torch.tensor(df_sample.iloc[:, 2:].values, dtype=torch.float32)  # pandas needs 2: to get all but first & second column
 
-        #apply transorms if required
+        # apply transforms if required
         if self.transform:
             temp_sample = self.transform(temp_sample)
 
@@ -78,7 +78,7 @@ class BuildingTemperatureDataset(Dataset):
         # the rows in the .csv are counted:
         with open(self.csv_path,"r") as f:
             read_f = reader(f,delimiter = ",")
-            entry_count = sum(1 for row in read_f) - 1 # minus one to account for heading
+            entry_count = sum(1 for row in read_f) - 1  # minus one to account for heading
 
         return entry_count
 
@@ -87,7 +87,7 @@ class BuildingTemperatureDataset(Dataset):
         train_split = 0.8
         test_split = 0.2
 
-        total_entries = self._get_entries() #total rows of data in csv
+        total_entries = self._get_entries()  # total rows of data in csv
 
         if self.train:
             rows_to_skip = 0
