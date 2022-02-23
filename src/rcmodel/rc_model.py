@@ -22,11 +22,8 @@ class RCModel(nn.Module):
         self.building = building
 
         self.transform = transform  # transform performed on parameters e.g. sigmoid
-
         self.scaling = scaling  # InputScaling class (helper class to go between machine (0-1) and physical values)
-
         self.Tout_continuous = Tout_continuous  # Interp1D object
-
         self.cooling_policy = cooling_policy  # Neural net: pi(state) --> action
 
         self.params = None  # initialised in init_***()

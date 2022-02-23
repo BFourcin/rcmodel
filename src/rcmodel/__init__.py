@@ -16,6 +16,9 @@ from .tools import InputScaling
 from .tools import pltsolution_1rm
 from .tools import BuildingTemperatureDataset
 from .tools import initialise_model
+from .tools import model_to_csv
+from .tools import convergence_criteria
+from .tools import exponential_smoothing
 from .tools import RayActor
 from .rc_model import RCModel
 
