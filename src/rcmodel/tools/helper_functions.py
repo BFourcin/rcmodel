@@ -6,6 +6,7 @@ from filelock import FileLock
 
 
 import pandas as pd
+import numpy as np
 import torch
 import os
 
@@ -147,7 +148,7 @@ def sort_data(path, dt):
 
 def model_to_csv(model, t_eval, output_path):
     """
-    Produces a .csv of the given models output. To then be u
+    Produces a .csv of the given models output. To then be used in return_to_sender.py
     """
     # Compute prediction
     pred = model(t_eval)
@@ -162,6 +163,53 @@ def model_to_csv(model, t_eval, output_path):
     df.to_csv(output_path, index=False, header=titles)
 
     return pred
+
+
+def convergence_criteria(y, n=10):
+    """
+    y: array of values.
+    n: total lookback window size.
+
+    Finds % difference between halves of a window of length n.
+    Used as a measure of convergence.
+    """
+
+    if n % 2 != 0:
+        raise TypeError('n must be even.')
+
+    y_a = y[-n:-n//2]
+    y_b = y[-n//2:]
+
+    # formula doesn't work if there's insufficient data.
+    # output will be 1 until y >= n
+    if len(y_a) == len(y_b):
+        c = abs(sum(y_a) - sum(y_b)) / abs(sum(y_b))
+    else:
+        c = 1
+
+    return c
+
+
+def exponential_smoothing(y, alpha, y_hat=[], n=10):
+    # Check to see if y is an array, and we should calculate all values of y_hat
+    # or if y is a single value, and therefore we just want the next value of y_hat
+    try:
+        if len(y) > 1:
+            # y is an array meaning we want to calc y_hat for all values in array
+            if not y_hat:
+                y_hat = [np.array(y[0:n]).mean()]
+            for yi in y[n + 1:]:
+                y_hat.append(y_hat[-1] + alpha * (yi - y_hat[-1]))
+
+        else:
+            # y is a list of len=1. supply a starting y_hat
+            y_hat.append(y_hat[-1] + alpha * (y[0] - y_hat[-1]))
+
+    except TypeError:
+        # y is a int or float. supply a starting y_hat
+        y_hat.append(y_hat[-1] + alpha * (y - y_hat[-1]))
+
+    return y_hat
 
 
 

@@ -144,8 +144,8 @@ def worker(opt_id):
     tol_policy = 0.02  # 2%
     window_len = 10.  # Length of convergence look-back window.
 
-    cycles = 1
-    max_epochs = 2
+    cycles = 25
+    max_epochs = 150
 
     plt.ioff()  # Reduces memory usage by matplotlib
     for cycle in trange(cycles):
