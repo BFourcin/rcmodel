@@ -62,7 +62,6 @@ def test(model, dataloader):
 
     with torch.no_grad():
         for (time, temp) in dataloader:
-
             time = time.squeeze(0)
             temp = temp.squeeze(0)
 
@@ -98,10 +97,10 @@ class OptimiseRC:
 
     see https://docs.ray.io/en/latest/using-ray-with-pytorch.html
     """
+
     def __init__(self, model, csv_path, sample_size, dt=30, lr=1e-3, opt_id=0):
         self.model = model
-        # self.model.init_policy()  # randomise parameters - DO WE WANT THIS?
-        # self.model.init_physical()
+        # self.model.init_physical()  # randomise parameters - DO WE WANT THIS?
         self.model_id = opt_id
         self.train_dataloader, self.test_dataloader = dataset_creator(csv_path, int(sample_size), int(dt))
 
@@ -123,14 +122,3 @@ class OptimiseRC:
 
         results = [testloss, self.model]
         return results
-
-
-
-
-
-
-
-
-
-
-
