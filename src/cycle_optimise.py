@@ -17,7 +17,7 @@ csv_path = '/Users/benfourcin/OneDrive - University of Exeter/PhD/LSI/Data/Dummy
 
 # Load model?
 load_model_path_physical = './physical_model.pt'  # or None
-load_model_path_policy = './prior_policy.pt'
+load_model_path_policy = None
 
 # opt_id = 0
 
@@ -48,6 +48,7 @@ def worker(opt_id):
         axs.set_xlabel('Epoch')
         axs.set_ylabel('Mean Squared Error')
         ax2.set_ylabel('Convergence')
+        ax2.set_yscale('log')
         # legend:
         lns = ln1 + ln2 + ln3 + ln4
         labs = [l.get_label() for l in lns]
@@ -100,12 +101,24 @@ def worker(opt_id):
     policy = PolicyNetwork(5, 2)
     model = initialise_model(policy, scaling, weather_data_path)
 
+    # load physical and/or policy models if available
+    if load_model_path_policy:
+        model.load(load_model_path_policy)  # load policy
+        model.init_physical()  # re-randomise physical params, as they were also copied from the loaded policy
+
+    if load_model_path_physical:
+        m = initialise_model(None, scaling, weather_data_path)  # dummy model to load physical params on to.
+        m.load(load_model_path_physical)
+        model.params = m.params  # put loaded physical parameters onto model.
+        model.cooling = m.cooling
+        del m
+
     model.save(0, dir_path)  # save initial model
 
-    # Initialise Optimise Class - for training physical model
+    # # Initialise Optimise Class - for training physical model
     dt = 30
     sample_size = 24 * 60 ** 2 / dt  # ONE DAY
-    op = OptimiseRC(model, csv_path, sample_size, dt, lr=1e-3, opt_id=opt_id)
+    op = OptimiseRC(model, csv_path, sample_size, dt, lr=1e-2, opt_id=opt_id)
 
     # Initialise Reinforcement Class - for training policy
     time_data = torch.tensor(pd.read_csv(csv_path, skiprows=0).iloc[:, 1], dtype=torch.float64)
@@ -132,28 +145,17 @@ def worker(opt_id):
     # check if dir exists and make if needed
     Path(f'./outputs/run{opt_id}/plots/results/').mkdir(parents=True, exist_ok=True)
 
-    # load physical and/or policy models if available
-    if load_model_path_policy:
-        model.load(load_model_path_policy)  # load policy
-        model.init_physical()  # re-randomise physical params, as they were also copied from the loaded policy
-
-    if load_model_path_physical:
-        m = initialise_model(None, scaling, weather_data_path)  # dummy model to load physical params on to.
-        m.load(load_model_path_physical)
-        model.params = m.params  # put loaded physical parameters onto model.
-        del m
-
     start_num = 0  # Number of cycles to start at. Used if resuming the run. i.e. the first cycle is (start_num + 1)
 
     # Convergence happens when the convergence criteria is < tol.
     # See convergence_criteria() for more info.
-    tol_phys = 0.01  # 1%
-    tol_policy = 0.02  # 2%
+    tol_phys = 0.005  # 0.5%
+    tol_policy = 0.005  # 0.05%
     conv_win_len = 10  # MUST BE EVEN. total length of lookback window to measure convergence
     conv_alpha = 0.15
 
-    cycles = 1
-    max_epochs = 10
+    cycles = 40
+    max_epochs = 200
 
     plt.ioff()  # Reduces memory usage by matplotlib
     for cycle in trange(cycles):
@@ -183,7 +185,7 @@ def worker(opt_id):
                 convergence = convergence_criteria(y_hat, conv_win_len)
 
             tqdm.write(
-                f'Epoch {count}, Train/Test Loss: {avg_train_loss:.2f}/{avg_test_loss:.2f}, Convergence/Cutoff: {convergence:.2f}/{tol_phys:.2f}')
+                f'Epoch {count}, Train/Test Loss: {avg_train_loss:.2f}/{avg_test_loss:.2f}, Convergence/Cutoff: {convergence:.3f}/{tol_phys:.3f}')
 
             if convergence < tol_phys:
                 tqdm.write(f'Physical converged in {epoch + 1} epochs. Total epochs: {count}\n')
@@ -222,7 +224,7 @@ def worker(opt_id):
                 convergence = convergence_criteria(y_hat, conv_win_len)
 
             tqdm.write(
-                f'Epoch {count}, Rewards/Expected Rewards: {rewards:.2f}/{ER:.2f}, Convergence/Cutoff: {convergence:.2f}/{tol_policy:.2f}')
+                f'Epoch {count}, Rewards/Expected Rewards: {rewards:.2f}/{ER:.2f}, Convergence/Cutoff: {convergence:.3f}/{tol_policy:.3f}')
 
             if convergence < tol_policy:
                 tqdm.write(f'Policy converged in {epoch + 1} epochs. Total epochs: {count}\n')
@@ -237,12 +239,13 @@ def worker(opt_id):
         # Plot loss and reward plot
         do_plots()
 
+        # save outputs to .csv:
+        pd.DataFrame(rewards_plot).to_csv(f'./outputs/run{opt_id}/plots/rewards.csv', index=False)
+        pd.DataFrame(avg_train_loss_plot).to_csv(f'./outputs/run{opt_id}/plots/train_loss.csv', index=False)
+        pd.DataFrame(avg_test_loss_plot).to_csv(f'./outputs/run{opt_id}/plots/test_loss.csv', index=False)
+
     final_params = model.transform(model.params).detach().numpy()
     final_cooling = model.transform(model.cooling).detach().numpy()
-
-    pd.DataFrame(rewards_plot).to_csv(f'./outputs/run{opt_id}/plots/rewards.csv', index=False)
-    pd.DataFrame(avg_train_loss_plot).to_csv(f'./outputs/run{opt_id}/plots/train_loss.csv', index=False)
-    pd.DataFrame(avg_test_loss_plot).to_csv(f'./outputs/run{opt_id}/plots/test_loss.csv', index=False)
 
     return np.concatenate(([opt_id], final_params, final_cooling, [rewards]))
 
@@ -250,7 +253,9 @@ def worker(opt_id):
 if __name__ == '__main__':
     import ray
 
-    num_cpus = 2
+    worker(0)
+
+    num_cpus = 5
     num_jobs = num_cpus
     ray.init(num_cpus=num_cpus)
 

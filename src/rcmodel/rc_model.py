@@ -26,10 +26,9 @@ class RCModel(nn.Module):
         self.Tout_continuous = Tout_continuous  # Interp1D object
         self.cooling_policy = cooling_policy  # Neural net: pi(state) --> action
 
-        self.params = None  # initialised in init_***()
-        self.cooling = None
-        self.init_physical()  # initialize with random numbers, length of params given from building class
-        self.init_policy()  # initialize policy with random numbers
+        self.params = None  # initialised in init_physical()
+        self.cooling = None  # initialised in init_physical()
+        self.init_physical()  # initialise with random numbers, length of params given from building class
 
         self.ode_t = None  # Keeps track of t during integration. None is just to initialise attribute
         self.record_action = None  # records Q and t during integration
@@ -131,8 +130,7 @@ class RCModel(nn.Module):
         # make theta torch parameters
         self.params = nn.Parameter(params)
 
-    def init_policy(self):
-        # [Q]
+        # initialise the room cooling factor parameter
         self.cooling = nn.Parameter(torch.rand((len(self.building.rooms)), dtype=torch.float32, requires_grad=True))
 
     def save(self, model_id=0, dir_path=None):
