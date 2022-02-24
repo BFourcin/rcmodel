@@ -15,14 +15,15 @@ def train(model, dataloader, optimizer):
     if model.cooling_policy:
         model.cooling_policy.eval()
 
+        # This ended up causing the policy not to optimise:
         # Stops Autograd endlessly keeping track of the graph. Memory Leak!
-        try:
-            for layer in model.cooling_policy.parameters():
-                layer.requires_grad = False
-
-        # This occurs when policy contains no parameters e.g. when using prior to train.
-        except AttributeError:
-            pass
+        # try:
+        #     for layer in model.cooling_policy.parameters():
+        #         layer.requires_grad = False
+        #
+        # # This occurs when policy contains no parameters e.g. when using prior to train.
+        # except AttributeError:
+        #     pass
 
     num_cols = len(model.building.rooms)  # number of columns to use from data.
     num_batches = len(dataloader)
