@@ -47,6 +47,7 @@ def worker(opt_id):
         fig.suptitle('Train and Test Loss During Training', fontsize=16)
         axs.set_xlabel('Epoch')
         axs.set_ylabel('Mean Squared Error')
+        axs.set_yscale('log')
         ax2.set_ylabel('Convergence')
         ax2.set_yscale('log')
         # legend:
