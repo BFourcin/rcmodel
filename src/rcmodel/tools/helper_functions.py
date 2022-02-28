@@ -180,26 +180,55 @@ def convergence_criteria(y, n=10):
     y_a = y[-n:-n//2]
     y_b = y[-n//2:]
 
-    # formula doesn't work if there's insufficient data.
+    # formula doesn't work if there's insufficient data or with None
     # output will be 1 until y >= n
-    if len(y_a) == len(y_b):
+    if None in y_a or None in y_b:
+        c = None
+
+    elif len(y_a) == len(y_b):
+
         c = abs(sum(y_a) - sum(y_b)) / abs(sum(y_b))
     else:
-        c = 1
+        c = None
 
     return c
 
 
-def exponential_smoothing(y, alpha, y_hat=[], n=10):
+def exponential_smoothing(y, alpha, y_hat=None, n=10):
     # Check to see if y is an array, and we should calculate all values of y_hat
     # or if y is a single value, and therefore we just want the next value of y_hat
     try:
         if len(y) > 1:
             # y is an array meaning we want to calc y_hat for all values in array
-            if not y_hat:
-                y_hat = [np.array(y[0:n]).mean()]
-            for yi in y[n + 1:]:
-                y_hat.append(y_hat[-1] + alpha * (yi - y_hat[-1]))
+            if y_hat:
+                raise ValueError('Trying to smooth entire array, don\'t include y_hat')
+
+            y_hat = []
+            cycle = []
+            index = 0
+            for i, val in enumerate(y):  # get the non None parts of the list and find the convergence on them
+                if i < index:
+                    continue
+
+                if val is None:
+                    y_hat.append(None)
+                    cycle = []  # reset
+                else:
+                    cycle.append(val)
+                    if len(cycle) >= n:
+                        y_hat.append(np.array(cycle[0:n]).mean())
+                        index = i + 1
+                        for yi in y[i + 1:]:
+                            index += 1
+                            if yi is None:
+                                y_hat.append(None)
+                                cycle = []  # reset
+                                break
+                            else:
+
+                                y_hat.append(y_hat[-1] + alpha * (yi - y_hat[-1]))
+                    else:
+                        y_hat.append(None)
 
         else:
             # y is a list of len=1. supply a starting y_hat

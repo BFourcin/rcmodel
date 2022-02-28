@@ -25,6 +25,7 @@ class RCModel(nn.Module):
         self.scaling = scaling  # InputScaling class (helper class to go between machine (0-1) and physical values)
         self.Tout_continuous = Tout_continuous  # Interp1D object
         self.cooling_policy = cooling_policy  # Neural net: pi(state) --> action
+        self.action = 0  # initialise cooling action
 
         self.params = None  # initialised in init_physical()
         self.cooling = None  # initialised in init_physical()
@@ -49,7 +50,7 @@ class RCModel(nn.Module):
         t_eval - times function should return a solution. e.g. torch.arange(0, 10000, 30). ensure dtype=float32
         t0 - starting time if not 0
         """
-        self.ode_t = -30  # Keeps track of t during ODE integration. Needed to assign log probs only when a step occurs
+        self.ode_t = -900  # keeps track of previous time an action was produced. Initialised to work at t=0.
         self.record_action = []  # Keeps track of action at time during ODE integration.
 
         # check if t_eval is formatted correctly:
@@ -92,19 +93,16 @@ class RCModel(nn.Module):
         """
 
         # get cooling action if policy is not None and 15 minutes has passed since last action
-        if self.cooling_policy and t - self.ode_t >= 60*15:
-            action, log_prob = self.cooling_policy.get_action(x[2:], t + self.t0)
+        if self.cooling_policy and t - self.ode_t >= 60*15:  # policy exists
+            self.action, log_prob = self.cooling_policy.get_action(x[2:], t + self.t0)
             self.ode_t = t
-            self.record_action.append([t, action])  # This is just used for plotting the cooling after.
+            self.record_action.append([t, self.action])  # This is just used for plotting the cooling after.
 
             if self.cooling_policy.training:  # if in training mode store log_prob
                 self.cooling_policy.log_probs.append(log_prob)
 
-        else:  # No cooling
-            action = 0
-
         # Get energy input at timestep:
-        Q_area = -self.heat * action  # W/m2
+        Q_area = -self.heat * self.action  # W/m2
         Q_area = Q_area + self.building.gain  # add the constant gain term
         Q_watts = self.building.proportional_heating(Q_area)
 
