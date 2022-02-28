@@ -8,16 +8,19 @@ from tqdm.auto import tqdm, trange
 from rcmodel import *
 
 # Laptop
-weather_data_path = '/Users/benfourcin/OneDrive - University of Exeter/PhD/LSI/Data/Met Office Weather Files/JuneSept.csv'
-csv_path = '/Users/benfourcin/OneDrive - University of Exeter/PhD/LSI/Data/DummyData/train5d_sorted.csv'
+# weather_data_path = '/Users/benfourcin/OneDrive - University of Exeter/PhD/LSI/Data/Met Office Weather Files/JuneSept.csv'
+# csv_path = '/Users/benfourcin/OneDrive - University of Exeter/PhD/LSI/Data/DummyData/test2d_sorted.csv'
 
 # Hydra:
-# weather_data_path = '/home/benf/LSI/Data/Met Office Weather Files/JuneSept.csv'
-# csv_path = '/home/benf/LSI/Data/DummyData/train5d_sorted.csv'  # where building data
+weather_data_path = '/home/benf/LSI/Data/Met Office Weather Files/JuneSept.csv'
+csv_path = '/home/benf/LSI/Data/DummyData/train5d_sorted.csv'  # where building data
 
 # Load model?
-load_model_path_physical = './physical_model.pt'  # or None
+# load_model_path_physical = None  # or None
 load_model_path_policy = None
+
+load_model_path_physical = './physical_model.pt'  # or None
+# load_model_path_policy = './prior_policy.pt'
 
 # opt_id = 0
 
@@ -37,12 +40,12 @@ def worker(opt_id):
         ax2 = axs.twinx()
         ln1 = axs.plot(range(1, len(avg_train_loss_plot) + 1), avg_train_loss_plot, label='train loss')
         ln2 = axs.plot(range(1, len(avg_test_loss_plot) + 1), avg_test_loss_plot, label='test loss')
-        ln3 = axs.plot(range(1+conv_win_len, len(phys_smooth)+conv_win_len+1), phys_smooth, 'g', label='train loss - smoothed')
+        ln3 = axs.plot(range(1, len(phys_smooth) + 1), phys_smooth, 'g', label='train loss - smoothed')
         c = []
         for i in range(len(phys_smooth)):
             c.append(convergence_criteria(phys_smooth[0:i + 1], conv_win_len))
 
-        ln4 = ax2.plot(range(1 + conv_win_len, len(phys_smooth) + conv_win_len + 1), c, 'k--', label='convergence')
+        ln4 = ax2.plot(range(1, len(phys_smooth) + 1), c, 'k--', label='convergence')
 
         fig.suptitle('Train and Test Loss During Training', fontsize=16)
         axs.set_xlabel('Epoch')
@@ -62,15 +65,15 @@ def worker(opt_id):
         fig, axs = plt.subplots(figsize=(10, 7))
         ax2 = axs.twinx()
 
-        y = torch.flatten(torch.tensor(rewards_plot)).detach().numpy()
+        y = np.array(rewards_plot, dtype=np.float32)
         ln1 = axs.plot(range(1, len(y) + 1), -y, label='total rewards')
-        ln2 = axs.plot(range(1 + conv_win_len, len(pol_smooth) + conv_win_len + 1), -np.array(pol_smooth), 'g',
+        ln2 = axs.plot(range(1, len(pol_smooth) + 1), -np.array(pol_smooth, dtype=np.float32), 'g',
                        label='rewards - smoothed')
         c = []
         for i in range(len(pol_smooth)):
             c.append(convergence_criteria(pol_smooth[0:i + 1], conv_win_len))
 
-        ln3 = ax2.plot(range(1 + conv_win_len, len(pol_smooth) + conv_win_len + 1), c, 'k--', label='convergence')
+        ln3 = ax2.plot(range(1, len(pol_smooth) + 1), c, 'k--', label='convergence')
 
         # legend:
         lns = ln1 + ln2 + ln3
@@ -87,6 +90,21 @@ def worker(opt_id):
 
         fig.savefig(f'./outputs/run{opt_id}/plots/RewardsPlot.png')
         plt.close()
+
+    def avg_last_values(y, n):
+        """
+        Get the mean of the last n valid values from a mixed list of numbers and None.
+
+        If y[-n] contains None nothing is returned.
+        Otherwise, y[-n].mean() is returned.
+        """
+
+        for i, val in enumerate(reversed(y)):  # look along reversed list and stop at the first None
+            if val is None:
+                break
+        if i > n:  # if there are enough non-None values:
+            y_hat = [np.array(y[-n]).mean()]
+            return y_hat
 
     def init_scaling():
         # Initialise scaling class
@@ -135,7 +153,6 @@ def worker(opt_id):
     count = 0  # Counts number of epochs since start.
 
     # initialise variables to keep Pycharm happy:
-    y_hat = None
     epoch = None
     rewards = None
 
@@ -163,6 +180,7 @@ def worker(opt_id):
 
         # -------- Physical model training --------
         tqdm.write('Physical Model Training:')
+        y_hat = None  # reset value
         convergence = torch.inf
         for epoch in range(max_epochs):
             avg_train_loss = op.train()
@@ -172,22 +190,28 @@ def worker(opt_id):
             avg_test_loss = op.test()
             avg_test_loss_plot.append(avg_test_loss)
 
+            # Add dummy value to keep continuity in the graphs.
+            rewards_plot.append(None)
+            ER_plot.append(None)
+
             # Save Model
             model_id = count + start_num
             model.save(model_id, dir_path)
             count += 1
 
-            # check for convergence using a smoothed curve and comparing a window of previous results:
-            if epoch+1 == conv_win_len:
-                y_hat = [np.array(avg_train_loss_plot[0:conv_win_len]).mean()]
-
-            if epoch+1 > conv_win_len:
+            # initialise y_hat if needed after calc the convergence by comparing a window of smoothed results.
+            if y_hat is None:
+                y_hat = avg_last_values(avg_train_loss_plot, conv_win_len)
+            else:
                 y_hat = exponential_smoothing(avg_train_loss, conv_alpha, y_hat, n=conv_win_len)
                 convergence = convergence_criteria(y_hat, conv_win_len)
+                if convergence is None:
+                    convergence = torch.inf  # Just to allow the print statement below
 
             tqdm.write(
                 f'Epoch {count}, Train/Test Loss: {avg_train_loss:.2f}/{avg_test_loss:.2f}, Convergence/Cutoff: {convergence:.3f}/{tol_phys:.3f}')
 
+            # check if percentage change from mean is less than tol. i.e. convergence
             if convergence < tol_phys:
                 tqdm.write(f'Physical converged in {epoch + 1} epochs. Total epochs: {count}\n')
                 break
@@ -201,6 +225,7 @@ def worker(opt_id):
 
         # -------- Policy training --------
         tqdm.write('Policy Training:')
+        y_hat = None  # reset value
         convergence = torch.inf
         for epoch in range(max_epochs):
             rewards, ER = rl.train(1, sample_size)
@@ -211,22 +236,28 @@ def worker(opt_id):
             rewards_plot.append(rewards)
             ER_plot.append(ER)
 
+            # Add dummy value to keep continuity in the graphs.
+            avg_train_loss_plot.append(None)
+            avg_test_loss_plot.append(None)
+
             # Save Model
             model_id = count + start_num
             model.save(model_id, dir_path)
             count += 1
 
-            # check if percentage change from mean is less than tol. i.e. convergence
-            if epoch+1 == conv_win_len:
-                y_hat = [np.array(rewards_plot[0:conv_win_len]).mean()]
-
-            if epoch+1 > conv_win_len:
+            # initialise y_hat if needed after calc the convergence by comparing a window of smoothed results.
+            if y_hat is None:
+                y_hat = avg_last_values(rewards_plot, conv_win_len)
+            else:
                 y_hat = exponential_smoothing(rewards, conv_alpha, y_hat, n=conv_win_len)
                 convergence = convergence_criteria(y_hat, conv_win_len)
+                if convergence is None:
+                    convergence = torch.inf  # Just to allow the print statement below
 
             tqdm.write(
                 f'Epoch {count}, Rewards/Expected Rewards: {rewards:.2f}/{ER:.2f}, Convergence/Cutoff: {convergence:.3f}/{tol_policy:.3f}')
 
+            # check if percentage change from mean is less than tol. i.e. convergence
             if convergence < tol_policy:
                 tqdm.write(f'Policy converged in {epoch + 1} epochs. Total epochs: {count}\n')
                 break
@@ -253,8 +284,6 @@ def worker(opt_id):
 
 if __name__ == '__main__':
     import ray
-
-    worker(0)
 
     num_cpus = 5
     num_jobs = num_cpus
