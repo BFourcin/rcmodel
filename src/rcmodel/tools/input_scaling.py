@@ -54,20 +54,17 @@ class InputScaling(Building):
         Scale to 0-1.
         """
 
-        rm_cap, ex_cap, ex_r, wl_r, gain = self.categorise_theta(theta)
+        rm_cap, ex_cap, ex_r, wl_r = self.categorise_theta(theta)
 
         rm_cap = self.minmaxscale(rm_cap, self.input_range[0])
         ex_cap = self.minmaxscale(ex_cap, self.input_range[1])
         ex_r   = self.minmaxscale(ex_r  , self.input_range[2])
         wl_r   = self.minmaxscale(wl_r  , self.input_range[2])
-        gain   = self.minmaxscale(gain  , self.input_range[3])
 
         if wl_r.ndim == 0:
             wl_r = torch.unsqueeze(wl_r, 0)
-        if gain.ndim == 0:
-            gain = torch.unsqueeze(gain, 0)
 
-        theta_scaled = torch.cat([rm_cap, ex_cap, ex_r, wl_r, gain])
+        theta_scaled = torch.cat([rm_cap, ex_cap, ex_r, wl_r])
 
         return theta_scaled
 

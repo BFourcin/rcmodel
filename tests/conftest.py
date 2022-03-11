@@ -44,9 +44,8 @@ def building_n2(rooms_n2):
     Ce = [1e3, 8e2]
     Re = [5, 1, 0.5]
     Rint = [0.1]
-    gain = [0]
 
-    theta = [rm_cap, Ce, Re, Rint, gain]
+    theta = [rm_cap, Ce, Re, Rint]
     theta = [item for sublist in theta for item in sublist]  # flatten list
 
     bld = Building(rooms_n2, height)
@@ -62,9 +61,8 @@ def building_n9(rooms_n9):
     Ce = [1e3, 8e2]
     Re = [5, 1, 0.5]
     Rint = [0.1]
-    gain = [0]
 
-    theta = [rm_cap, Ce, Re, Rint, gain]
+    theta = [rm_cap, Ce, Re, Rint]
     theta = [item for sublist in theta for item in sublist]  # flatten list
 
     bld = Building(rooms_n9, height)
