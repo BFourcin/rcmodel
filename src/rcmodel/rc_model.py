@@ -28,12 +28,13 @@ class RCModel(nn.Module):
         self.action = 0  # initialise cooling action
 
         self.params = None  # initialised in init_physical()
-        self.cooling = None  # initialised in init_physical()
+        self.loads = None  # initialised in init_physical()
         self.init_physical()  # initialise with random numbers, length of params given from building class
 
         self.ode_t = None  # Keeps track of t during integration. None is just to initialise attribute
         self.record_action = None  # records Q and t during integration
-        self.heat = None  # Heat in Watts
+        self.cool_load = None  # cooling in Watts/m2
+        self.gain_load = None  # gain in Watts/m2
         self.t0 = None  # unix epoch start time in seconds
         self.A = None  # System Matrix
         self.B = None  # Input Matrix
@@ -60,14 +61,17 @@ class RCModel(nn.Module):
         # Transform parameters
         if self.transform:
             theta = self.transform(self.params)
-            self.heat = self.transform(self.cooling)  # Watts for each room
+            loads = self.transform(self.loads)  # Watts/m2 for cooling and gain.
         else:
             theta = self.params
-            self.heat = self.cooling
+            loads = self.loads
 
         # Scale inputs up to their physical values
         theta = self.scaling.physical_param_scaling(theta)
-        self.heat = self.scaling.physical_cooling_scaling(self.heat)
+        loads = self.scaling.physical_cooling_scaling(loads)
+
+        self.cool_load = loads[0, :]
+        self.gain_load = loads[1, :]
 
         # t_eval_plus = torch.cat((t_eval, (t_eval[-1] + 600).unsqueeze(0)),
         #                         0)  # added on extra time to avoid error with interp1d(t_end)
@@ -102,8 +106,8 @@ class RCModel(nn.Module):
                 self.cooling_policy.log_probs.append(log_prob)
 
         # Get energy input at timestep:
-        Q_area = -self.heat * self.action  # W/m2
-        Q_area = Q_area + self.building.gain  # add the constant gain term
+        Q_area = -self.cool_load * self.action  # W/m2
+        Q_area = Q_area + self.gain_load  # add the constant gain term
         Q_watts = self.building.proportional_heating(Q_area)
 
         Tout = self.Tout_continuous(t.item() + self.t0)
@@ -120,16 +124,18 @@ class RCModel(nn.Module):
 
     def init_physical(self):
         params = torch.rand(self.building.n_params, dtype=torch.float32, requires_grad=True)
+        loads = torch.rand((2, len(self.building.rooms)), dtype=torch.float32, requires_grad=True)
 
         # enables spread of initial parameters. Otherwise sigmoid(rand) tends towards 0.5.
         if self.transform == torch.sigmoid:
             params = torch.logit(params)  # inverse sigmoid
+            loads = torch.logit(loads)
 
         # make theta torch parameters
         self.params = nn.Parameter(params)
 
-        # initialise the room cooling factor parameter
-        self.cooling = nn.Parameter(torch.rand((len(self.building.rooms)), dtype=torch.float32, requires_grad=True))
+        # initialise the room cooling and gain loads
+        self.loads = nn.Parameter(loads)
 
     def save(self, model_id=0, dir_path=None):
         """
@@ -139,7 +145,7 @@ class RCModel(nn.Module):
         """
         scaled_state_dict = self.state_dict()
         scaled_state_dict['params'] = self.scaling.physical_param_scaling(self.transform(scaled_state_dict['params']))
-        scaled_state_dict['cooling'] = self.scaling.physical_cooling_scaling(self.transform(scaled_state_dict['cooling']))
+        scaled_state_dict['loads'] = self.scaling.physical_cooling_scaling(self.transform(scaled_state_dict['loads']))
 
         if dir_path is None:
             dir_path = "./outputs/models/"
@@ -160,8 +166,8 @@ class RCModel(nn.Module):
             self.scaling.model_param_scaling(scaled_state_dict['params']) + 1e-15
         )
 
-        scaled_state_dict['cooling'] = torch.logit(
-            self.scaling.model_cooling_scaling(scaled_state_dict['cooling']) + 1e-15
+        scaled_state_dict['loads'] = torch.logit(
+            self.scaling.model_cooling_scaling(scaled_state_dict['loads']) + 1e-15
         )
 
         self.load_state_dict(scaled_state_dict)

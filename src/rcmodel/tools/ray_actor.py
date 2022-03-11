@@ -120,7 +120,7 @@ class RayActor:
             plt.close()
 
         final_params = self.model.transform(self.model.params).detach().numpy()
-        final_cooling = self.model.transform(self.model.cooling).detach().numpy()
+        final_cooling = self.model.transform(self.model.loads).detach().numpy()
 
         return np.concatenate(([opt_id], final_params, final_cooling, [final_train_loss, final_test_loss]))
 
