@@ -494,7 +494,7 @@ class Building:
             self.area = self.get_area()
 
         def get_area(self):
-            wl = torch.tensor(self.coordinates)  # put wall in array for easy calc of area
+            wl = torch.tensor(self.coordinates, dtype=torch.float32)   # put wall in array for easy calc of area
             length = torch.linalg.norm(wl[0] - wl[1], dtype=torch.float)
 
             return length * self.height
