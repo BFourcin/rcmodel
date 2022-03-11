@@ -19,6 +19,9 @@ class InputScaling(Building):
     def __init__(self, rm_CA=None, ex_C=None, R=None, Q_limit=None, input_range=None):
 
         if input_range is None:
+            if len(Q_limit) == 1:
+                Q_limit = [0, Q_limit[0]]  # account for single value input
+
             input_range = [rm_CA, ex_C, R, Q_limit]  # Q_limit is in W/m2
 
             # check for None
@@ -32,20 +35,17 @@ class InputScaling(Building):
         Scale from 0-1 back to physical value.
         """
 
-        rm_cap, ex_cap, ex_r, wl_r, gain = self.categorise_theta(theta_scaled)
+        rm_cap, ex_cap, ex_r, wl_r = self.categorise_theta(theta_scaled)
 
         rm_cap = self.unminmaxscale(rm_cap, self.input_range[0])
         ex_cap = self.unminmaxscale(ex_cap, self.input_range[1])
         ex_r   = self.unminmaxscale(ex_r,   self.input_range[2])
         wl_r   = self.unminmaxscale(wl_r,   self.input_range[2])
-        gain   = self.unminmaxscale(gain,   self.input_range[3])
 
         if wl_r.ndim == 0:
             wl_r = torch.unsqueeze(wl_r, 0)
-        if gain.ndim == 0:
-            gain = torch.unsqueeze(gain, 0)
 
-        theta = torch.cat([rm_cap, ex_cap, ex_r, wl_r, gain])
+        theta = torch.cat([rm_cap, ex_cap, ex_r, wl_r])
 
         return theta
 

@@ -28,6 +28,7 @@ class PolicyNetwork(nn.Module):
             nn.Linear(n, out_dim),
         )
 
+        self.log_probs = None  # initialised in on_policy_reset()
         self.on_policy_reset()
 
     def forward(self, state):
@@ -100,7 +101,7 @@ class Reinforce:
         self.gamma = gamma
         self.alpha = alpha
 
-        self.optimiser = torch.optim.Adam(self.env.RC.cooling_policy.parameters(), lr=self.alpha)
+        self.optimiser = torch.optim.Adam(list(self.env.RC.cooling_policy.parameters()) + [self.env.RC.loads], lr=self.alpha)
 
     def update_policy(self, rewards, log_probs):
         log_probs = torch.stack(log_probs).squeeze()  # get into right format regardless of whether single or multiple states have been used

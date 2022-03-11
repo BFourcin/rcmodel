@@ -2,8 +2,11 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import torch
 import numpy as np
+import ray
 from pathlib import Path
 from tqdm.auto import tqdm, trange
+import cma
+import pickle
 
 from rcmodel import *
 
@@ -25,6 +28,49 @@ load_model_path_policy = None
 # opt_id = 0
 
 
+####################
+def replace_parameters(state_dict, new_parameters):
+    # new_parameters between 0-1
+
+    count = 0
+    # for name in list(state_dict):
+    name = list(state_dict)[0]
+    layer = state_dict[name]
+
+    n = torch.prod(torch.tensor(layer.size())).item()  # num of parameters in layer
+
+    state_dict[name] = torch.nn.Parameter(
+        torch.reshape(torch.tensor(new_parameters[count:count + n], dtype=torch.float32), layer.size()))
+
+    count += n
+
+    return state_dict
+
+@ray.remote
+def fitness(params, model, t_evals, temp):
+    # with FileLock("parameters.csv.lock"):
+    #     with open("parameters.csv","a") as f:
+    #         np.savetxt(f, [params], delimiter=', ')
+
+    model.load_state_dict(replace_parameters(model.state_dict(), list(params)))
+
+    num_cols = len(model.building.rooms)  # number of columns to use from data.
+    loss_fn = torch.nn.MSELoss()
+
+    try:
+        with torch.no_grad():
+            # Compute prediction and loss
+            pred = model(t_evals)
+            pred = pred.squeeze(-1)  # change from column to row matrix
+
+            loss = loss_fn(pred[:, 2:], temp[:, 0:num_cols]).item()
+
+    except ValueError:
+        loss = 1e5
+
+    return loss
+
+####################
 def worker(opt_id):
     torch.set_num_threads(1)
 
@@ -111,7 +157,7 @@ def worker(opt_id):
         rm_CA = [100, 1e4]  # [min, max] Capacitance/area
         ex_C = [1e3, 1e8]  # Capacitance
         R = [0.1, 5]  # Resistance ((K.m^2)/W)
-        Q_limit = [300]  # Cooling limit and gain limit in W/m2
+        Q_limit = [-300, 300]  # Cooling limit and gain limit in W/m2
         scaling = InputScaling(rm_CA, ex_C, R, Q_limit)
         return scaling
 
@@ -172,9 +218,11 @@ def worker(opt_id):
     tol_policy = 0.005  # 0.05%
     conv_win_len = 10  # MUST BE EVEN. total length of lookback window to measure convergence
     conv_alpha = 0.15
+    x0 = [0.001]*8
+    x0 = [6.511640591774822, 19.76159697995476, -4.058331813680976, -2.1616151438864635, 6.811638412982899, -14.514703695086626, -4.672568047943684, 0.002697840026185027]
 
-    cycles = 2
-    max_epochs = 3
+    cycles = 40
+    max_epochs = 200
 
     plt.ioff()  # Reduces memory usage by matplotlib
     for cycle in trange(cycles):
@@ -183,47 +231,47 @@ def worker(opt_id):
         tqdm.write('Physical Model Training:')
         y_hat = None  # reset value
         convergence = torch.inf
-        for epoch in range(max_epochs):
-            avg_train_loss = op.train()
-            avg_train_loss_plot.append(avg_train_loss)
+        #######
 
-            # Test Loss
-            avg_test_loss = op.test()
-            avg_test_loss_plot.append(avg_test_loss)
+        x0, avg_train_loss, _ = cmaes(model, x0, time_data, temp_data)
+        avg_train_loss_plot.append(avg_train_loss)
+        model.load_state_dict(replace_parameters(model.state_dict(), list(x0)))
 
-            # Add dummy value to keep continuity in the graphs.
-            rewards_plot.append(None)
-            ER_plot.append(None)
+        avg_test_loss = -1
+        convergence = -1
 
-            # Save Model
-            model_id = count + start_num
-            model.save(model_id, dir_path)
-            count += 1
+        # Add dummy value to keep continuity in the graphs.
+        rewards_plot.append(None)
+        ER_plot.append(None)
 
-            # initialise y_hat if needed after calc the convergence by comparing a window of smoothed results.
-            if y_hat is None:
-                y_hat = avg_last_values(avg_train_loss_plot, conv_win_len)
-            else:
-                y_hat = exponential_smoothing(avg_train_loss, conv_alpha, y_hat, n=conv_win_len)
-                convergence = convergence_criteria(y_hat, conv_win_len)
-                if convergence is None:
-                    convergence = torch.inf  # Just to allow the print statement below
+        # Save Model
+        model_id = count + start_num
+        model.save(model_id, dir_path)
+        count += 1
 
-            tqdm.write(
-                f'Epoch {count}, Train/Test Loss: {avg_train_loss:.2f}/{avg_test_loss:.2f}, Convergence/Cutoff: {convergence:.3f}/{tol_phys:.3f}')
+        # initialise y_hat if needed after calc the convergence by comparing a window of smoothed results.
+        # if y_hat is None:
+        #     y_hat = avg_last_values(avg_train_loss_plot, conv_win_len)
+        # else:
+        #     y_hat = exponential_smoothing(avg_train_loss, conv_alpha, y_hat, n=conv_win_len)
+        #     convergence = convergence_criteria(y_hat, conv_win_len)
+        #     if convergence is None:
+        #         convergence = torch.inf  # Just to allow the print statement below
 
-            # check if percentage change from mean is less than tol. i.e. convergence
-            if convergence < tol_phys:
-                tqdm.write(f'Physical converged in {epoch + 1} epochs. Total epochs: {count}\n')
-                break
+        tqdm.write(
+            f'Epoch {count}, Train/Test Loss: {avg_train_loss:.2f}/{avg_test_loss:.2f}, Convergence/Cutoff: {convergence:.3f}/{tol_phys:.3f}')
 
-        if epoch+1 == max_epochs and convergence > tol_phys:
-            tqdm.write(f'Failed to converge, max epochs reached. Total epochs: {count}\n')
+        # # check if percentage change from mean is less than tol. i.e. convergence
+        # if convergence < tol_phys:
+        #     tqdm.write(f'Physical converged in {epoch + 1} epochs. Total epochs: {count}\n')
+        #     break
+        #
+        # if epoch+1 == max_epochs and convergence > tol_phys:
+        #     tqdm.write(f'Failed to converge, max epochs reached. Total epochs: {count}\n')
 
         # Save a plot of results after physical training
-        with torch.no_grad():
-            pltsolution_1rm(model, plot_dataloader,
-                            f'./outputs/run{opt_id}/plots/results/Result_Cycle{start_num + cycle + 1}a.png')
+        pltsolution_1rm(model, plot_dataloader,
+                        f'./outputs/run{opt_id}/plots/results/Result_Cycle{start_num + cycle + 1}a.png')
 
         # -------- Policy training --------
         tqdm.write('Policy Training:')
@@ -267,12 +315,11 @@ def worker(opt_id):
         if epoch+1 == max_epochs and convergence > tol_policy:
             tqdm.write(f'Failed to converge, max epochs reached. Total epochs: {count}\n')
 
-        with torch.no_grad():  # makes plotting 20% faster
-            # Save a plot of results after policy training
-            pltsolution_1rm(model, plot_dataloader, f'./outputs/run{opt_id}/plots/results/Result_Cycle{start_num + cycle + 1}b.png')
+        # Save a plot of results after policy training
+        pltsolution_1rm(model, plot_dataloader, f'./outputs/run{opt_id}/plots/results/Result_Cycle{start_num + cycle + 1}b.png')
 
-            # Plot loss and reward plot
-            do_plots()
+        # Plot loss and reward plot
+        do_plots()
 
         # save outputs to .csv:
         pd.DataFrame(rewards_plot).to_csv(f'./outputs/run{opt_id}/plots/rewards.csv', index=False)
@@ -280,20 +327,57 @@ def worker(opt_id):
         pd.DataFrame(avg_test_loss_plot).to_csv(f'./outputs/run{opt_id}/plots/test_loss.csv', index=False)
 
     final_params = model.transform(model.params).detach().numpy()
-    final_cooling = model.transform(model.loads[0, :]).detach().numpy()
-    final_gain = model.transform(model.loads[1, :]).detach().numpy()
+    final_cooling = model.transform(model.loads).detach().numpy()
 
-    return np.concatenate(([opt_id], final_params, final_gain, final_cooling, [rewards]))
+    return np.concatenate(([opt_id], final_params, final_cooling, [rewards]))
+
+@ray.remote
+def get_results(model, time_data, temp_data, X):
+    return ray.get([fitness.remote(params, model, time_data, temp_data) for params in X])
+
+
+def cmaes(model, x0, time_data, temp_data):
+    # hyper parameters:
+    n_workers = 30  # multiprocessing
+    maxfevals = n_workers*150
+
+    sigma0 = 1.5
+    opts = {
+        # 'bounds': [0, 1],
+        'maxfevals': maxfevals,
+        'tolfun': 1e-6,
+        'popsize': n_workers
+    }
+
+    es = cma.CMAEvolutionStrategy(x0, sigma0, opts)
+
+    # es.optimize(fitness, args=(model, t_evals, temp), maxfun=2)
+    # res = es.result
+    # print(res)
+
+    while not es.stop():
+        X = es.ask()
+        es.tell(X, ray.get(get_results.remote(model, time_data, temp_data, X)))
+        es.disp()
+        es.logger.add()
+
+    # save the run:
+    s = es.pickle_dumps()  # return pickle.dumps(es) with safeguards
+    # save string s to file like open(filename, 'wb').write(s)
+    open('savedrun', 'wb').write(s)
+
+    return es.best.get()
+
 
 
 if __name__ == '__main__':
     import ray
 
-    worker(0)
+    # worker(0)
 
-    num_cpus = 3
+    num_cpus = 2
     num_jobs = num_cpus
-    ray.init(num_cpus=num_cpus)
+    ray.init()
 
     worker = ray.remote(worker)
 

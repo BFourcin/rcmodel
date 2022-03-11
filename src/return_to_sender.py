@@ -216,7 +216,7 @@ def worker(opt_id):
         do_plots()
 
     final_params = model.transform(model.params).detach().numpy()
-    final_cooling = model.transform(model.cooling).detach().numpy()
+    final_cooling = model.transform(model.loads).detach().numpy()
 
     return model, np.concatenate(([opt_id], final_params, final_cooling, [torch.tensor(rewards).sum().item()]))
 
@@ -226,12 +226,12 @@ trained_model, results = worker(0)
 print('\n\n\n')
 
 print('Original Parameters: ')
-print(model_origin.params, model_origin.cooling)
+print(model_origin.params, model_origin.loads)
 
 print('\n')
 
 print('Trained Parameters: ')
-print(trained_model.params, trained_model.cooling)
+print(trained_model.params, trained_model.loads)
 
 
 

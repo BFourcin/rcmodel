@@ -18,7 +18,7 @@ if __name__ == '__main__':
     rm_CA = [100, 1e4]  # [min, max] Capacitance/area
     ex_C = [1e3, 1e8]  # Capacitance
     R = [0.1, 5]  # Resistance ((K.m^2)/W)
-    Q_limit = [-100, 100]  # Cooling limit and gain limit in W/m2
+    Q_limit = [-300, 300]  # Cooling limit and gain limit in W/m2
     scaling = InputScaling(rm_CA, ex_C, R, Q_limit)
 
     # Laptop:
@@ -30,12 +30,13 @@ if __name__ == '__main__':
     # weather_data_path = '/home/benf/LSI/Data/Met Office Weather Files/JuneSept.csv'
     # csv_path = '/home/benf/LSI/Data/DummyData/train5d_sorted.csv'
 
-    prior = PriorCoolingPolicy()
-    model = initialise_model(prior, scaling, weather_data_path)
+    # prior = PriorCoolingPolicy()
+    policy = PolicyNetwork(5, 2)
+    model = initialise_model(policy, scaling, weather_data_path)
 
     if use_ray:
         RayActor = ray.remote(RayActor)
-        actors = [RayActor.remote(model, csv_path, policy_training=True) for _ in range(num_jobs)]
+        actors = [RayActor.remote(model, csv_path, physical_training=False, policy_training=True) for _ in range(num_jobs)]
 
         results = ray.get([a.worker.remote(num, epochs) for num, a in enumerate(actors)])
         ray.shutdown()
