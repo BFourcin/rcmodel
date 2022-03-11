@@ -119,7 +119,7 @@ def mem_profile():
             m = initialise_model(None, scaling, weather_data_path)  # dummy model to load physical params on to.
             m.load(load_model_path_physical)
             model.params = m.params  # put loaded physical parameters onto model.
-            model.cooling = m.cooling
+            model.loads = m.loads
             del m
 
         model.save(0, dir_path)  # save initial model
@@ -256,7 +256,7 @@ def mem_profile():
             pd.DataFrame(avg_test_loss_plot).to_csv(f'./outputs/run{opt_id}/plots/test_loss.csv', index=False)
 
         final_params = model.transform(model.params).detach().numpy()
-        final_cooling = model.transform(model.cooling).detach().numpy()
+        final_cooling = model.transform(model.loads).detach().numpy()
 
         return np.concatenate(([opt_id], final_params, final_cooling, [rewards]))
 
