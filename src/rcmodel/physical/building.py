@@ -17,7 +17,6 @@ class Building:
         self.Re = [0, 0, 0]      # external resistance
         self.Ce = [0, 0]      # external capacitance
         self.Rint = 0    # internal wall resistance
-        self.gain = 0    # constant heat gain (W/m^2)
 
         self.Walls = self.sort_walls()
 
@@ -97,13 +96,12 @@ class Building:
 
         x = [Te1, Te2, TA , TB , ... Tn ]
 
-        A = [A00, A01, A02, A03, ... A0n], #dTe1/dt
-            [A10, A11, A12, A13, ... A1n], #dTe2/dt
-            [A20, A21, A22, A23, ... A2n], #dTA/dt
-            .
-            .
-            .
-
+        A = [[A00, A01, A02, A03, ... A0n], #dTe1/dt
+             [A10, A11, A12, A13, ... A1n], #dTe2/dt
+             [A20, A21, A22, A23, ... A2n], #dTA/dt
+             .
+             .
+             .]
         """
 
         knect = self.make_connectivity_matrix()
@@ -270,6 +268,7 @@ class Building:
         Function returns its wall index number in the list Walls
         """
         is_coord = False
+        wl_indx = None  # keep pycharm happy
 
         # check if ID is a coordinate or an index
         if isinstance(wall_ID, int):
@@ -317,7 +316,7 @@ class Building:
         Function to split theta into its different categories.
 
         theta is a 1D vector with categories in the following order:
-        theta = [room capacitance, external capacitance, external resistance, internal wall resistance, gain]
+        theta = [room capacitance, external capacitance, external resistance, internal wall resistance]
         """
 
         indx = 1
@@ -328,10 +327,8 @@ class Building:
         ex_r = theta[indx - 3:indx]
         indx += 1
         wl_r = theta[indx - 1]
-        indx += 1
-        gain = theta[indx - 1]
 
-        return rm_cap, ex_cap, ex_r, wl_r, gain
+        return rm_cap, ex_cap, ex_r, wl_r
 
     def update_inputs(self, theta):
         """
@@ -339,13 +336,13 @@ class Building:
         Note: system matrices will have to be reproduced e.g. A, B
 
         theta is a 1D vector with categories in the following order:
-        theta = [room capacitance, external capacitance, external resistance, each wall resistance, gain]
+        theta = [room capacitance, external capacitance, external resistance, each wall resistance]
 
 
         returns A: The updated System Matrix
         """
 
-        rm_cap, ex_cap, ex_r, wl_r, gain = self.categorise_theta(theta)
+        rm_cap, ex_cap, ex_r, wl_r = self.categorise_theta(theta)
 
         # update room capacitance
         for i in range(len(self.rooms)):
@@ -365,9 +362,6 @@ class Building:
                 self.Walls[i].resistance = ex_r[2]
             else:
                 self.Walls[i].resistance = wl_r
-
-        # update gain
-        self.gain = gain
 
         A = self.make_system_matrix()
 
