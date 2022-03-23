@@ -31,7 +31,7 @@ def pltsolution_1rm(model, dataloader=None, filename=None, prediction=None, time
 
     else:
         t_days = (time - time.min()) / (24 * 60 ** 2)  # Time in days
-        data_temp = (t_days*torch.nan).unsqueeze(0).T
+        data_temp = (t_days * torch.nan).unsqueeze(0).T
 
     # Get Heating Control for each room
     if model.cooling_policy:
@@ -68,9 +68,9 @@ def pltsolution_1rm(model, dataloader=None, filename=None, prediction=None, time
     fig, axs = plt.subplots(figsize=(10, 8))
 
     ax2 = axs.twinx()
-    ln1 = axs.plot(t_days.detach().numpy(), prediction[:, 2:].detach().numpy(), label='model ($^\circ$C)')
-    ln2 = axs.plot(t_days.detach().numpy(), data_temp[:, 0].detach().numpy(), label='data ($^\circ$C)')
-    ln3 = axs.plot(t_days.detach().numpy(), model.Tout_continuous(time).detach().numpy(), label='outside ($^\circ$C)')
+    ln1 = axs.plot(t_days.detach().numpy(), prediction[:, 2:].detach().numpy(), label=r'model ($^\circ$C)')
+    ln2 = axs.plot(t_days.detach().numpy(), data_temp[:, 0].detach().numpy(), label=r'data ($^\circ$C)')
+    ln3 = axs.plot(t_days.detach().numpy(), model.Tout_continuous(time).detach().numpy(), label=r'outside ($^\circ$C)')
     ln4 = ax2.plot(Q_tdays.detach().numpy(), Q.detach().numpy(), '--', color='black', alpha=0.5, label='heat ($W$)')
     ln5 = ax2.axhline(gain_watts.detach().numpy(), linestyle='-.', color='black', alpha=0.5, label='gain ($W$)')
     axs.set_title(model.building.rooms[0].name)
@@ -81,7 +81,7 @@ def pltsolution_1rm(model, dataloader=None, filename=None, prediction=None, time
     labs = [l.get_label() for l in lns]
     axs.legend(lns, labs, loc=0)
 
-    axs.set(xlabel='Time (days)', ylabel='Temperature ($^\circ$C)')
+    axs.set(xlabel='Time (days)', ylabel=r'Temperature ($^\circ$C)')
 
     if filename:
         fig.savefig(filename)
