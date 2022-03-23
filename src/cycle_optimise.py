@@ -163,6 +163,7 @@ def worker(opt_id):
 
     # check if dir exists and make if needed
     Path(f'./outputs/run{opt_id}/plots/results/').mkdir(parents=True, exist_ok=True)
+    Path(f'./outputs/run{opt_id}/plots/policy_img/').mkdir(parents=True, exist_ok=True)
 
     start_num = 0  # Number of cycles to start at. Used if resuming the run. i.e. the first cycle is (start_num + 1)
 
@@ -270,9 +271,9 @@ def worker(opt_id):
         with torch.no_grad():  # makes plotting 20% faster
             # Save a plot of results after policy training
             pltsolution_1rm(model, plot_dataloader, f'./outputs/run{opt_id}/plots/results/Result_Cycle{start_num + cycle + 1}b.png')
-
             # Plot loss and reward plot
             do_plots()
+            policy_image(model.cooling_policy, path=f'./outputs/run{opt_id}/plots/policy_img/policy{start_num + cycle + 1}.png')
 
         # save outputs to .csv:
         pd.DataFrame(rewards_plot).to_csv(f'./outputs/run{opt_id}/plots/rewards.csv', index=False)

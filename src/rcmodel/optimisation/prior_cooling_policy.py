@@ -32,7 +32,7 @@ class PriorCoolingPolicy:
 
     def get_action(self, x, unix_time):
         """
-        Policy performs a number of logic checks and outputs an action, cooling on or off (0 or 1).
+        Policy performs a number of logic checks and outputs an action, cooling on or off (1 or 0).
 
         Standard thermometer logic is used, cooling can turn on if time is within the schedule.
         Default between 09:00 - 17:00, Mon-Fri.
@@ -79,16 +79,18 @@ class PriorCoolingPolicy:
                     if rm_temp > self.temp_on:
                         self.cooling_on = True
                         action[i] = 1
+                        continue
 
                     # if cooling has already been turned on keep it on until temp is below temp_off
                     elif rm_temp > self.temp_off and self.cooling_on:
                         action[i] = 1
+                        continue
 
             # Only reached if criteria above not met.
             self.cooling_on = False
             # action already zero so can remain unchanged
 
-        log_prob = 0  # Dummy value, enables imitation of actual policy
+        log_prob = torch.log(torch.tensor(1))  # Dummy value, enables imitation of actual policy
 
         return action, log_prob
 
@@ -129,16 +131,16 @@ if __name__ == '__main__':
     start = 1624834800
     week = 14 * 24 * 60**2
 
-    x = [0, 0, 22, 22, 22]
+    x = torch.tensor([0, 0, 23, 22, 22])
 
     tn = torch.arange(start, start + week, 60)
 
-    actions = torch.zeros((len(tn), len(x)-2))
+    actions = torch.zeros((len(tn), len(x)))
 
     prior = PriorCoolingPolicy()
 
     for i, t in enumerate(tn):
-        actions[i, :] = prior.get_action(x, t)
+        actions[i, :], _ = prior.get_action(x, t)
 
     plt.plot(tn, actions)
     plt.show()
