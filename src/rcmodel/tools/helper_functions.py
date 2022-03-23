@@ -3,6 +3,7 @@ from ..rc_model import RCModel
 from .rcmodel_dataset import BuildingTemperatureDataset
 from xitorch.interpolate import Interp1D
 from filelock import FileLock
+import matplotlib.pyplot as plt
 
 
 import pandas as pd
@@ -241,6 +242,40 @@ def exponential_smoothing(y, alpha, y_hat=None, n=10):
     return y_hat
 
 
+def policy_image(policy, n=100, path=None):
+    bounds = [15, 30]
+    t0 = 4*24*60**2  # buffer to go from thursday to monday
+    time = torch.linspace(0+t0, 24*60**2+t0, n)
+    temp = torch.linspace(bounds[0], bounds[1], n)
+    img = torch.zeros((n, n))
 
+    with torch.no_grad():
+        for i, x in enumerate(temp):
+            for j, y in enumerate(time):
+                action, log_prob = policy.get_action(x.unsqueeze(0).unsqueeze(0), y)
+                # Get prob of getting 1:
+                if action == 1:
+                    pr = torch.e**log_prob  # Convert log_prob to normal prob.
+                elif action == 0:
+                    pr = 1 - torch.e ** log_prob  # pr(a=1) = 1 - pr(a=0)
+                else:
+                    raise ValueError(f'action={action}, must be exactly 1 or 0.')
+
+                img[i, j] = pr
+
+    fig = plt.figure()
+    plt.imshow(img, origin='lower', aspect='auto', cmap='viridis', extent=(0, 24, bounds[0], bounds[1]), vmin=0, vmax=1)
+    plt.colorbar()
+    plt.xlabel('Time of Day [hours]')
+    plt.ylabel(r'Indoor Temperature [$^\circ$C]')
+    plt.title('Policy Plot')
+    plt.xticks(np.linspace(0, 24, 13))
+    plt.yticks(np.linspace(bounds[0], bounds[1], 7))
+    plt.grid(color='k', linestyle='--',)
+
+    if path:
+        fig.savefig(path)
+    else:
+        plt.show()
 
 

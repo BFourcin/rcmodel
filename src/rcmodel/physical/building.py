@@ -20,7 +20,6 @@ class Building:
 
         self.Walls = self.sort_walls()
 
-
         # get total external area:
         surf_area = 0
         for i in range(len(self.Walls)):

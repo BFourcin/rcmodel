@@ -57,6 +57,11 @@ class PolicyNetwork(nn.Module):
             Unix epoch time in seconds.
         """
 
+        if x.ndim == 0:
+            x = x.unsqueeze(0)
+        if unix_time.ndim == 0:
+            unix_time = unix_time.unsqueeze(0)
+
         # normalise x using info obtained from data.
         x_norm = (x - self.mu) / self.std_dev
         # x_norm = torch.reshape(x_norm, (1,))
@@ -65,25 +70,26 @@ class PolicyNetwork(nn.Module):
         week = 7 * day
         # year = (365.2425) * day
 
-        time_signals = torch.stack([np.sin(unix_time * (2 * np.pi / day)),
-                                    np.cos(unix_time * (2 * np.pi / day)),
-                                    np.sin(unix_time * (2 * np.pi / week)),
-                                    np.cos(unix_time * (2 * np.pi / week))])
-        time_signals = time_signals.to(torch.float32)
+        state = torch.stack([torch.flatten(x_norm),
+                            np.sin(unix_time * (2 * np.pi / day)),
+                            np.cos(unix_time * (2 * np.pi / day)),
+                            np.sin(unix_time * (2 * np.pi / week)),
+                            np.cos(unix_time * (2 * np.pi / week))]).to(torch.float32).T
+        # state = state.to(torch.float32)
 
-        try:  # Adds broadcasting to function.
-            if len(unix_time) > 1:
-                time_signals = time_signals.T
+        # Adds broadcasting to function.
+        # if len(unix_time) > 1:
+        #     state = state.T
 
-        except TypeError:  # Occurs when no len()
-            pass
-
-        try:
-            state = torch.cat((x_norm, time_signals), dim=1)
-
-        except RuntimeError:
-            # Occurs when single time is being simulated
-            state = torch.cat((x_norm, time_signals.unsqueeze(0)), dim=1)
+        # except TypeError:  # Occurs when no len()
+        #     pass
+        #
+        # try:
+        #     state = torch.cat((x_norm, state), dim=1)
+        #
+        # except RuntimeError:
+        #     # Occurs when single time is being simulated
+        #     state = torch.cat((x_norm, state.unsqueeze(0)), dim=1)
 
         return state
 
@@ -114,7 +120,7 @@ class Reinforce:
 
         R = 0
         indx = len(rewards) - 1
-        for r in reversed(rewards):
+        for r in reversed(rewards):  # Future/Later rewards are discounted
             R = r + self.gamma * R  # Discounted Reward is calculated from last reward to first.
 
             discounted_rewards[indx] = R  # Fill array back to front to un-reverse the order
