@@ -122,6 +122,26 @@ class RCModel(nn.Module):
         # Set iv as column vector. Errors caused if Row vector which are difficult to trace.
         self.iv = self.iv.unsqueeze(1)
 
+    def steady_state_iv(self, temp_out, temp_in):
+        """
+        Calculate the initial conditions of the latent variables given a steady state indoor and outdoor temperature.
+        Initial values of room nodes are set to temp in.
+
+        temp_out: float
+            Steady state outside temperature.
+        temp_in: tensor
+            Steady state inside temperature. len(temp_in) = n_rooms
+        :return: tensor
+            Column tensor of initial values at each node.
+        """
+        I = (temp_out - temp_in) / sum(self.building.Re)  # I=V/R
+        v1 = temp_out - I * self.building.Re[0]
+        v2 = v1 - I * self.building.Re[1]
+
+        iv = torch.tensor([[v1], [v2], [temp_in]]).to(torch.float32)
+
+        return iv
+
     def init_physical(self):
         params = torch.rand(self.building.n_params, dtype=torch.float32, requires_grad=True)
         loads = torch.rand((2, len(self.building.rooms)), dtype=torch.float32, requires_grad=True)
