@@ -4,6 +4,7 @@ import pandas as pd
 import numpy as np
 from pathlib import Path
 from tqdm.auto import tqdm, trange
+from xitorch.interpolate import Interp1D
 
 from rcmodel import *
 from rcmodel.tools.helper_functions import model_to_csv
@@ -11,13 +12,11 @@ from rcmodel.tools.helper_functions import model_to_csv
 
 # ----- Create Original model and produce a dummy data csv file: -----
 
-pi = PriorCoolingPolicy()
-
 # Initialise scaling class
 rm_CA = [100, 1e4]  # [min, max] Capacitance/area
 ex_C = [1e3, 1e8]  # Capacitance
 R = [0.1, 5]  # Resistance ((K.m^2)/W)
-Q_limit = [-1000, 1000]  # Cooling limit and gain limit in W/m2
+Q_limit = [300]  # Cooling limit and gain limit in W/m2
 scaling = InputScaling(rm_CA, ex_C, R, Q_limit)
 
 # Laptop
@@ -26,9 +25,29 @@ weather_data_path = '/Users/benfourcin/OneDrive - University of Exeter/PhD/LSI/D
 # Hydra:
 # weather_data_path = '/home/benf/LSI/Data/Met Office Weather Files/JuneSept.csv'
 
+policy = PolicyNetwork(5, 2)
 
-model_origin = initialise_model(pi, scaling, weather_data_path)
-model_origin.state_dict()['params'][7] = 0.001  # manually lower 'gain'
+model_origin = initialise_model(policy, scaling, weather_data_path)
+# model_origin.state_dict()['params'][7] = 0.001  # manually lower 'gain'
+
+# load a model which we will then try to replicate.
+load_policy = './prior_policy.pt'
+load_physical = './prior_physical.pt'
+
+if load_policy:
+    model_origin.load(load_policy)  # load policy
+    model_origin.init_physical()  # re-randomise physical params, as they were also copied from the loaded policy
+
+if load_physical:
+    # m = initialise_model(None, scaling, weather_data_path)  # dummy model to load physical params on to.
+    m = initialise_model(None, scaling, weather_data_path)  # dummy model to load physical params on to.
+    m.load(load_physical)
+    model_origin.params = m.params  # put loaded physical parameters onto model.
+    model_origin.loads = m.loads
+    del m
+
+
+
 print(model_origin.params)
 
 
@@ -38,7 +57,9 @@ output_path = './return_to_sender_out_sorted.csv'
 
 pred = model_to_csv(model_origin, t_eval, output_path)
 
-# see what the random model looks like:
+iv_array = Interp1D(t_eval, pred.T.detach(), method='linear')
+
+# see what the original model looks like:
 pltsolution_1rm(model_origin, prediction=pred, time=t_eval)
 
 # -----------------------------------------------------
@@ -58,39 +79,87 @@ def worker(opt_id):
     dir_path = f'./outputs/run{opt_id}/models/'  # where to save
 
     def do_plots():
-        fig = plt.figure(figsize=(10, 7), dpi=400)
-        plt.plot(range(1, len(avg_train_loss_plot) + 1), avg_train_loss_plot, label='train loss')
-        plt.plot(range(1, len(avg_test_loss_plot) + 1), avg_test_loss_plot, label='test loss')
-        plt.title('Train and Test Loss During Training')
-        plt.xlabel('Epoch')
-        plt.ylabel('Mean Squared Error')
-        plt.legend()
+        # find smoothed curves:
+        phys_smooth = exponential_smoothing(avg_train_loss_plot, conv_alpha, n=conv_win_len)
+        pol_smooth = exponential_smoothing(rewards_plot, conv_alpha, n=conv_win_len)
+
+        # Plot Loss:
+        fig, axs = plt.subplots(figsize=(10, 7))
+        ax2 = axs.twinx()
+        ln1 = axs.plot(range(1, len(avg_train_loss_plot) + 1), avg_train_loss_plot, label='train loss')
+        ln2 = axs.plot(range(1, len(avg_test_loss_plot) + 1), avg_test_loss_plot, label='test loss')
+        ln3 = axs.plot(range(1, len(phys_smooth) + 1), phys_smooth, 'g', label='train loss - smoothed')
+        c = []
+        for i in range(len(phys_smooth)):
+            c.append(convergence_criteria(phys_smooth[0:i + 1], conv_win_len))
+
+        ln4 = ax2.plot(range(1, len(phys_smooth) + 1), c, 'k--', label='convergence')
+
+        fig.suptitle('Train and Test Loss During Training', fontsize=16)
+        axs.set_xlabel('Epoch')
+        axs.set_ylabel('Mean Squared Error')
+        axs.set_yscale('log')
+        ax2.set_ylabel('Convergence')
+        ax2.set_yscale('log')
+        # legend:
+        lns = ln1 + ln2 + ln3 + ln4
+        labs = [l.get_label() for l in lns]
+        axs.legend(lns, labs, loc=0)
+
         fig.savefig(f'./outputs/run{opt_id}/plots/LossPlot.png')
         plt.close()
 
-        fig, axs = plt.subplots(1, 2, figsize=(10, 7), dpi=400)
-        y = torch.flatten(torch.tensor(ER_plot)).detach().numpy()
-        axs[0].plot(range(1, len(y) + 1), y, 'b', label='expected rewards')
-        axs[0].legend()
+        # Plot Rewards:
+        fig, axs = plt.subplots(figsize=(10, 7))
+        ax2 = axs.twinx()
 
-        y = torch.flatten(torch.tensor(rewards_plot)).detach().numpy()
-        axs[1].plot(range(1, len(y) + 1), y, 'r', label='total rewards')
-        axs[1].legend()
+        y = np.array(rewards_plot, dtype=np.float32)
+        ln1 = axs.plot(range(1, len(y) + 1), -y, label='total rewards')
+        ln2 = axs.plot(range(1, len(pol_smooth) + 1), -np.array(pol_smooth, dtype=np.float32), 'g',
+                       label='rewards - smoothed')
+        c = []
+        for i in range(len(pol_smooth)):
+            c.append(convergence_criteria(pol_smooth[0:i + 1], conv_win_len))
+
+        ln3 = ax2.plot(range(1, len(pol_smooth) + 1), c, 'k--', label='convergence')
+
+        # legend:
+        lns = ln1 + ln2 + ln3
+        labs = [l.get_label() for l in lns]
+        axs.legend(lns, labs, loc=0)
+
         fig.suptitle('Rewards', fontsize=16)
-        axs[0].set_xlabel('Epoch')
-        axs[1].set_xlabel('Epoch')
-        axs[0].set_ylabel('Reward')
-        axs[1].set_ylabel('Reward')
+        axs.set_xlabel('Epoch')
+        axs.set_ylabel('Reward')
+        axs.set_yscale('log')
+
+        ax2.set_ylabel('Convergence')
+        ax2.set_yscale('log')
 
         fig.savefig(f'./outputs/run{opt_id}/plots/RewardsPlot.png')
         plt.close()
+
+    def avg_last_values(y, n):
+        """
+        Get the mean of the last n valid values from a mixed list of numbers and None.
+
+        If y[-n] contains None nothing is returned.
+        Otherwise, y[-n].mean() is returned.
+        """
+
+        for i, val in enumerate(reversed(y)):  # look along reversed list and stop at the first None
+            if val is None:
+                break
+        if i > n:  # if there are enough non-None values:
+            y_hat = [np.array(y[-n]).mean()]
+            return y_hat
 
     def init_scaling():
         # Initialise scaling class
         rm_CA = [100, 1e4]  # [min, max] Capacitance/area
         ex_C = [1e3, 1e8]  # Capacitance
         R = [0.1, 5]  # Resistance ((K.m^2)/W)
-        Q_limit = [-10000, 10000]  # Cooling limit and gain limit in W/m2
+        Q_limit = [300]  # Cooling limit and gain limit in W/m2
         scaling = InputScaling(rm_CA, ex_C, R, Q_limit)
         return scaling
 
@@ -99,12 +168,27 @@ def worker(opt_id):
     policy = PolicyNetwork(5, 2)
     model = initialise_model(policy, scaling, weather_data_path)
 
+    # load physical and/or policy models if available
+    if load_model_path_policy:
+        model.load(load_model_path_policy)  # load policy
+        model.init_physical()  # re-randomise physical params, as they were also copied from the loaded policy
+
+    if load_model_path_physical:
+        # m = initialise_model(None, scaling, weather_data_path)  # dummy model to load physical params on to.
+        m = initialise_model(PolicyNetwork(5, 2), scaling, weather_data_path)  # dummy model to load physical params on to.
+        m.load(load_model_path_physical)
+        model.params = m.params  # put loaded physical parameters onto model.
+        model.loads = m.loads
+        del m
+
+    model.iv_array = iv_array
+
     model.save(0, dir_path)  # save initial model
 
-    # Initialise Optimise Class - for training physical model
+    # # Initialise Optimise Class - for training physical model
     dt = 30
     sample_size = 24 * 60 ** 2 / dt  # ONE DAY
-    op = OptimiseRC(model, csv_path, sample_size, dt, lr=1e-3, opt_id=opt_id)
+    op = OptimiseRC(model, csv_path, sample_size, dt, lr=1e-2, opt_id=opt_id)
 
     # Initialise Reinforcement Class - for training policy
     time_data = torch.tensor(pd.read_csv(csv_path, skiprows=0).iloc[:, 1], dtype=torch.float64)
@@ -117,7 +201,11 @@ def worker(opt_id):
     avg_test_loss_plot = []
     rewards_plot = []
     ER_plot = []
-    count = 1  # Counts number of epochs since start.
+    count = 0  # Counts number of epochs since start.
+
+    # initialise variables to keep Pycharm happy:
+    epoch = None
+    rewards = None
 
     # Dataloader to be used when plotting a model run. This is just for info.
     plot_results_data = BuildingTemperatureDataset(csv_path, 5 * sample_size, all=True)
@@ -125,113 +213,163 @@ def worker(opt_id):
 
     # check if dir exists and make if needed
     Path(f'./outputs/run{opt_id}/plots/results/').mkdir(parents=True, exist_ok=True)
-
-    # load physical and/or policy models if available
-    if load_model_path_policy:
-        model.load(load_model_path_policy)  # load policy
-        model.init_physical()  # re-randomise physical params, as they were also copied from the loaded policy
-
-    if load_model_path_physical:
-        m = initialise_model(None, scaling, weather_data_path)  # dummy model to load physical params on to.
-        m.load(load_model_path_physical)
-        model.params = m.params  # put loaded physical parameters onto model.
-        del m
+    Path(f'./outputs/run{opt_id}/plots/policy_img/').mkdir(parents=True, exist_ok=True)
 
     start_num = 0  # Number of cycles to start at. Used if resuming the run. i.e. the first cycle is (start_num + 1)
 
-    # Convergence happens when the mean gradient of loss/reward is < tol.
-    tol_phys = 0.01  # 1%
-    tol_policy = 0.02  # 2%
-    window_len = 10.  # Length of convergence look-back window.
+    # Convergence happens when the convergence criteria is < tol.
+    # See convergence_criteria() for more info.
+    tol_phys = 0.005  # 0.5%
+    tol_policy = 0.005  # 0.05%
+    conv_win_len = 10  # MUST BE EVEN. total length of lookback window to measure convergence
+    conv_alpha = 0.15
 
-    cycles = 25
-    max_epochs = 150
+    cycles = 1
+    max_epochs = 2
 
     plt.ioff()  # Reduces memory usage by matplotlib
     for cycle in trange(cycles):
 
         # -------- Physical model training --------
         tqdm.write('Physical Model Training:')
-        r_prev = (torch.arange(window_len) + 1) * 10  # dummy rewards to prevent convergence on first epochs
-        loss_prev = 0
+        y_hat = None  # reset value
+        convergence = torch.inf
         for epoch in range(max_epochs):
             avg_train_loss = op.train()
             avg_train_loss_plot.append(avg_train_loss)
-
-            # Get difference from previous
-            indx = epoch % len(r_prev)  # cycles the indexes in array
-            r_prev[indx] = avg_train_loss  # keeps track of a window of differences
 
             # Test Loss
             avg_test_loss = op.test()
             avg_test_loss_plot.append(avg_test_loss)
 
-            tqdm.write(
-                f'Epoch {count}, Train/Test Loss: {avg_train_loss:.2f}/{avg_test_loss:.2f}, Mean diff: {abs((r_prev.mean() - r_prev[indx]) / r_prev[indx]) * 100:.3f} %')
+            # Add dummy value to keep continuity in the graphs.
+            rewards_plot.append(None)
+            ER_plot.append(None)
 
             # Save Model
             model_id = count + start_num
             model.save(model_id, dir_path)
             count += 1
 
+            # initialise y_hat if needed after calc the convergence by comparing a window of smoothed results.
+            if y_hat is None:
+                y_hat = avg_last_values(avg_train_loss_plot, conv_win_len)
+            else:
+                y_hat = exponential_smoothing(avg_train_loss, conv_alpha, y_hat, n=conv_win_len)
+                convergence = convergence_criteria(y_hat, conv_win_len)
+                if convergence is None:
+                    convergence = torch.inf  # Just to allow the print statement below
+
+            tqdm.write(
+                f'Epoch {count}, Train/Test Loss: {avg_train_loss:.2f}/{avg_test_loss:.2f}, Convergence/Cutoff: {convergence:.3f}/{tol_phys:.3f}')
+
             # check if percentage change from mean is less than tol. i.e. convergence
-            if abs((r_prev.mean() - r_prev[indx]) / r_prev[indx]) < tol_phys:
+            if convergence < tol_phys:
+                tqdm.write(f'Physical converged in {epoch + 1} epochs. Total epochs: {count}\n')
                 break
 
-        tqdm.write(f'Physical converged in {epoch + 1} epochs. Total epochs: {count - 1}\n')
+        if epoch+1 == max_epochs and convergence > tol_phys:
+            tqdm.write(f'Failed to converge, max epochs reached. Total epochs: {count}\n')
 
         # Save a plot of results after physical training
-        pltsolution_1rm(model, plot_dataloader,
-                        f'./outputs/run{opt_id}/plots/results/Result_Cycle{start_num + cycle + 1}a.png')
+        with torch.no_grad():
+            pltsolution_1rm(model, plot_dataloader,
+                            f'./outputs/run{opt_id}/plots/results/Result_Cycle{start_num + cycle + 1}a.png')
 
         # -------- Policy training --------
         tqdm.write('Policy Training:')
-        r_prev = (torch.arange(window_len) + 1) * 1000
+        y_hat = None  # reset value
+        convergence = torch.inf
         for epoch in range(max_epochs):
             rewards, ER = rl.train(1, sample_size)
 
-            indx = epoch % len(r_prev)
-            r_prev[indx] = torch.tensor(rewards)  # keeps track of a window of differences
+            rewards = torch.tensor(rewards).sum().item()
+            ER = torch.tensor(ER).sum().item()
+
             rewards_plot.append(rewards)
             ER_plot.append(ER)
 
-            tqdm.write(
-                f'Epoch {count}, Rewards/Expected Rewards: {torch.tensor(rewards).sum().item():.2f}/{torch.tensor(ER).sum().item():.2f}, Mean diff: {abs((r_prev.mean() - r_prev[indx]) / r_prev[indx]) * 100:.3f} %')
+            # Add dummy value to keep continuity in the graphs.
+            avg_train_loss_plot.append(None)
+            avg_test_loss_plot.append(None)
 
             # Save Model
             model_id = count + start_num
             model.save(model_id, dir_path)
             count += 1
 
+            # initialise y_hat if needed after calc the convergence by comparing a window of smoothed results.
+            if y_hat is None:
+                y_hat = avg_last_values(rewards_plot, conv_win_len)
+            else:
+                y_hat = exponential_smoothing(rewards, conv_alpha, y_hat, n=conv_win_len)
+                convergence = convergence_criteria(y_hat, conv_win_len)
+                if convergence is None:
+                    convergence = torch.inf  # Just to allow the print statement below
+
+            tqdm.write(
+                f'Epoch {count}, Rewards/Expected Rewards: {rewards:.2f}/{ER:.2f}, Convergence/Cutoff: {convergence:.3f}/{tol_policy:.3f}')
+
             # check if percentage change from mean is less than tol. i.e. convergence
-            if abs((torch.mean(r_prev) - r_prev[indx]) / r_prev[indx]) < tol_policy:
+            if convergence < tol_policy:
+                tqdm.write(f'Policy converged in {epoch + 1} epochs. Total epochs: {count}\n')
                 break
 
-        tqdm.write(f'Policy converged in {epoch + 1} epochs. Total epochs: {count - 1}\n')
+        if epoch+1 == max_epochs and convergence > tol_policy:
+            tqdm.write(f'Failed to converge, max epochs reached. Total epochs: {count}\n')
 
-        # Save a plot of results after policy training
-        pltsolution_1rm(model, plot_dataloader, f'./outputs/run{opt_id}/plots/results/Result_Cycle{start_num + cycle + 1}b.png')
+        with torch.no_grad():  # makes plotting 20% faster
+            # Save a plot of results after policy training
+            pltsolution_1rm(model, plot_dataloader, f'./outputs/run{opt_id}/plots/results/Result_Cycle{start_num + cycle + 1}b.png')
+            # Plot loss and reward plot
+            do_plots()
+            policy_image(model.cooling_policy, path=f'./outputs/run{opt_id}/plots/policy_img/policy{start_num + cycle + 1}.png')
 
-        # Plot loss and reward plot
-        do_plots()
+        # save outputs to .csv:
+        pd.DataFrame(rewards_plot).to_csv(f'./outputs/run{opt_id}/plots/rewards.csv', index=False)
+        pd.DataFrame(avg_train_loss_plot).to_csv(f'./outputs/run{opt_id}/plots/train_loss.csv', index=False)
+        pd.DataFrame(avg_test_loss_plot).to_csv(f'./outputs/run{opt_id}/plots/test_loss.csv', index=False)
 
     final_params = model.transform(model.params).detach().numpy()
-    final_cooling = model.transform(model.loads).detach().numpy()
+    final_cooling = model.transform(model.loads[0, :]).detach().numpy()
+    final_gain = model.transform(model.loads[1, :]).detach().numpy()
 
-    return model, np.concatenate(([opt_id], final_params, final_cooling, [torch.tensor(rewards).sum().item()]))
+    return np.concatenate(([opt_id], final_params, final_gain, final_cooling, [rewards]))
 
 
-trained_model, results = worker(0)
+if __name__ == '__main__':
+    import ray
 
-print('\n\n\n')
+    num_cpus = 3
+    num_jobs = num_cpus
+    ray.init(num_cpus=num_cpus)
 
-print('Original Parameters: ')
-print(model_origin.params, model_origin.loads)
+    worker = ray.remote(worker)
 
-print('\n')
+    results = ray.get([worker.remote(num) for num in range(num_jobs)])
+    ray.shutdown()
 
-print('Trained Parameters: ')
-print(trained_model.params, trained_model.loads)
+    if type(results) is not list:
+        results = [results]
+
+    # add the true values to results
+    results.append(np.concatenate(([-1], model_origin.transform(model_origin.params).detach().numpy(),
+                                   model_origin.transform(model_origin.loads[1, :]).detach().numpy(),
+                                   model_origin.transform(model_origin.loads[0, :]).detach().numpy(), [0])))
+
+    params_heading = ['Rm Cap/m2 (J/K.m2)', 'Ext Wl Cap 1 (J/K)', 'Ext Wl Cap 2 (J/K)', 'Ext Wl Res 1 (K.m2/W)',
+                      'Ext Wl Res 2 (K.m2/W)', 'Ext Wl Res 3 (K.m2/W)', 'Int Wl Res (K.m2/W)', 'Offset Gain (W/m2)']
+
+    cooling_heading = ['Cooling (W)']
+    headings = [['Run Number'], params_heading, cooling_heading,
+                ['Final Reward']]
+    flat_list = [item for sublist in headings for item in sublist]
+
+    df = pd.DataFrame(np.array(results), columns=flat_list)
+
+    df.to_csv('./outputs/results.csv', index=False, )
+
+
 
 
 

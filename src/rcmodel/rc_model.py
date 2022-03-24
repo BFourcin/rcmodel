@@ -38,6 +38,8 @@ class RCModel(nn.Module):
         self.t0 = None  # unix epoch start time in seconds
         self.A = None  # System Matrix
         self.B = None  # Input Matrix
+        self.iv = None  # initial value
+        self.iv_array = None  # Interp1D object of pre found initial values. Means we can get correct iv with just time.
 
         self.reset_iv()  # sets iv
 
@@ -85,6 +87,10 @@ class RCModel(nn.Module):
         self.A = self.building.update_inputs(theta)
         self.B = self.building.input_matrix()
 
+        # Find the true iv from an initialised Inter1D object.
+        if self.iv_array:
+            self.iv = self.iv_array(self.t0).unsqueeze(0).T
+
         # integrate using fixed step (rk4) see torchdiffeq docs for more options.
         integrate = odeint(self.fODE, self.iv, t_eval, method='rk4')  # https://github.com/rtqichen/torchdiffeq
 
@@ -97,13 +103,16 @@ class RCModel(nn.Module):
         """
 
         # get cooling action if policy is not None and 15 minutes has passed since last action
-        if self.cooling_policy and t - self.ode_t >= 60*15:  # policy exists
-            self.action, log_prob = self.cooling_policy.get_action(x[2:], t + self.t0)
-            self.ode_t = t
-            self.record_action.append([t, self.action])  # This is just used for plotting the cooling after.
+        if self.cooling_policy:  # policy exists
+            if t - self.ode_t >= 60*15:
+                self.action, log_prob = self.cooling_policy.get_action(x[2:], t + self.t0)
+                self.ode_t = t
 
-            if self.cooling_policy.training:  # if in training mode store log_prob
-                self.cooling_policy.log_probs.append(log_prob)
+                if self.cooling_policy.training:  # if in training mode store log_prob
+                    self.cooling_policy.log_probs.append(log_prob)
+
+            # record every time-step
+            self.record_action.append([t, self.action])  # This is just used for plotting the cooling after.
 
         # Get energy input at timestep:
         Q_area = -self.cool_load * self.action  # W/m2
