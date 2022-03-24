@@ -9,6 +9,8 @@ from pathlib import Path
 from ..tools import InputScaling, BuildingTemperatureDataset, pltsolution_1rm,\
     exponential_smoothing, convergence_criteria
 
+from ..optimisation import LSIEnv
+
 
 class RayActor:
     """
