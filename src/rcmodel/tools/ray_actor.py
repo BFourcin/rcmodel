@@ -160,6 +160,12 @@ class RayActor:
         final_train_loss = avg_train_loss
         final_test_loss = avg_test_loss
 
+        final_params = self.model.transform(self.model.params).detach().numpy()
+        final_cooling = self.model.transform(self.model.loads).detach().numpy()
+
+        cool_load = final_cooling[0, :]
+        gain_load = final_cooling[1, :]
+
         return np.concatenate(([opt_id], final_params, gain_load, cool_load, [final_train_loss, final_test_loss]))
 
 
