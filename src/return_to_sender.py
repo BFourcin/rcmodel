@@ -221,11 +221,11 @@ def worker(opt_id):
     # See convergence_criteria() for more info.
     tol_phys = 0.005  # 0.5%
     tol_policy = 0.005  # 0.05%
-    conv_win_len = 10  # MUST BE EVEN. total length of lookback window to measure convergence
-    conv_alpha = 0.15
+    conv_win_len = 50  # MUST BE EVEN. total length of lookback window to measure convergence
+    conv_alpha = 0.2
 
-    cycles = 1
-    max_epochs = 2
+    cycles = 300
+    max_epochs = 700
 
     plt.ioff()  # Reduces memory usage by matplotlib
     for cycle in trange(cycles):
@@ -340,6 +340,7 @@ def worker(opt_id):
 if __name__ == '__main__':
     import ray
 
+    worker(0)
     num_cpus = 3
     num_jobs = num_cpus
     ray.init(num_cpus=num_cpus)
