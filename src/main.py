@@ -1,11 +1,12 @@
 import ray
 import pandas as pd
 import numpy as np
+import torch
 from rcmodel import *
 
 if __name__ == '__main__':
 
-    use_ray = True
+    use_ray = False
 
     epochs = 2
 
@@ -33,6 +34,8 @@ if __name__ == '__main__':
     policy = PriorCoolingPolicy()
     # policy = PolicyNetwork(5, 2)
     model = initialise_model(policy, scaling, weather_data_path)
+
+    model.loads = torch.nn.Parameter(model.loads/model.loads * torch.logit(torch.tensor([[0.1], [0.003]])))
 
     if use_ray:
         RayActor = ray.remote(RayActor)

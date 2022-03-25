@@ -105,7 +105,7 @@ class OptimiseRC:
         self.model_id = opt_id
         self.train_dataloader, self.test_dataloader = dataset_creator(csv_path, int(sample_size), int(dt))
 
-        self.optimizer = torch.optim.Adam([self.model.params], lr=lr)
+        self.optimizer = torch.optim.Adam([self.model.params, self.model.loads], lr=lr)
 
     def train(self):
         avg_loss = train(self.model, self.train_dataloader, self.optimizer)
