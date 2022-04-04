@@ -3,6 +3,7 @@ import numpy as np
 from torch import nn
 from torchdiffeq import odeint
 from datetime import datetime
+from xitorch.interpolate import Interp1D
 
 
 class RCModel(nn.Module):
@@ -40,6 +41,7 @@ class RCModel(nn.Module):
         self.B = None  # Input Matrix
         self.iv = None  # initial value
         self.iv_array = None  # Interp1D object of pre found initial values. Means we can get correct iv with just time.
+        self.Tin_continuous = None
 
         self.reset_iv()  # sets iv
 
@@ -92,11 +94,11 @@ class RCModel(nn.Module):
             self.iv = self.iv_array(self.t0).unsqueeze(0).T
 
         # integrate using fixed step (rk4) see torchdiffeq docs for more options.
-        integrate = odeint(self.fODE, self.iv, t_eval, method='rk4')  # https://github.com/rtqichen/torchdiffeq
+        integrate = odeint(self.f_ode, self.iv, t_eval, method='rk4')  # https://github.com/rtqichen/torchdiffeq
 
         return integrate  # first two columns are external envelope nodes. i.e not rooms
 
-    def fODE(self, t, x):
+    def f_ode(self, t, x):
         """
         Provides the function:
         dy/dx = Ax + Bu
@@ -124,6 +126,71 @@ class RCModel(nn.Module):
         u = self.building.input_vector(Tout, Q_watts)
 
         return self.A @ x + self.B @ u
+
+    def get_iv_array(self, t_eval):
+        """
+        Perform the integration but force outside and inside temperature to be from data.
+        Only the latent temperature nodes in the external walls are free to change meaning we can find out their true
+        values for a given model.
+        """
+        with torch.no_grad():
+            # Transform parameters
+            if self.transform:
+                theta = self.transform(self.params)
+            else:
+                theta = self.params
+
+            # Update building with current parameters
+            theta = self.scaling.physical_param_scaling(theta)
+            _ = self.building.update_inputs(theta)
+
+            bl = self.building
+
+            # Recalculate the A & B matrices. We could chop and re jig from the full matrices, but it is not super
+            # simple so recalculating is less risky.
+            A = torch.zeros([2, 2])
+            A[0, 0] = bl.surf_area * (-1 / (bl.Re[0] * bl.Ce[0]) - 1 / (bl.Re[1] * bl.Ce[0]))
+            A[0, 1] = bl.surf_area / (bl.Re[1] * bl.Ce[0])
+            A[1, 0] = bl.surf_area / (bl.Re[1] * bl.Ce[1])
+            A[1, 1] = bl.surf_area * (-1 / (bl.Re[1] * bl.Ce[1]) - 1 / (bl.Re[2] * bl.Ce[1]))
+
+            B = torch.zeros([2, 2])
+            B[0, 0] = bl.surf_area / (bl.Re[0] * bl.Ce[0])
+            B[1, 1] = bl.surf_area / (bl.Re[2] * bl.Ce[1])
+
+            # check if t_eval is formatted correctly:
+            if t_eval.dim() > 1:
+                t_eval = t_eval.squeeze(0)
+
+            avg_tout = self.Tout_continuous(t_eval).mean()
+            avg_tin = self.Tin_continuous(t_eval).mean()
+
+            t0 = t_eval[0]
+            t_eval = t_eval - t0
+
+            self.iv = self.steady_state_iv(avg_tout, avg_tin)  # Use avg temp as a good guess for iv.
+
+            def latent_f_ode(t, x):
+                Tout = self.Tout_continuous(t.item() + t0)
+                Tin = self.Tin_continuous(t.item() + t0)
+
+                u = torch.tensor([[Tout],
+                                  [Tin]])
+
+                return A @ x + B @ u.to(torch.float32)
+
+            integrate = odeint(latent_f_ode, self.iv[0:2], t_eval,
+                               method='rk4')  # https://github.com/rtqichen/torchdiffeq
+
+            integrate = integrate.squeeze()
+
+            # Add on inside temperature data to be used to initialise rooms at the correct temp.
+            iv_array = torch.empty(len(integrate), len(bl.rooms) + 2)
+            iv_array[:, 0:2] = integrate
+            iv_array[:, 2:] = self.Tin_continuous(t_eval + t0).T
+            iv_array = Interp1D(t_eval+t0, iv_array.T, method='linear')
+
+        return iv_array
 
     def reset_iv(self):
         # Starting Temperatures of nodes. Column vector of shape ([n,1]) n=rooms+2
