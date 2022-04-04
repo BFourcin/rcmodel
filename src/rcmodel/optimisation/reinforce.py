@@ -168,7 +168,7 @@ class Reinforce:
                 self.env.RC.cooling_policy.on_policy_reset()  # empty buffer
 
                 # get last output and use for next initial value
-                self.env.RC.iv = pred[-1, :].unsqueeze(1).detach()  # MUST DETACH GRAD
+                # self.env.RC.iv = pred[-1, :].unsqueeze(1).detach()  # MUST DETACH GRAD
 
                 episode_rewards.append(sum(reward))
                 episode_ER.append(ER)

@@ -194,7 +194,7 @@ def worker(opt_id):
     time_data = torch.tensor(pd.read_csv(csv_path, skiprows=0).iloc[:, 1], dtype=torch.float64)
     temp_data = torch.tensor(pd.read_csv(csv_path, skiprows=0).iloc[:, 2:].to_numpy(dtype=np.float32), dtype=torch.float32)
     env = LSIEnv(model, time_data, temp_data)
-    rl = Reinforce(env, alpha=1e-2)
+    rl = Reinforce(env, alpha=1e-2, gamma=0.999)
 
     # lists to keep track of process, used for plot at the end
     avg_train_loss_plot = []
