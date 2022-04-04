@@ -4,6 +4,8 @@ import torch
 import numpy as np
 from pathlib import Path
 from tqdm.auto import tqdm, trange
+from xitorch.interpolate import Interp1D
+import time
 
 from rcmodel import *
 
@@ -23,7 +25,6 @@ load_model_path_policy = None
 # load_model_path_policy = './prior_policy.pt'
 
 # opt_id = 0
-
 
 def worker(opt_id):
     torch.set_num_threads(1)
@@ -139,12 +140,15 @@ def worker(opt_id):
     dt = 30
     sample_size = 24 * 60 ** 2 / dt  # ONE DAY
     op = OptimiseRC(model, csv_path, sample_size, dt, lr=1e-2, opt_id=opt_id)
+    # op = DDPOptimiseRC(model, csv_path, sample_size, dt, lr=1e-2, opt_id=opt_id)
 
     # Initialise Reinforcement Class - for training policy
     time_data = torch.tensor(pd.read_csv(csv_path, skiprows=0).iloc[:, 1], dtype=torch.float64)
     temp_data = torch.tensor(pd.read_csv(csv_path, skiprows=0).iloc[:, 2:].to_numpy(dtype=np.float32), dtype=torch.float32)
     env = LSIEnv(model, time_data, temp_data)
-    rl = Reinforce(env, alpha=1e-2)
+    rl = Reinforce(env, gamma=0.999, alpha=1e-2)
+
+    model.Tin_continuous = Interp1D(time_data, temp_data[:, 0:len(model.building.rooms)].T, method='linear')
 
     # lists to keep track of process, used for plot at the end
     avg_train_loss_plot = []
@@ -185,7 +189,10 @@ def worker(opt_id):
         y_hat = None  # reset value
         convergence = torch.inf
         for epoch in range(max_epochs):
+            model.iv_array = model.get_iv_array(time_data)  # find the latent variables
+
             avg_train_loss = op.train()
+
             avg_train_loss_plot.append(avg_train_loss)
 
             # Test Loss
@@ -231,6 +238,8 @@ def worker(opt_id):
         y_hat = None  # reset value
         convergence = torch.inf
         for epoch in range(max_epochs):
+            model.iv_array = model.get_iv_array(time_data)  # find the latent variables
+
             rewards, ER = rl.train(1, sample_size)
 
             rewards = torch.tensor(rewards).sum().item()
