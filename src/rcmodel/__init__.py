@@ -16,6 +16,7 @@ from .physical import Room
 from .tools import InputScaling
 from .tools import pltsolution_1rm
 from .tools import BuildingTemperatureDataset
+from .tools import RandomSampleDataset
 from .tools import initialise_model
 from .tools import model_to_csv
 from .tools import convergence_criteria
