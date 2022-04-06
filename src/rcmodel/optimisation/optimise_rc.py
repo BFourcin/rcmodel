@@ -40,6 +40,7 @@ def train(model, dataloader, optimizer):
     num_batches = len(dataloader)
     train_loss = 0
     loss_fn = torch.nn.MSELoss()
+    sum_loss = 0
 
     for batch, (time, temp) in enumerate(dataloader):
         # Get model arguments:
@@ -51,15 +52,16 @@ def train(model, dataloader, optimizer):
         pred = pred.squeeze(-1)  # change from column to row matrix
 
         loss = loss_fn(pred[:, 2:], temp[:, 0:num_cols])
+        sum_loss += loss/num_batches
         train_loss += loss.item()
 
         # get last output and use for next initial value
         # model.iv = pred[-1, :].unsqueeze(1).detach()  # MUST DETACH GRAD
 
-        # Backpropagation
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
+    # Backpropagation
+    optimizer.zero_grad()
+    sum_loss.backward()
+    optimizer.step()
 
     return train_loss / num_batches
 
@@ -139,12 +141,15 @@ class OptimiseRC:
     see https://docs.ray.io/en/latest/using-ray-with-pytorch.html
     """
 
-    def __init__(self, model, csv_path, sample_size, dt=30, lr=1e-3, opt_id=0):
+    def __init__(self, model, train_dataset, test_dataset, lr=1e-3, opt_id=0):
         self.model = model
         self.lr = lr
         # self.model.init_physical()  # randomise parameters - DO WE WANT THIS?
         self.model_id = opt_id
-        self.train_dataset, self.train_dataloader, self.test_dataset, self.test_dataloader = dataset_creator(csv_path, int(sample_size), int(dt))
+        self.train_dataset = train_dataset
+        self.train_dataloader = torch.utils.data.DataLoader(self.train_dataset, batch_size=1, shuffle=False)
+        self.test_dataset = test_dataset
+        self.test_dataloader = torch.utils.data.DataLoader(self.test_dataset, batch_size=1, shuffle=False)
 
         self.optimizer = torch.optim.Adam([self.model.params, self.model.loads], lr=lr)
 
@@ -178,12 +183,13 @@ class DDPOptimiseRC:
     see https://docs.ray.io/en/latest/using-ray-with-pytorch.html
     """
 
-    def __init__(self, model, csv_path, sample_size, dt=30, lr=1e-3, opt_id=0):
+    def __init__(self, model, train_dataset, test_dataset, lr=1e-3, opt_id=0):
         self.model = model
         self.lr = lr
         self.model_id = opt_id
 
-        self.train_dataset, _, self.test_dataset, _ = dataset_creator(csv_path, int(sample_size), int(dt))
+        self.train_dataset = train_dataset
+        self.test_dataset = test_dataset
 
     def parallel_loop(self, rank, world_size, func, dataset, q):
         """

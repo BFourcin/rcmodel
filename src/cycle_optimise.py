@@ -11,7 +11,7 @@ from rcmodel import *
 
 # Laptop
 weather_data_path = '/Users/benfourcin/OneDrive - University of Exeter/PhD/LSI/Data/Met Office Weather Files/JuneSept.csv'
-csv_path = '/Users/benfourcin/OneDrive - University of Exeter/PhD/LSI/Data/DummyData/train5d_sorted.csv'
+csv_path = '/Users/benfourcin/OneDrive - University of Exeter/PhD/LSI/Data/DummyData/train5wk_sorted.csv'
 
 # Hydra:
 # weather_data_path = '/home/benf/LSI/Data/Met Office Weather Files/JuneSept.csv'
@@ -139,8 +139,11 @@ def worker(opt_id):
     # # Initialise Optimise Class - for training physical model
     dt = 30
     sample_size = 24 * 60 ** 2 / dt  # ONE DAY
-    op = OptimiseRC(model, csv_path, sample_size, dt, lr=1e-2, opt_id=opt_id)
-    # op = DDPOptimiseRC(model, csv_path, sample_size, dt, lr=1e-2, opt_id=opt_id)
+    warmup_size = sample_size * 7  # ONE WEEK
+    train_dataset = RandomSampleDataset(csv_path, sample_size, warmup_size, train=True, test=False)
+    test_dataset = RandomSampleDataset(csv_path, sample_size, warmup_size, train=False, test=True)
+    # op = OptimiseRC(model, train_dataset, test_dataset, lr=1e-2, opt_id=opt_id)
+    op = DDPOptimiseRC(model, train_dataset, test_dataset, lr=1e-2, opt_id=opt_id)
 
     # Initialise Reinforcement Class - for training policy
     time_data = torch.tensor(pd.read_csv(csv_path, skiprows=0).iloc[:, 1], dtype=torch.float64)
