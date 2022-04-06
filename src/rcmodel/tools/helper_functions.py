@@ -47,19 +47,20 @@ def initialise_model(pi, scaling, weather_data_path):
     return model
 
 
-# def dataset_creator(path, sample_size, dt):
-#     path_sorted = sort_data(path, dt)
-#     with FileLock(f"{os.path.dirname(os.path.abspath(path_sorted))}.lock"):
-#         # train_dataset = BuildingTemperatureDataset(path_sorted, sample_size, train=True)
-#         # train_dataloader = torch.utils.data.DataLoader(train_dataset, batch_size=1, shuffle=False)
-#         # test_dataset = BuildingTemperatureDataset(path_sorted, sample_size, test=True)
-#         # test_dataloader = torch.utils.data.DataLoader(test_dataset, batch_size=1, shuffle=False)
-#         train_dataset = RandomSampleDataset(path_sorted, sample_size, warmup_size, train=True, test=False)
-#         train_dataloader = torch.utils.data.DataLoader(training_data, batch_size=1, shuffle=False)
-#         test_dataset = RandomSampleDataset(path_sorted, sample_size, warmup_size, train=False, test=True)
-#         test_dataloader = torch.utils.data.DataLoader(test_dataset, batch_size=1, shuffle=False)
-#
-#     return train_dataset, train_dataloader, test_dataset, test_dataloader
+def dataset_creator(path, sample_size, dt):
+    path_sorted = sort_data(path, dt)
+    with FileLock(f"{os.path.dirname(os.path.abspath(path_sorted))}.lock"):
+        # train_dataset = BuildingTemperatureDataset(path_sorted, sample_size, train=True)
+        # train_dataloader = torch.utils.data.DataLoader(train_dataset, batch_size=1, shuffle=False)
+        # test_dataset = BuildingTemperatureDataset(path_sorted, sample_size, test=True)
+        # test_dataloader = torch.utils.data.DataLoader(test_dataset, batch_size=1, shuffle=False)
+        warmup_size = 7*sample_size
+        train_dataset = RandomSampleDataset(path_sorted, sample_size, warmup_size, train=True, test=False)
+        train_dataloader = torch.utils.data.DataLoader(training_data, batch_size=1, shuffle=False)
+        test_dataset = RandomSampleDataset(path_sorted, sample_size, warmup_size, train=False, test=True)
+        test_dataloader = torch.utils.data.DataLoader(test_dataset, batch_size=1, shuffle=False)
+
+    return train_dataset, train_dataloader, test_dataset, test_dataloader
 
 
 def sort_data(path, dt):

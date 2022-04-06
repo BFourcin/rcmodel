@@ -232,8 +232,8 @@ class DDPOptimiseRC:
             loss = func(ddp_model, dataloader)
 
         # This gathers info from all processes.
-        all_losses = [torch.zeros(1) for _ in range(world_size)]
-        dist.all_gather(all_losses, torch.tensor([loss]))
+        all_losses = [torch.zeros(1, dtype=torch.float32) for _ in range(world_size)]
+        dist.all_gather(all_losses, torch.tensor([loss], dtype=torch.float32))
 
         # put the gathered loss onto our mp.queue object.
         if rank == 0:
