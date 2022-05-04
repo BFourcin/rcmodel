@@ -1,10 +1,10 @@
-from ..physical import Room, Building
+from ..physical import Room, Building, InputScaling
 from ..rc_model import RCModel
+from ..optimisation import PolicyNetwork
 from .rcmodel_dataset import BuildingTemperatureDataset, RandomSampleDataset
 from xitorch.interpolate import Interp1D
 from filelock import FileLock
 import matplotlib.pyplot as plt
-
 
 import pandas as pd
 import numpy as np
@@ -12,8 +12,75 @@ import torch
 import os
 
 
-def initialise_model(pi, scaling, weather_data_path):
+def model_creator(model_config):
+    # values taken from architectural drawing
+    def change_origin(coords):
+        x0 = 92.07
+        y0 = 125.94
 
+        for i in range(len(coords)):
+            coords[i][0] = round((coords[i][0] - x0) / 10, 2)
+            coords[i][1] = round((coords[i][1] - y0) / 10, 2)
+
+        return coords
+
+    def init_scaling():
+        # Initialise scaling class
+        rm_CA = [model_config['rm_cap_per_area_min'],
+                 model_config['rm_cap_per_area_max']]  # [min, max] Capacitance/area
+        ex_C = [model_config['external_capacitance_min'], model_config['external_capacitance_max']]  # Capacitance
+        R = [model_config['resistance_min'], model_config['resistance_max']]  # Resistance ((K.m^2)/W)
+        Q_limit = [model_config['Q_max']]  # Cooling limit and gain limit in W/m2
+        scaling = InputScaling(rm_CA, ex_C, R, Q_limit)
+        return scaling
+
+    rooms = []
+    for i in range(len(model_config['room_names'])):
+        name = model_config['room_names'][i]
+        coords = change_origin(model_config['room_coordinates'][i])
+        rooms.append(Room(name, coords))
+
+    # Initialise Building
+    bld = Building(rooms)
+
+    df = pd.read_csv(model_config['weather_data_path'])
+    Tout = torch.tensor(df['Hourly Temperature (°C)'])
+    t = torch.tensor(df['time'])
+
+    Tout_continuous = Interp1D(t, Tout, method='linear')
+
+    time_data = torch.tensor(pd.read_csv(model_config['room_data_path'], skiprows=0).iloc[:, 1], dtype=torch.float64)
+    temp_data = torch.tensor(
+        pd.read_csv(model_config['room_data_path'], skiprows=0).iloc[:, 2:].to_numpy(dtype=np.float32),
+        dtype=torch.float32)
+
+    Tin_continuous = Interp1D(time_data, temp_data[:, 0:len(bld.rooms)].T, method='linear')
+
+    pi = PolicyNetwork(5, 2)
+    scaling = init_scaling()
+
+    # Initialise RCModel with the building
+    transform = torch.sigmoid
+    model = RCModel(bld, scaling, Tout_continuous, Tin_continuous, transform, pi)
+
+    # load physical and/or policy models if available
+    if model_config['load_model_path_policy']:
+        model.load(model_config['load_model_path_policy'])  # load policy
+        model.init_physical()  # re-randomise physical params, as they were also copied from the loaded policy
+
+    if model_config['load_model_path_physical']:
+        # m = initialise_model(None, scaling, weather_data_path)  # dummy model to load physical params on to.
+        m = initialise_model(None, scaling,
+                             model_config['weather_data_path'], model_config['room_data_path'])  # dummy model to load physical params on to.
+        m.load(model_config['load_model_path_physical'])
+        model.params = m.params  # put loaded physical parameters onto model.
+        model.loads = m.loads
+        del m
+
+    return model
+
+
+def initialise_model(pi, scaling, weather_data_path, csv_path):
     def change_origin(coords):
         x0 = 92.07
         y0 = 125.94
@@ -40,9 +107,15 @@ def initialise_model(pi, scaling, weather_data_path):
 
     Tout_continuous = Interp1D(t, Tout, method='linear')
 
+    time_data = torch.tensor(pd.read_csv(csv_path, skiprows=0).iloc[:, 1], dtype=torch.float64)
+    temp_data = torch.tensor(pd.read_csv(csv_path, skiprows=0).iloc[:, 2:].to_numpy(dtype=np.float32),
+                             dtype=torch.float32)
+
+    Tin_continuous = Interp1D(time_data, temp_data[:, 0:len(bld.rooms)].T, method='linear')
+
     # Initialise RCModel with the building
     transform = torch.sigmoid
-    model = RCModel(bld, scaling, Tout_continuous, transform, pi)
+    model = RCModel(bld, scaling, Tout_continuous, Tin_continuous, transform, pi)
 
     return model
 
@@ -54,7 +127,7 @@ def dataset_creator(path, sample_size, dt):
         # train_dataloader = torch.utils.data.DataLoader(train_dataset, batch_size=1, shuffle=False)
         # test_dataset = BuildingTemperatureDataset(path_sorted, sample_size, test=True)
         # test_dataloader = torch.utils.data.DataLoader(test_dataset, batch_size=1, shuffle=False)
-        warmup_size = 7*sample_size
+        warmup_size = 7 * sample_size
         train_dataset = RandomSampleDataset(path_sorted, sample_size, warmup_size, train=True, test=False)
         train_dataloader = torch.utils.data.DataLoader(training_data, batch_size=1, shuffle=False)
         test_dataset = RandomSampleDataset(path_sorted, sample_size, warmup_size, train=False, test=True)
@@ -164,7 +237,7 @@ def model_to_csv(model, t_eval, output_path):
     titles = [['date-time', 'time'], [f'Rm{i}' for i in range(pred[:, 2:].shape[1])]]
     titles = [item for sublist in titles for item in sublist]
 
-    df = torch.hstack((torch.zeros(len(pred), 1)*torch.nan, t_eval.unsqueeze(1), pred[:, 2:]))
+    df = torch.hstack((torch.zeros(len(pred), 1) * torch.nan, t_eval.unsqueeze(1), pred[:, 2:]))
     df = pd.DataFrame(df.detach().numpy())
     df.to_csv(output_path, index=False, header=titles)
 
@@ -183,8 +256,8 @@ def convergence_criteria(y, n=10):
     if n % 2 != 0:
         raise TypeError('n must be even.')
 
-    y_a = y[-n:-n//2]
-    y_b = y[-n//2:]
+    y_a = y[-n:-n // 2]
+    y_b = y[-n // 2:]
 
     # formula doesn't work if there's insufficient data or with None
     # output will be 1 until y >= n
@@ -249,8 +322,8 @@ def exponential_smoothing(y, alpha, y_hat=None, n=10):
 
 def policy_image(policy, n=100, path=None):
     bounds = [15, 30]
-    t0 = 4*24*60**2  # buffer to go from thursday to monday
-    time = torch.linspace(0+t0, 24*60**2+t0, n)
+    t0 = 4 * 24 * 60 ** 2  # buffer to go from thursday to monday
+    time = torch.linspace(0 + t0, 24 * 60 ** 2 + t0, n)
     temp = torch.linspace(bounds[0], bounds[1], n)
     img = torch.zeros((n, n))
 
@@ -260,7 +333,7 @@ def policy_image(policy, n=100, path=None):
                 action, log_prob = policy.get_action(x.unsqueeze(0).unsqueeze(0), y)
                 # Get prob of getting 1:
                 if action == 1:
-                    pr = torch.e**log_prob  # Convert log_prob to normal prob.
+                    pr = torch.e ** log_prob  # Convert log_prob to normal prob.
                 elif action == 0:
                     pr = 1 - torch.e ** log_prob  # pr(a=1) = 1 - pr(a=0)
                 else:
@@ -276,11 +349,9 @@ def policy_image(policy, n=100, path=None):
     plt.title('Policy Plot')
     plt.xticks(np.linspace(0, 24, 13))
     plt.yticks(np.linspace(bounds[0], bounds[1], 7))
-    plt.grid(color='k', linestyle='--',)
+    plt.grid(color='k', linestyle='--', )
 
     if path:
         fig.savefig(path)
     else:
         plt.show()
-
-

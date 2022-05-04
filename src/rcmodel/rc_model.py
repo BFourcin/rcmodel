@@ -17,7 +17,7 @@ class RCModel(nn.Module):
     Runs using forward method should be sequential as the output is used as the initial condition for the next run, unless manually reset using self.iv
     """
 
-    def __init__(self, building, scaling, Tout_continuous, transform=None, cooling_policy=None):
+    def __init__(self, building, scaling, Tout_continuous, Tin_continuous, transform=None, cooling_policy=None):
 
         super().__init__()
         self.building = building
@@ -25,12 +25,15 @@ class RCModel(nn.Module):
         self.transform = transform  # transform performed on parameters e.g. sigmoid
         self.scaling = scaling  # InputScaling class (helper class to go between machine (0-1) and physical values)
         self.Tout_continuous = Tout_continuous  # Interp1D object
+        self.Tin_continuous = Tin_continuous  # Interp1D object
         self.cooling_policy = cooling_policy  # Neural net: pi(state) --> action
         self.action = 0  # initialise cooling action
 
         self.params = None  # initialised in init_physical()
         self.loads = None  # initialised in init_physical()
-        self.init_physical()  # initialise with random numbers, length of params given from building class
+        self.params_old = None  # copies used to check when parameters have been updated
+        self.loads_old = None
+        self.init_physical()  # initialise params and loads with random numbers
 
         self.ode_t = None  # Keeps track of t during integration. None is just to initialise attribute
         self.record_action = None  # records Q and t during integration
@@ -41,11 +44,10 @@ class RCModel(nn.Module):
         self.B = None  # Input Matrix
         self.iv = None  # initial value
         self.iv_array = None  # Interp1D object of pre found initial values. Means we can get correct iv with just time.
-        self.Tin_continuous = None
 
         self.reset_iv()  # sets iv
 
-    def forward(self, t_eval):
+    def forward(self, t_eval, action=0):
         """
         Integrates the ode forward in time.
 
@@ -55,43 +57,33 @@ class RCModel(nn.Module):
         t_eval - times function should return a solution. e.g. torch.arange(0, 10000, 30). ensure dtype=float32
         t0 - starting time if not 0
         """
-        self.ode_t = -900  # keeps track of previous time an action was produced. Initialised to work at t=0.
-        self.record_action = []  # Keeps track of action at time during ODE integration.
+        self.action = action
+
+        # self.ode_t = -900  # keeps track of previous time an action was produced. Initialised to work at t=0.
+        # self.record_action = []  # Keeps track of action at time during ODE integration.
+        iv_note = False
+
+        # If physical parameters have changed we need to do two things: update Matrices A & B and recalculate iv_array.
+        # It doesn't matter if loads have changed as they do not affect A/B or iv.
+        if not torch.eq(self.params_old, self.params).all():
+            self._build_matrices()  # Get A and B matrix of current parameters
+            iv_note = True
+
+        if not torch.eq(self.loads_old, self.loads).all():
+            self._build_loads()
 
         # check if t_eval is formatted correctly:
         if t_eval.dim() > 1:
             t_eval = t_eval.squeeze(0)
 
-        # Transform parameters
-        if self.transform:
-            theta = self.transform(self.params)
-            loads = self.transform(self.loads)  # Watts/m2 for cooling and gain.
-        else:
-            theta = self.params
-            loads = self.loads
-
-        # Scale inputs up to their physical values
-        theta = self.scaling.physical_param_scaling(theta)
-        loads = self.scaling.physical_cooling_scaling(loads)
-
-        self.cool_load = loads[0, :]
-        self.gain_load = loads[1, :]
-
-        # t_eval_plus = torch.cat((t_eval, (t_eval[-1] + 600).unsqueeze(0)),
-        #                         0)  # added on extra time to avoid error with interp1d(t_end)
-        # Qrms_continuous = self.building.Q_continuous(t_eval_plus, Q_avg, self.heating[:, 1], self.heating[:, 2])
-
         # t0 stores the starting epoch time and t_eval is array of seconds from start, [0, 1*dt, 2*dt, ...]
         self.t0 = t_eval[0]
         t_eval = t_eval - self.t0
 
-        # Produce matrix A and B from current parameters
-        self.A = self.building.update_inputs(theta)
-        self.B = self.building.input_matrix()
-
         # Find the true iv from an initialised Inter1D object.
         if self.iv_array:
             self.iv = self.iv_array(self.t0).unsqueeze(0).T
+            if iv_note: print('iv_array not currently valid, check code.')
 
         # integrate using fixed step (rk4) see torchdiffeq docs for more options.
         integrate = odeint(self.f_ode, self.iv, t_eval, method='rk4')  # https://github.com/rtqichen/torchdiffeq
@@ -103,18 +95,18 @@ class RCModel(nn.Module):
         Provides the function:
         dy/dx = Ax + Bu
         """
+        # # get cooling action if policy is not None and 15 minutes has passed since last action
+        # if self.cooling_policy:  # policy exists
+        #     if t - self.ode_t >= 60*15:
+        #         self.action, log_prob = self.cooling_policy.get_action(x[2:], t + self.t0)
+        #         self.ode_t = t
+        #
+        #         if self.cooling_policy.training:  # if in training mode store log_prob
+        #             self.cooling_policy.log_probs.append(log_prob)
 
-        # get cooling action if policy is not None and 15 minutes has passed since last action
-        if self.cooling_policy:  # policy exists
-            if t - self.ode_t >= 60*15:
-                self.action, log_prob = self.cooling_policy.get_action(x[2:], t + self.t0)
-                self.ode_t = t
-
-                if self.cooling_policy.training:  # if in training mode store log_prob
-                    self.cooling_policy.log_probs.append(log_prob)
-
-            # record every time-step
-            self.record_action.append([t, self.action])  # This is just used for plotting the cooling after.
+        # if self.cooling_policy:  # policy exists
+        #     # record every time-step
+        #     self.record_action.append([t, self.action])  # This is just used for plotting the cooling after.
 
         # Get energy input at timestep:
         Q_area = -self.cool_load * self.action  # W/m2
@@ -127,22 +119,54 @@ class RCModel(nn.Module):
 
         return self.A @ x + self.B @ u
 
+    def _build_matrices(self):
+        """
+        Build/re-build the A and B matrices with the current set of parameters.
+        Keep track of parameters used so we can check when to update.
+        """
+        # Transform parameters
+        if self.transform:
+            theta = self.transform(self.params)
+        else:
+            theta = self.params
+
+        # Scale inputs up to their physical values
+        theta = self.scaling.physical_param_scaling(theta)
+
+        # Produce matrix A and B from current parameters
+        self.A = self.building.update_inputs(theta)
+        self.B = self.building.input_matrix()
+
+        # create copy of current parameters
+        self.params_old = self.params.detach().clone()
+
+    def _build_loads(self):
+        """
+        Transform and scale loads.
+        Keep track of loads used so we can only update when there is a difference.
+        """
+        if self.transform:
+            loads = self.transform(self.loads)  # Watts/m2 for cooling and gain.
+        else:
+            loads = self.loads
+
+        loads = self.scaling.physical_cooling_scaling(loads)
+        self.cool_load = loads[0, :]
+        self.gain_load = loads[1, :]
+
+        self.loads_old = self.loads.detach().clone()
+
     def get_iv_array(self, t_eval):
         """
         Perform the integration but force outside and inside temperature to be from data.
         Only the latent temperature nodes in the external walls are free to change meaning we can find out their true
         values for a given model.
         """
-        with torch.no_grad():
-            # Transform parameters
-            if self.transform:
-                theta = self.transform(self.params)
-            else:
-                theta = self.params
+        # Update building with current parameters, if needed.
+        if not torch.eq(self.params_old, self.params).all():
+            self._build_matrices()
 
-            # Update building with current parameters
-            theta = self.scaling.physical_param_scaling(theta)
-            _ = self.building.update_inputs(theta)
+        with torch.no_grad():
 
             bl = self.building
 
@@ -168,7 +192,7 @@ class RCModel(nn.Module):
             t0 = t_eval[0]
             t_eval = t_eval - t0
 
-            self.iv = self.steady_state_iv(avg_tout, avg_tin)  # Use avg temp as a good guess for iv.
+            self.iv = self.steady_state_iv(avg_tout, avg_tin)  # Use avg temp as a good starting guess for iv.
 
             def latent_f_ode(t, x):
                 Tout = self.Tout_continuous(t.item() + t0)
@@ -188,7 +212,7 @@ class RCModel(nn.Module):
             iv_array = torch.empty(len(integrate), len(bl.rooms) + 2)
             iv_array[:, 0:2] = integrate
             iv_array[:, 2:] = self.Tin_continuous(t_eval + t0).T
-            iv_array = Interp1D(t_eval+t0, iv_array.T, method='linear')
+            iv_array = Interp1D(t_eval + t0, iv_array.T, method='linear')
 
         return iv_array
 
@@ -232,6 +256,10 @@ class RCModel(nn.Module):
 
         # initialise the room cooling and gain loads
         self.loads = nn.Parameter(loads)
+
+        # these are just used to check if parameters have changed between runs. Initialised to dummy value
+        self.params_old = torch.tensor(0)
+        self.loads_old = torch.tensor(0)
 
     def save(self, model_id=0, dir_path=None):
         """

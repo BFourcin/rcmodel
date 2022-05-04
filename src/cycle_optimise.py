@@ -11,7 +11,7 @@ from rcmodel import *
 
 # Laptop
 weather_data_path = '/Users/benfourcin/OneDrive - University of Exeter/PhD/LSI/Data/Met Office Weather Files/JuneSept.csv'
-csv_path = '/Users/benfourcin/OneDrive - University of Exeter/PhD/LSI/Data/DummyData/train5wk_sorted.csv'
+csv_path = '/Users/benfourcin/OneDrive - University of Exeter/PhD/LSI/Data/DummyData/train5d_sorted.csv'
 
 # Hydra:
 # weather_data_path = '/home/benf/LSI/Data/Met Office Weather Files/JuneSept.csv'
@@ -20,6 +20,7 @@ csv_path = '/Users/benfourcin/OneDrive - University of Exeter/PhD/LSI/Data/Dummy
 # Load model?
 load_model_path_physical = None  # or None
 load_model_path_policy = None
+
 
 # load_model_path_physical = './physical_model.pt'  # or None
 # load_model_path_policy = './prior_policy.pt'
@@ -119,7 +120,7 @@ def worker(opt_id):
     # Initialise Model
     scaling = init_scaling()
     policy = PolicyNetwork(5, 2)
-    model = initialise_model(policy, scaling, weather_data_path)
+    model = initialise_model(policy, scaling, weather_data_path, csv_path)
 
     # load physical and/or policy models if available
     if load_model_path_policy:
@@ -128,7 +129,8 @@ def worker(opt_id):
 
     if load_model_path_physical:
         # m = initialise_model(None, scaling, weather_data_path)  # dummy model to load physical params on to.
-        m = initialise_model(PolicyNetwork(5, 2), scaling, weather_data_path)  # dummy model to load physical params on to.
+        m = initialise_model(PolicyNetwork(5, 2), scaling,
+                             weather_data_path, csv_path)  # dummy model to load physical params on to.
         m.load(load_model_path_physical)
         model.params = m.params  # put loaded physical parameters onto model.
         model.loads = m.loads
@@ -139,19 +141,24 @@ def worker(opt_id):
     # # Initialise Optimise Class - for training physical model
     dt = 30
     sample_size = 24 * 60 ** 2 / dt  # ONE DAY
-    warmup_size = sample_size * 7  # ONE WEEK
+    # warmup_size = sample_size * 7  # ONE WEEK
+    warmup_size = 0
     train_dataset = RandomSampleDataset(csv_path, sample_size, warmup_size, train=True, test=False)
     test_dataset = RandomSampleDataset(csv_path, sample_size, warmup_size, train=False, test=True)
-    # op = OptimiseRC(model, train_dataset, test_dataset, lr=1e-2, opt_id=opt_id)
-    op = DDPOptimiseRC(model, train_dataset, test_dataset, lr=1e-2, opt_id=opt_id)
+    op = OptimiseRC(model, train_dataset, test_dataset, lr=1e-2, opt_id=opt_id)
+    # op = DDPOptimiseRC(model, train_dataset, test_dataset, lr=1e-2, opt_id=opt_id)
 
     # Initialise Reinforcement Class - for training policy
     time_data = torch.tensor(pd.read_csv(csv_path, skiprows=0).iloc[:, 1], dtype=torch.float64)
-    temp_data = torch.tensor(pd.read_csv(csv_path, skiprows=0).iloc[:, 2:].to_numpy(dtype=np.float32), dtype=torch.float32)
-    env = LSIEnv(model, time_data, temp_data)
-    rl = Reinforce(env, gamma=0.999, alpha=1e-2)
+    temp_data = torch.tensor(pd.read_csv(csv_path, skiprows=0).iloc[:, 2:].to_numpy(dtype=np.float32),
+                             dtype=torch.float32)
 
-    model.Tin_continuous = Interp1D(time_data, temp_data[:, 0:len(model.building.rooms)].T, method='linear')
+    config = {"RC_model": model,
+              "dataloader": torch.utils.data.DataLoader(train_dataset, batch_size=1, shuffle=False)
+              }
+
+    env = LSIEnv(config)
+    rl = Reinforce(env, gamma=0.999, alpha=1e-2)
 
     # lists to keep track of process, used for plot at the end
     avg_train_loss_plot = []
@@ -184,6 +191,8 @@ def worker(opt_id):
     cycles = 2
     max_epochs = 3
 
+    model.iv_array = model.get_iv_array(time_data)  # get initial iv_array
+
     plt.ioff()  # Reduces memory usage by matplotlib
     for cycle in trange(cycles):
 
@@ -192,13 +201,14 @@ def worker(opt_id):
         y_hat = None  # reset value
         convergence = torch.inf
         for epoch in range(max_epochs):
-            model.iv_array = model.get_iv_array(time_data)  # find the latent variables
-
             avg_train_loss = op.train()
-
             avg_train_loss_plot.append(avg_train_loss)
 
+            # The model has been updated, recalculate iv_array
+            model.iv_array = model.get_iv_array(time_data)  # find the latent variables
+
             # Test Loss
+            # the iv for test loss is incorrect as the model has been updated above.
             avg_test_loss = op.test()
             avg_test_loss_plot.append(avg_test_loss)
 
@@ -228,13 +238,13 @@ def worker(opt_id):
                 tqdm.write(f'Physical converged in {epoch + 1} epochs. Total epochs: {count}\n')
                 break
 
-        if epoch+1 == max_epochs and convergence > tol_phys:
+        if epoch + 1 == max_epochs and convergence > tol_phys:
             tqdm.write(f'Failed to converge, max epochs reached. Total epochs: {count}\n')
 
         # Save a plot of results after physical training
-        with torch.no_grad():
-            pltsolution_1rm(model, plot_dataloader,
-                            f'./outputs/run{opt_id}/plots/results/Result_Cycle{start_num + cycle + 1}a.png')
+        # with torch.no_grad():
+        #     pltsolution_1rm(model, plot_dataloader,
+        #                     f'./outputs/run{opt_id}/plots/results/Result_Cycle{start_num + cycle + 1}a.png')
 
         # -------- Policy training --------
         tqdm.write('Policy Training:')
@@ -243,7 +253,7 @@ def worker(opt_id):
         for epoch in range(max_epochs):
             model.iv_array = model.get_iv_array(time_data)  # find the latent variables
 
-            rewards, ER = rl.train(1, sample_size)
+            rewards, ER = rl.train(1)
 
             rewards = torch.tensor(rewards).sum().item()
             ER = torch.tensor(ER).sum().item()
@@ -277,15 +287,17 @@ def worker(opt_id):
                 tqdm.write(f'Policy converged in {epoch + 1} epochs. Total epochs: {count}\n')
                 break
 
-        if epoch+1 == max_epochs and convergence > tol_policy:
+        if epoch + 1 == max_epochs and convergence > tol_policy:
             tqdm.write(f'Failed to converge, max epochs reached. Total epochs: {count}\n')
 
         with torch.no_grad():  # makes plotting 20% faster
             # Save a plot of results after policy training
-            pltsolution_1rm(model, plot_dataloader, f'./outputs/run{opt_id}/plots/results/Result_Cycle{start_num + cycle + 1}b.png')
+            pltsolution_1rm(model, plot_dataloader,
+                            f'./outputs/run{opt_id}/plots/results/Result_Cycle{start_num + cycle + 1}b.png')
             # Plot loss and reward plot
             do_plots()
-            policy_image(model.cooling_policy, path=f'./outputs/run{opt_id}/plots/policy_img/policy{start_num + cycle + 1}.png')
+            policy_image(model.cooling_policy,
+                         path=f'./outputs/run{opt_id}/plots/policy_img/policy{start_num + cycle + 1}.png')
 
         # save outputs to .csv:
         pd.DataFrame(rewards_plot).to_csv(f'./outputs/run{opt_id}/plots/rewards.csv', index=False)
@@ -324,4 +336,3 @@ if __name__ == '__main__':
     df = pd.DataFrame(np.array(results), columns=flat_list)
 
     df.to_csv('./outputs/results.csv', index=False, )
-

@@ -5,7 +5,6 @@ import datetime
 import torch.distributed as dist
 import torch.multiprocessing as mp
 from torch.nn.parallel import DistributedDataParallel as DDP
-from ..tools.helper_functions import dataset_creator
 
 
 def train(model, dataloader, optimizer):
@@ -53,7 +52,6 @@ def train(model, dataloader, optimizer):
 
         loss = loss_fn(pred[:, 2:], temp[:, 0:num_cols])
         sum_loss += loss/num_batches
-        train_loss += loss.item()
 
         # get last output and use for next initial value
         # model.iv = pred[-1, :].unsqueeze(1).detach()  # MUST DETACH GRAD
@@ -63,7 +61,7 @@ def train(model, dataloader, optimizer):
     sum_loss.backward()
     optimizer.step()
 
-    return train_loss / num_batches
+    return sum_loss.item()
 
 
 def test(model, dataloader):

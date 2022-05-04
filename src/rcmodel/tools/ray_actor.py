@@ -6,9 +6,9 @@ from matplotlib import pyplot as plt
 from tqdm.auto import tqdm, trange
 from pathlib import Path
 
-from ..tools import InputScaling, BuildingTemperatureDataset, pltsolution_1rm,\
+from ..tools import BuildingTemperatureDataset, pltsolution_1rm,\
     exponential_smoothing, convergence_criteria
-
+from ..physical import InputScaling
 
 class RayActor:
     """

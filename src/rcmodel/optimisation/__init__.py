@@ -4,6 +4,7 @@ from .reinforce import Reinforce
 from .reinforce import PolicyNetwork
 from .reinforce import LSIEnv
 from .reinforce import PriorEnv
+from .reinforce import Preprocess
 from .prior_cooling_policy import PriorCoolingPolicy
 
 
@@ -15,4 +16,5 @@ __all__ = [
     "LSIEnv",
     "PriorEnv",
     "PriorCoolingPolicy",
+    "Preprocess",
 ]

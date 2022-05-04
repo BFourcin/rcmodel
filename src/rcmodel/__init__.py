@@ -11,13 +11,15 @@ from .optimisation import PolicyNetwork
 from .optimisation import LSIEnv
 from .optimisation import PriorEnv
 from .optimisation import PriorCoolingPolicy
+from .optimisation import Preprocess
 from .physical import Building
 from .physical import Room
-from .tools import InputScaling
+from .physical import InputScaling
 from .tools import pltsolution_1rm
 from .tools import BuildingTemperatureDataset
 from .tools import RandomSampleDataset
 from .tools import initialise_model
+from .tools import model_creator
 from .tools import model_to_csv
 from .tools import convergence_criteria
 from .tools import exponential_smoothing
