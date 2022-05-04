@@ -146,7 +146,7 @@ class RandomSampleDataset(Dataset):
 
         # Insufficient data for 1 whole sample size. Remainder of data used instead.
         if num_samples == 0:
-            raise 'Insufficient amount of data'
+            raise ValueError('Insufficient amount of data')
 
         return num_samples
 

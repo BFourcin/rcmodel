@@ -32,7 +32,7 @@ model_origin = initialise_model(policy, scaling, weather_data_path)
 
 # load a model which we will then try to replicate.
 load_policy = './prior_policy.pt'
-load_physical = './prior_physical.pt'
+load_physical = './return_model.pt'
 
 if load_policy:
     model_origin.load(load_policy)  # load policy
@@ -47,9 +47,18 @@ if load_physical:
     del m
 
 
+with open('original_params.txt', 'w') as f:
+    params = model_origin.scaling.physical_param_scaling(model_origin.transform(model_origin.params)).detach().numpy()
+    loads = model_origin.scaling.physical_cooling_scaling(model_origin.transform(model_origin.loads))
+    cooling = loads[0, :].detach().numpy()
+    gain = loads[1, :].detach().numpy()
 
-print(model_origin.params)
+    all_params = np.concatenate((params, gain, cooling))
+    params_heading = ['Rm Cap/m2 (J/K.m2)', 'Ext Wl Cap 1 (J/K)', 'Ext Wl Cap 2 (J/K)', 'Ext Wl Res 1 (K.m2/W)',
+                      'Ext Wl Res 2 (K.m2/W)', 'Ext Wl Res 3 (K.m2/W)', 'Int Wl Res (K.m2/W)', 'Offset Gain (W/m2)', 'Cooling (W)']
 
+    for i in range(len(all_params)):
+        f.write(f'{params_heading[i]}: {all_params[i]:.3f} \n')
 
 t_eval = torch.arange(0, 1 * 24 * 60 ** 2, 30, dtype=torch.float64) + 1622505600  # + min start time of weather data
 
@@ -330,9 +339,33 @@ def worker(opt_id):
         pd.DataFrame(avg_train_loss_plot).to_csv(f'./outputs/run{opt_id}/plots/train_loss.csv', index=False)
         pd.DataFrame(avg_test_loss_plot).to_csv(f'./outputs/run{opt_id}/plots/test_loss.csv', index=False)
 
-    final_params = model.transform(model.params).detach().numpy()
-    final_cooling = model.transform(model.loads[0, :]).detach().numpy()
-    final_gain = model.transform(model.loads[1, :]).detach().numpy()
+    final_params = model.scaling.physical_param_scaling(model.transform(model.params)).detach().numpy()
+    loads = model.scaling.physical_cooling_scaling(model.transform(model.loads))
+    final_cooling = loads[0, :].detach().numpy()
+    final_gain = loads[1, :].detach().numpy()
+
+    # save parameter % difference physical parameters to file:
+    with open(f'./outputs/run{opt_id}/percentage_diff_params.txt', 'w') as f:
+        params = model_origin.scaling.physical_param_scaling(
+            model_origin.transform(model_origin.params)).detach().numpy()
+        loads = model_origin.scaling.physical_cooling_scaling(model_origin.transform(model_origin.loads))
+        cooling = loads[0, :].detach().numpy()
+        gain = loads[1, :].detach().numpy()
+        all_params_og = np.concatenate((params, gain, cooling)).copy()
+
+        params = model.scaling.physical_param_scaling(model.transform(model.params)).detach().numpy()
+        loads = model.scaling.physical_cooling_scaling(model.transform(model.loads))
+        cooling = loads[0, :].detach().numpy()
+        gain = loads[1, :].detach().numpy()
+        all_params_new = np.concatenate((params, gain, cooling)).copy()
+
+        params_heading = ['Rm Cap/m2 (J/K.m2)', 'Ext Wl Cap 1 (J/K)', 'Ext Wl Cap 2 (J/K)', 'Ext Wl Res 1 (K.m2/W)',
+                          'Ext Wl Res 2 (K.m2/W)', 'Ext Wl Res 3 (K.m2/W)', 'Int Wl Res (K.m2/W)', 'Offset Gain (W/m2)',
+                          'Cooling (W)']
+
+        for i in range(len(all_params_new)):
+            perdiff = (all_params_og[i]-all_params_new[i])/all_params_og[i] * 100
+            f.write(f'{params_heading[i]}: {perdiff:.3f} % \n')
 
     return np.concatenate(([opt_id], final_params, final_gain, final_cooling, [rewards]))
 
@@ -354,9 +387,11 @@ if __name__ == '__main__':
         results = [results]
 
     # add the true values to results
-    results.append(np.concatenate(([-1], model_origin.transform(model_origin.params).detach().numpy(),
-                                   model_origin.transform(model_origin.loads[1, :]).detach().numpy(),
-                                   model_origin.transform(model_origin.loads[0, :]).detach().numpy(), [0])))
+    params = model_origin.scaling.physical_param_scaling(model_origin.transform(model_origin.params)).detach().numpy()
+    loads = model_origin.scaling.physical_cooling_scaling(model_origin.transform(model_origin.loads))
+    cooling = loads[0, :].detach().numpy()
+    gain = loads[1, :].detach().numpy()
+    results.append(np.concatenate(([-1], params, gain, cooling, [0])))
 
     params_heading = ['Rm Cap/m2 (J/K.m2)', 'Ext Wl Cap 1 (J/K)', 'Ext Wl Cap 2 (J/K)', 'Ext Wl Res 1 (K.m2/W)',
                       'Ext Wl Res 2 (K.m2/W)', 'Ext Wl Res 3 (K.m2/W)', 'Int Wl Res (K.m2/W)', 'Offset Gain (W/m2)']
