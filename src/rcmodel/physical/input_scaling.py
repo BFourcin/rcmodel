@@ -1,4 +1,4 @@
-from ..physical import Building
+from . import Building
 import torch
 
 

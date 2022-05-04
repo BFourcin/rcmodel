@@ -184,7 +184,10 @@ def worker(opt_id):
     # # Initialise Optimise Class - for training physical model
     dt = 30
     sample_size = 24 * 60 ** 2 / dt  # ONE DAY
-    op = OptimiseRC(model, csv_path, sample_size, dt, lr=1e-2, opt_id=opt_id)
+    train_dataset = BuildingTemperatureDataset(csv_path, sample_size, train=True, test=False)
+    test_dataset = BuildingTemperatureDataset(csv_path, sample_size, train=False, test=True)
+    op = OptimiseRC(model, train_dataset, test_dataset, lr=1e-2, opt_id=opt_id)
+
 
     # Initialise Reinforcement Class - for training policy
     time_data = torch.tensor(pd.read_csv(csv_path, skiprows=0).iloc[:, 1], dtype=torch.float64)
@@ -338,7 +341,7 @@ def get_results(model, time_data, temp_data, X):
 
 def cmaes(model, x0, time_data, temp_data):
     # hyper parameters:
-    n_workers = 30  # multiprocessing
+    n_workers = 2  # multiprocessing
     maxfevals = n_workers*150
 
     sigma0 = 1.5
@@ -373,7 +376,7 @@ def cmaes(model, x0, time_data, temp_data):
 if __name__ == '__main__':
     import ray
 
-    # worker(0)
+    worker(0)
 
     num_cpus = 2
     num_jobs = num_cpus

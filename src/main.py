@@ -31,8 +31,8 @@ if __name__ == '__main__':
     # weather_data_path = '/home/benf/LSI/Data/Met Office Weather Files/JuneSept.csv'
     # csv_path = '/home/benf/LSI/Data/DummyData/train5d_sorted.csv'
 
-    policy = PriorCoolingPolicy()
-    # policy = PolicyNetwork(5, 2)
+    # policy = PriorCoolingPolicy()
+    policy = PolicyNetwork(5, 2)
     model = initialise_model(policy, scaling, weather_data_path)
 
     model.loads = torch.nn.Parameter(model.loads/model.loads * torch.logit(torch.tensor([[0.1], [0.003]])))
@@ -46,7 +46,8 @@ if __name__ == '__main__':
 
     else:
         actor = RayActor(model, csv_path)
-        actor.policy_training = False  # Turn cooling optimisation off
+        actor.physical_training = False  # Turn physical optimisation off
+        actor.policy_training = True  # Turn cooling optimisation off
         results = actor.worker(0, epochs)
 
     params_heading = ['Rm Cap/m2 (J/K.m2)', 'Ext Wl Cap 1 (J/K)', 'Ext Wl Cap 2 (J/K)', 'Ext Wl Res 1 (K.m2/W)',
