@@ -6,12 +6,12 @@ from . import rc_model
 
 from .optimisation import OptimiseRC
 from .optimisation import DDPOptimiseRC
-from .optimisation import Reinforce
+# from .optimisation import Reinforce
 from .optimisation import PolicyNetwork
 from .optimisation import LSIEnv
 from .optimisation import PriorEnv
 from .optimisation import PriorCoolingPolicy
-from .optimisation import Preprocess
+from .optimisation import PreprocessEnv
 from .physical import Building
 from .physical import Room
 from .physical import InputScaling

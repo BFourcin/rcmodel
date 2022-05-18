@@ -34,10 +34,10 @@ class PolicyNetwork(nn.Module):
         return logits
 
     def get_action(self, state):
-
         # state = self.inputs_to_state(x, unix_time)
 
-        prob_dist = torch.distributions.categorical.Categorical(logits=self.forward(state))  # make a probability distribution
+        prob_dist = torch.distributions.categorical.Categorical(
+            logits=self.forward(state))  # make a probability distribution
 
         action = prob_dist.sample()  # sample from distribution pi(a|s) (action given state)
 
@@ -49,91 +49,6 @@ class PolicyNetwork(nn.Module):
         # this stores log_probs during an integration step.
         self.log_probs = []
         # self.rewards = []
-
-
-class Reinforce:
-    def __init__(self, env, gamma=0.99, alpha=1e-3):
-
-        self.env = env
-        # self.pi = pi
-        self.gamma = gamma
-        self.alpha = alpha
-
-        self.optimiser = torch.optim.Adam(self.env.RC.cooling_policy.parameters(), lr=self.alpha)
-
-    def update_policy(self, rewards, log_probs):
-        log_probs = torch.stack(log_probs).squeeze()  # get into right format regardless of whether single or multiple states have been used
-
-        # downsample rewards by averaging each window.
-        rewards = torch.tensor([window.mean() for window in torch.tensor_split(rewards, len(log_probs))])
-
-        # Calculate Discounted Reward:
-        discounted_rewards = torch.zeros(len(rewards))
-
-        R = 0
-        indx = len(rewards) - 1
-        for r in reversed(rewards):  # Future/Later rewards are discounted
-            R = r + self.gamma * R  # Discounted Reward is calculated from last reward to first.
-
-            discounted_rewards[indx] = R  # Fill array back to front to un-reverse the order
-            indx -= 1
-
-        # Normalise rewards
-        discounted_rewards = (discounted_rewards - discounted_rewards.mean()) / (
-                discounted_rewards.std() + 1e-9)
-
-        # discounted_rewards = torch.tensor(np.array(discounted_rewards.detach().numpy()))
-
-        expected_reward = -log_probs * discounted_rewards  # negative for maximising
-        expected_reward = torch.sum(expected_reward)
-        # print(f'ER {expected_reward}')
-
-        # Update parameters in pi
-        self.optimiser.zero_grad()
-        expected_reward.backward()
-        self.optimiser.step()
-
-        # print(list(self.pi.parameters())[0].grad)  # check on grads if needed
-
-        return expected_reward
-
-    def train(self, num_episodes):
-        self.env.RC.cooling_policy.train()  # Put in training mode
-        total_ER = []
-        total_rewards = []
-
-        # with tqdm(total=len(self.env.time_data) * num_episodes, position=0, leave=False) as pbar:  # progress bar
-        for episode in range(num_episodes):
-            self.env.reset()
-
-            episode_rewards = []
-            episode_ER = []
-
-            # Time is increased in steps, with the policy updating after every step.
-            while self.env.t_index < len(self.env.time_data) - 1:
-
-                # takes a step_size forward in time
-                pred, reward = self.env.step(action)  # state and action produced in step
-
-                # Do gradient decent on sample
-                ER = self.update_policy(reward, self.env.RC.cooling_policy.log_probs)
-
-                self.env.RC.cooling_policy.on_policy_reset()  # empty buffer
-
-                # get last output and use for next initial value
-                # self.env.RC.iv = pred[-1, :].unsqueeze(1).detach()  # MUST DETACH GRAD
-
-                episode_rewards.append(sum(reward))
-                episode_ER.append(ER)
-
-                self.env.t_index += int(step_size)  # increase environment time
-
-            # print(f'Episode {episode+1}, Expected Reward: {sum(episode_ER).item():.2f}, total_reward: {sum(episode_rewards).item():.2f}')
-
-            total_ER.append(sum(episode_ER).detach())
-            total_rewards.append(sum(episode_rewards).detach())
-
-        return total_rewards, total_ER
 
 
 class LSIEnv(gym.Env):
@@ -150,6 +65,13 @@ class LSIEnv(gym.Env):
 
     The next step will then be a new trajectory and be from the next batch in the dataloader. Once all the batches have
     been seen we refresh the dataloader and go again from the start.
+
+    ### Observation Space:
+    [[unix_time, T_node1, T_node2, TRm1, TRm2, ...],    t0
+    .                                                   t1
+    .                                                   t2
+    .                                                   tn
+    ]
     """
     metadata = {'render.modes': ['human']}
 
@@ -161,12 +83,22 @@ class LSIEnv(gym.Env):
         self.enum_data = None  # enumerate(dataloader)
         self.batch_idx = len(self.dataloader) - 1  # Keeps track of batch number in dataloader, initialised in reset()
         self.epochs = -1  # keeps count of the total epochs of data seen.
+        self.time_min = None  # used to help render graph. initialised in _init_render()
+        self.time_max = None
+
+        # init info dictionary:
+        self.info = {"actions": [],  # place to record actions
+                     "t_actions": [],  # record time action took place
+                     }
 
         # get dt of data:
         t = self.dataloader.dataset[0][0]
-        self.dt = int((t[1]-t[0]).item())
+        self.dt = int((t[1] - t[0]).item())
 
-        self.step_size = int((15 * 60)/self.dt)  # num rows of data needed for 15 minutes.
+        self.day = 24 * 60 ** 2
+
+        self.step_length = config["step_length"]  # Minutes
+        self.step_size = int((self.step_length * 60) / self.dt)  # num rows of data needed for step_length minutes.
         self.t_index = 0  # used to keep track of index through timeseries
         self.loss_fn = torch.nn.MSELoss()
 
@@ -176,8 +108,11 @@ class LSIEnv(gym.Env):
         time_low = [0]
         time_high = [np.float32(np.inf)]
 
-        temp_low = [-10] * (self.n_rooms + 2)  # +2 accounts for the latent nodes
-        temp_high = [50] * (self.n_rooms + 2)
+        temp_low = [-10.] * (self.n_rooms + 2)  # +2 accounts for the latent nodes
+        temp_high = [50.] * (self.n_rooms + 2)
+
+        low = np.array([time_low + temp_low] * self.step_size)  # extend the vector by the number of timesteps
+        high = np.array([time_high + temp_high] * self.step_size)
 
         # Define action and observation space
         # They must be gym.spaces objects
@@ -185,42 +120,44 @@ class LSIEnv(gym.Env):
         self.action_space = spaces.Discrete(2, )
 
         # Observation is temperature of each room.
-        self.observation_space = spaces.Box(np.array(time_low+temp_low), np.array(time_high+temp_high),
+        self.observation_space = spaces.Box(low, high,
                                             dtype=np.float64)
 
     def step(self, action):
         # Execute a chunk of timeseries
-        # t0 = self.observation[0]
-        # tn = t0 + (self.step_size+1)*self.dt
-        # t_eval = torch.arange(t0, tn, self.dt, dtype=torch.float64)
-        t_eval = self.time_data[self.t_index:int(self.t_index + self.step_size)]
-        temp = self.temp_data[self.t_index:int(self.t_index + self.step_size), 0:self.n_rooms]
+        t_start = self.t_index - 1 if self.t_index > 0 else self.t_index  # solves an off by one issue caused by setting the iv.
+        t_eval = self.time_data[t_start:int(self.t_index + self.step_size)]
+        temp = self.temp_data[t_start:int(self.t_index + self.step_size), 0:self.n_rooms]
 
         self.t_index += self.step_size
 
-        # set iv from observation
-        self.RC.iv = self.observation[1:].unsqueeze(0).T
+        self.info["actions"].extend([action, action])  # record both start and end so we can plot actions later
+        self.info["t_actions"].extend([t_eval[0], t_eval[-1]])
+
+        # set iv from last observation
+        self.RC.iv = self.observation[-1, 1:].unsqueeze(0).T
 
         pred = self.RC(t_eval, action)
         pred = pred.squeeze()
 
         # negative so reward can be maximised
-        reward = -self.loss_fn(pred[:, 2:], temp)  # Squared Error
+        reward = -self.loss_fn(pred[:, 2:], temp).item()  # Mean Squared Error
 
-        self.observation = torch.concat((t_eval[-1].unsqueeze(0), pred[-1].detach().clone()))
-
-        # self.state = self._inputs_to_state(pred[-1, 2:], t_eval[-1])  # f(x,t) where: x = [Trm1_tn, Trm2_tn, ...]
+        self.observation = torch.concat((t_eval.unsqueeze(0).T, pred.detach().clone()), dim=1)
 
         if t_eval[-1] == self.time_data[-1]:  # if this condition is missed then error
             done = True
         else:
             done = False
 
-        return self.observation.numpy(), reward, done, {}
+        return self.observation.numpy(), reward, done, self.info
 
     def reset(self):
         # Reset the state of the environment to an initial state
         self.t_index = 0
+        self.need_init_render = True  # reset render logic
+        self.info["actions"] = []
+        self.info["t_actions"] = []
 
         # check if we have reached end of data and need to reset enumerate.
         if self.batch_idx + 1 == len(self.dataloader):
@@ -232,27 +169,109 @@ class LSIEnv(gym.Env):
         self.time_data = self.time_data.squeeze(0)
         self.temp_data = self.temp_data.squeeze(0)
 
-        # Find correct initial value for current start
+        # Find correct initial value for current start from pre-calculated array
         self.RC.iv = self.RC.iv_array(self.time_data[0]).unsqueeze(0).T
 
-        # self.observation = np.array([self.time_data[0].tolist()] + self.RC.iv.T.squeeze(0).tolist())
-        self.observation = torch.concat((self.time_data[0].unsqueeze(0), self.RC.iv.T.squeeze(0)))
+        self.observation = torch.concat((self.time_data[0].unsqueeze(0), self.RC.iv.T.squeeze(0))).unsqueeze(0)
 
         return self.observation.numpy()
 
     def render(self, mode='human', close=False):
         # Render the environment to the screen
 
+        if self.need_init_render:
+            self._init_render()
+            self.need_init_render = False
+            return
+
+        # line1.set_data(self.observation[:, 0].numpy(), self.observation[:, 3:].numpy())
+        ax.plot((self.observation[:, 0] - self.time_min).numpy() / self.day, self.observation[:, 3:].numpy(), 'k-')
+
+        Q_watts = self.RC.building.proportional_heating(self.RC.cool_load)  # convert from W/m2 to W
+        Q = self.info["actions"] * Q_watts.detach().numpy()
+        heat_line.set_data((torch.stack(self.info["t_actions"]) - self.time_min) / self.day, Q)
+
+
+        # fig = plt.gcf()
+        # ax = plt.gca()
+        ax.relim()
+        ax.autoscale_view(tight=None, scalex=False, scaley=True)
+        ax2.relim()
+        ax2.autoscale_view(tight=None, scalex=False, scaley=True)
+        fig.canvas.draw()
+        # fig.canvas.flush_events()
+        # plt.draw()
+        plt.pause(0.0001)
+
         return
 
+    def _init_render(self):
+        from matplotlib.lines import Line2D
 
-class Preprocess:
+        global fig, line1, heat_line, ax, ax2
+
+        if self.time_min is None:
+            t, temp = self.dataloader.dataset.get_all_data()
+            self.time_min = t[0]
+            self.time_max = t[-1]
+            self.time_all = t
+            self.temp_data_all = temp[:, 0:self.n_rooms]
+
+        x = torch.arange(0, self.time_max - self.time_min, self.dt) / self.day
+        y = torch.empty(len(x)) * torch.nan
+        # y = torch.zeros(len(x))
+
+        plt.ion()
+        fig = plt.figure()
+
+        ax = fig.add_subplot(111)
+        ax2 = ax.twinx()
+        ax.set_xlim([0, (self.time_max - self.time_min) / self.day])
+        ax.set_title('Model Output')
+        ax.set(xlabel='Time (days)', ylabel=r'Temperature ($^\circ$C)')
+        ax2.set_ylabel(r"Heating/Cooling ($W$)")
+
+        t_days_all = (self.time_all - self.time_min) / self.day
+        line1, = ax.plot(x, y, 'k-', label=r'model ($^\circ$C)')
+        ln2 = ax.plot(t_days_all.numpy(), self.temp_data_all[:, 0].numpy(), ':r', label=r'data ($^\circ$C)')
+        ln3 = ax.plot(t_days_all.numpy(), self.RC.Tout_continuous(self.time_all).numpy(), linestyle=':',
+                      color='darkorange', label=r'outside ($^\circ$C)')
+
+        gain = self.RC.scaling.physical_cooling_scaling(self.RC.transform(self.RC.loads[1, :]))
+        gain_watts = gain * self.RC.building.rooms[0].area
+        gain_line = ax2.axhline(gain_watts.detach().numpy(), linestyle='-.', color='k', alpha=0.5, label='gain ($W$)')
+
+        # fake line so we can get a legend now. Real line is created in render()
+        heat_line, = ax2.plot([0], [0], color='k', linestyle='--', alpha=0.5, label='heat ($W$)')
+
+        lns = [line1, heat_line, gain_line] + ln2 + ln3
+        labs = [l.get_label() for l in lns]
+        ax.legend(lns, labs, loc='upper right')
+
+        fig.show()
+
+        # return fig, line1
+
+
+class PreprocessEnv(gym.Wrapper):
     """
     Class used to preprocess the outputs from the environment before being seen by the policy.
     """
-    def __init__(self, mu, std_dev):
+
+    def __init__(self, env, mu, std_dev):
+        super().__init__(env)
+        self.env = env
         self.mu = mu
         self.std_dev = std_dev
+
+        time_high = [1.] * 4
+        time_low = [-1.] * 4
+
+        temp_high = [50.] * self.env.n_rooms  # This is normalised temperature so the limits are a guess.
+        temp_low = [-50.] * self.env.n_rooms
+
+        self.observation_space = spaces.Box(np.array(temp_low + time_low), np.array(temp_high + time_high),
+                                            dtype=np.float64)
 
     def preprocess_observation(self, observation):
         """
@@ -261,9 +280,17 @@ class Preprocess:
         Used to wrap the original environment:
         env = gym.wrappers.TransformObservation(env, preprocess_observation)
         """
-        unix_time = observation[0]
 
-        x = observation[3:]  # remove the latent nodes
+        # ndim will be different if from reset() or step()
+        # if observation.ndim == 1:
+        #     unix_time = observation[0]
+        #     x = observation[3:]  # remove the latent nodes
+        # else:
+        #     unix_time = observation[-1, 0]
+        #     x = observation[-1, 3:]  # remove the latent nodes
+
+        unix_time = observation[-1, 0]
+        x = observation[-1, 3:]  # remove the latent nodes
 
         # normalise x using info obtained from data.
         x_norm = (x - self.mu) / self.std_dev
@@ -284,6 +311,19 @@ class Preprocess:
                                    np.cos(unix_time * (2 * np.pi / week))]
 
         return state
+
+    def step(self, action):
+        observation, reward, done, info = self.env.step(action)
+        self.observation = self.preprocess_observation(observation)
+
+        return self.observation, reward, done, info
+
+    def reset(self):
+        observation = self.env.reset()
+        self.observation = self.preprocess_observation(observation)
+
+        return self.observation
+
 
 # def _inputs_to_state(self, x, unix_time):
 #     """
@@ -390,8 +430,9 @@ class PriorEnv(gym.Env):
         # negative so reward can be maximised
         reward = -self.loss_fn(policy_actions, prior_actions)  # Squared Error
 
-        pred = torch.zeros((1,5))  # Fake pred to be compatible with Reinforce
+        pred = torch.zeros((1, 5))  # Fake pred to be compatible with Reinforce
         return pred, reward  # No need for grad on pred
+
     #          (observation, reward, done, info)
     # self.state, reward, done, {}
 
@@ -407,3 +448,86 @@ class PriorEnv(gym.Env):
 
         return
 
+# class Reinforce:
+#     def __init__(self, env, gamma=0.99, alpha=1e-3):
+#
+#         self.env = env
+#         # self.pi = pi
+#         self.gamma = gamma
+#         self.alpha = alpha
+#
+#         self.optimiser = torch.optim.Adam(self.env.RC.cooling_policy.parameters(), lr=self.alpha)
+#
+#     def update_policy(self, rewards, log_probs):
+#         log_probs = torch.stack(log_probs).squeeze()  # get into right format regardless of whether single or multiple states have been used
+#
+#         # downsample rewards by averaging each window.
+#         rewards = torch.tensor([window.mean() for window in torch.tensor_split(rewards, len(log_probs))])
+#
+#         # Calculate Discounted Reward:
+#         discounted_rewards = torch.zeros(len(rewards))
+#
+#         R = 0
+#         indx = len(rewards) - 1
+#         for r in reversed(rewards):  # Future/Later rewards are discounted
+#             R = r + self.gamma * R  # Discounted Reward is calculated from last reward to first.
+#
+#             discounted_rewards[indx] = R  # Fill array back to front to un-reverse the order
+#             indx -= 1
+#
+#         # Normalise rewards
+#         discounted_rewards = (discounted_rewards - discounted_rewards.mean()) / (
+#                 discounted_rewards.std() + 1e-9)
+#
+#         # discounted_rewards = torch.tensor(np.array(discounted_rewards.detach().numpy()))
+#
+#         expected_reward = -log_probs * discounted_rewards  # negative for maximising
+#         expected_reward = torch.sum(expected_reward)
+#         # print(f'ER {expected_reward}')
+#
+#         # Update parameters in pi
+#         self.optimiser.zero_grad()
+#         expected_reward.backward()
+#         self.optimiser.step()
+#
+#         # print(list(self.pi.parameters())[0].grad)  # check on grads if needed
+#
+#         return expected_reward
+#
+#     def train(self, num_episodes):
+#         self.env.RC.cooling_policy.train()  # Put in training mode
+#         total_ER = []
+#         total_rewards = []
+#
+#         # with tqdm(total=len(self.env.time_data) * num_episodes, position=0, leave=False) as pbar:  # progress bar
+#         for episode in range(num_episodes):
+#             self.env.reset()
+#
+#             episode_rewards = []
+#             episode_ER = []
+#
+#             # Time is increased in steps, with the policy updating after every step.
+#             while self.env.t_index < len(self.env.time_data) - 1:
+#
+#                 # takes a step_size forward in time
+#                 pred, reward = self.env.step(action)  # state and action produced in step
+#
+#                 # Do gradient decent on sample
+#                 ER = self.update_policy(reward, self.env.RC.cooling_policy.log_probs)
+#
+#                 self.env.RC.cooling_policy.on_policy_reset()  # empty buffer
+#
+#                 # get last output and use for next initial value
+#                 # self.env.RC.iv = pred[-1, :].unsqueeze(1).detach()  # MUST DETACH GRAD
+#
+#                 episode_rewards.append(sum(reward))
+#                 episode_ER.append(ER)
+#
+#                 self.env.t_index += int(step_size)  # increase environment time
+#
+#             # print(f'Episode {episode+1}, Expected Reward: {sum(episode_ER).item():.2f}, total_reward: {sum(episode_rewards).item():.2f}')
+#
+#             total_ER.append(sum(episode_ER).detach())
+#             total_rewards.append(sum(episode_rewards).detach())
+#
+#         return total_rewards, total_ER

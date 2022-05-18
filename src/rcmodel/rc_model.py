@@ -81,12 +81,17 @@ class RCModel(nn.Module):
         t_eval = t_eval - self.t0
 
         # Find the true iv from an initialised Inter1D object.
-        if self.iv_array:
-            self.iv = self.iv_array(self.t0).unsqueeze(0).T
-            if iv_note: print('iv_array not currently valid, check code.')
+        # if self.iv_array:
+        #     self.iv = self.iv_array(self.t0).unsqueeze(0).T
+        #     if iv_note: print('iv_array not currently valid, check code.')
+
+        if self.iv.dtype != torch.float32:
+            self.iv = self.iv.to(torch.float32)
 
         # integrate using fixed step (rk4) see torchdiffeq docs for more options.
         integrate = odeint(self.f_ode, self.iv, t_eval, method='rk4')  # https://github.com/rtqichen/torchdiffeq
+
+        self.iv = None  # Ensures iv is set between forward calls.
 
         return integrate  # first two columns are external envelope nodes. i.e not rooms
 
