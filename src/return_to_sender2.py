@@ -6,6 +6,9 @@ from pathlib import Path
 from tqdm.auto import tqdm, trange
 from xitorch.interpolate import Interp1D
 from torch.utils.data import TensorDataset
+from pynmmso import Nmmso
+from pynmmso import MultiprocessorFitnessCaller
+from pynmmso.listeners import TraceListener
 
 from rcmodel import *
 from rcmodel.tools.helper_functions import model_to_csv
@@ -84,7 +87,7 @@ for i in range(len(train_dataset_og)):
     done = False
     observation = env_og.reset()
     while not done:
-        env_og.render()
+        # env_og.render()
         action = env_og.RC.cooling_policy.get_action(torch.tensor(observation, dtype=torch.float32)).item()
         observation, reward, done, _ = env_og.step(action)
         observations.append(env_og.env.observation)
@@ -161,10 +164,74 @@ config = {
 env = env_creator(config["env_config"])
 env.RC.iv_array = iv_array  # correct output from original model so our iv is always correct
 
-for i in range(len(train_dataset)):
-    done = False
-    observation = env.reset()
-    while not done:
-        env.render()
-        action = env.RC.cooling_policy.get_action(torch.tensor(observation, dtype=torch.float32)).item()
-        observation, reward, done, _ = env.step(action)
+# for i in range(len(train_dataset)):
+#     done = False
+#     observation = env.reset()
+#     while not done:
+#         env.render()
+#         action = env.RC.cooling_policy.get_action(torch.tensor(observation, dtype=torch.float32)).item()
+#         observation, reward, done, _ = env.step(action)
+
+
+class MyProblem:
+    def __init__(self, env, dataset):
+        self.env = env
+        self.dataset = dataset
+
+    def fitness(self, params):
+        n = self.env.RC.building.n_params
+        self.env.RC.params = torch.nn.Parameter(torch.tensor(params[0:n], dtype=torch.float32))
+        loads = torch.tensor(np.array([params[n:n + 2 * len(self.env.RC.building.rooms)]]), dtype=torch.float32)
+        self.env.RC.loads = torch.nn.Parameter(loads.reshape(2, len(self.env.RC.building.rooms)))
+
+        total_reward = 0
+        for i in range(len(self.dataset)):
+            done = False
+            observation = self.env.reset()
+            while not done:
+                action = self.env.RC.cooling_policy.get_action(torch.tensor(observation, dtype=torch.float32)).item()
+                observation, reward, done, _ = self.env.step(action)
+                total_reward += reward
+
+        return total_reward  # pynmmso maximises
+
+    def get_bounds(self):
+        n = self.env.RC.building.n_params + 2 * len(self.env.RC.building.rooms)
+        return list(np.zeros(n)), list(np.ones(n))
+
+
+
+
+# ----------nmmso----------
+number_of_fitness_evaluations = 30
+num_workers = 8
+
+my_multi_processor_fitness_caller = MultiprocessorFitnessCaller(num_workers)
+
+# with MultiprocessorFitnessCaller(num_workers) as my_multi_processor_fitness_caller:
+nmmso = Nmmso(MyProblem(env, train_dataset), fitness_caller=my_multi_processor_fitness_caller)
+nmmso.add_listener(TraceListener(level=2))
+my_result = nmmso.run(number_of_fitness_evaluations)
+
+my_multi_processor_fitness_caller.finish()
+
+# nmmso = Nmmso(MyProblem(model, train_dataset, time_data))
+# nmmso.add_listener(TraceListener(level=5))
+# my_result = nmmso.run(number_of_fitness_evaluations)
+
+for mode_result in my_result:
+    print("Mode at {} has value {}".format(mode_result.location, mode_result.value))
+
+# ------save results to csv------
+loc = []
+val = []
+for mode_result in my_result:
+    loc.append(mode_result.location)
+    val.append(mode_result.value)
+
+loc = np.array(loc)
+val = np.array(val)
+output = np.concatenate((loc, np.vstack(val)), axis=1)
+
+df = pd.DataFrame(output)
+df.to_csv('logs/' + dt_string + '_results_nmmso' + '.csv', index=False)
