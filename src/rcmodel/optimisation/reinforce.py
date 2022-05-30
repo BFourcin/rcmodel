@@ -125,11 +125,9 @@ class LSIEnv(gym.Env):
 
     def step(self, action):
         # Execute a chunk of timeseries
-        t_start = self.t_index - 1 if self.t_index > 0 else self.t_index  # solves an off by one issue caused by setting the iv.
+        t_start = self.t_index - 1 if self.t_index > 0 else self.t_index  # solves an off by one issue caused by the iv technically being t0.
         t_eval = self.time_data[t_start:int(self.t_index + self.step_size)]
         temp = self.temp_data[t_start:int(self.t_index + self.step_size), 0:self.n_rooms]
-
-        self.t_index += self.step_size
 
         self.info["actions"].extend([action, action])  # record both start and end so we can plot actions later
         self.info["t_actions"].extend([t_eval[0], t_eval[-1]])
@@ -143,12 +141,18 @@ class LSIEnv(gym.Env):
         # negative so reward can be maximised
         reward = -self.loss_fn(pred[:, 2:], temp).item()  # Mean Squared Error
 
-        self.observation = torch.concat((t_eval.unsqueeze(0).T, pred.detach().clone()), dim=1)
+        # remove first observation as this was the iv from the previous step
+        if self.t_index == 0:
+            self.observation = torch.concat((t_eval.unsqueeze(0).T, pred.detach().clone()), dim=1)
+        else:
+            self.observation = torch.concat((t_eval[1:].unsqueeze(0).T, pred[1:, :].detach().clone()), dim=1)
 
         if t_eval[-1] == self.time_data[-1]:  # if this condition is missed then error
             done = True
         else:
             done = False
+
+        self.t_index += self.step_size
 
         return self.observation.numpy(), reward, done, self.info
 
