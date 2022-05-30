@@ -60,7 +60,7 @@ class RCModel(nn.Module):
         self.action = action
 
         # self.ode_t = -900  # keeps track of previous time an action was produced. Initialised to work at t=0.
-        # self.record_action = []  # Keeps track of action at time during ODE integration.
+        self.record_action = []  # Keeps track of action at time during ODE integration.
         iv_note = False
 
         # If physical parameters have changed we need to do two things: update Matrices A & B and recalculate iv_array.
@@ -109,9 +109,9 @@ class RCModel(nn.Module):
         #         if self.cooling_policy.training:  # if in training mode store log_prob
         #             self.cooling_policy.log_probs.append(log_prob)
 
-        # if self.cooling_policy:  # policy exists
-        #     # record every time-step
-        #     self.record_action.append([t, self.action])  # This is just used for plotting the cooling after.
+        if self.cooling_policy:  # policy exists
+            # record every time-step
+            self.record_action.append([t, self.action])  # This is just used for plotting the cooling after.
 
         # Get energy input at timestep:
         Q_area = -self.cool_load * self.action  # W/m2

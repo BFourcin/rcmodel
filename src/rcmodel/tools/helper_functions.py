@@ -225,23 +225,19 @@ def sort_data(path, dt):
     return path_sorted
 
 
-def model_to_csv(model, t_eval, output_path):
+def model_to_csv(observations, output_path):
     """
-    Produces a .csv of the given models output. To then be used in return_to_sender.py
+    Produces a .csv of the output. To then be used in return_to_sender.py
     """
-    # Compute prediction
-    pred = model(t_eval)
-    pred = pred.squeeze(-1)  # change from column to row matrix
-
     # Produce a .csv in the same format as current data, retains compatibility with dataloader
-    titles = [['date-time', 'time'], [f'Rm{i}' for i in range(pred[:, 2:].shape[1])]]
+    titles = [['date-time', 'time'], [f'Rm{i}' for i in range(observations[:, 3:].shape[1])]]
     titles = [item for sublist in titles for item in sublist]
 
-    df = torch.hstack((torch.zeros(len(pred), 1) * torch.nan, t_eval.unsqueeze(1), pred[:, 2:]))
+    # sort into date-time, unix time and temp data columns. (date-time exists just to keep format consistent)
+    df = torch.hstack((torch.zeros(len(observations), 1) * torch.nan, observations[:, 0].unsqueeze(1), observations[:, 3:]))
     df = pd.DataFrame(df.detach().numpy())
     df.to_csv(output_path, index=False, header=titles)
 
-    return pred
 
 
 def convergence_criteria(y, n=10):
