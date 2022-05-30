@@ -21,13 +21,14 @@ scaling = InputScaling(rm_CA, ex_C, R, Q_limit)
 
 # Laptop
 weather_data_path = '/Users/benfourcin/OneDrive - University of Exeter/PhD/LSI/Data/Met Office Weather Files/JuneSept.csv'
+csv_path = '/Users/benfourcin/OneDrive - University of Exeter/PhD/LSI/Data/DummyData/train5d_sorted.csv'
 
 # Hydra:
 # weather_data_path = '/home/benf/LSI/Data/Met Office Weather Files/JuneSept.csv'
 
 policy = PolicyNetwork(5, 2)
 
-model_origin = initialise_model(policy, scaling, weather_data_path)
+model_origin = initialise_model(policy, scaling, weather_data_path, csv_path)
 # model_origin.state_dict()['params'][7] = 0.001  # manually lower 'gain'
 
 # load a model which we will then try to replicate.
@@ -40,7 +41,7 @@ if load_policy:
 
 if load_physical:
     # m = initialise_model(None, scaling, weather_data_path)  # dummy model to load physical params on to.
-    m = initialise_model(None, scaling, weather_data_path)  # dummy model to load physical params on to.
+    m = initialise_model(None, scaling, weather_data_path, csv_path)  # dummy model to load physical params on to.
     m.load(load_physical)
     model_origin.params = m.params  # put loaded physical parameters onto model.
     model_origin.loads = m.loads
