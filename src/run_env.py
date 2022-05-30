@@ -69,8 +69,6 @@ def env_creator(env_config):
     time_data = torch.tensor(pd.read_csv(model_config['room_data_path'], skiprows=0).iloc[:, 1], dtype=torch.float64)
     model.iv_array = model.get_iv_array(time_data)
 
-    print("env-creator")
-
     env_config["RC_model"] = model
 
     env = LSIEnv(env_config)

@@ -107,6 +107,26 @@ class BuildingTemperatureDataset(Dataset):
         else:
             raise ValueError('train, test and validation all False')
 
+    def get_all_data(self):
+        # Get upper and lower bounds of dataset slice
+        lb = self.rows_to_skip
+
+        # Get pandas df of sample
+        df_sample = pd.read_csv(self.csv_path, skiprows=lb, nrows=self.entry_count)
+
+        # Get time column (time must be in the 1th column)
+        t_sample = torch.tensor(df_sample.iloc[:, 1].values, dtype=torch.float64)  # units (s)
+
+        # Get temp matrix
+        temp_sample = torch.tensor(df_sample.iloc[:, 2:].values,
+                                   dtype=torch.float32)  # pandas needs 2: to get all but first & second column
+
+        # apply transforms if required
+        if self.transform:
+            temp_sample = self.transform(temp_sample)
+
+        return t_sample, temp_sample
+
 
 class RandomSampleDataset(Dataset):
     """
@@ -219,7 +239,6 @@ class RandomSampleDataset(Dataset):
             raise ValueError('train, test and validation all False')
 
     def get_all_data(self):
-        # we take a random index from the range of valid indexes:
         start_idx = self.rows_to_skip
 
         # Get pandas df of entire valid dataset
