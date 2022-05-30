@@ -129,7 +129,7 @@ def dataset_creator(path, sample_size, dt):
         # test_dataloader = torch.utils.data.DataLoader(test_dataset, batch_size=1, shuffle=False)
         warmup_size = 7 * sample_size
         train_dataset = RandomSampleDataset(path_sorted, sample_size, warmup_size, train=True, test=False)
-        train_dataloader = torch.utils.data.DataLoader(training_data, batch_size=1, shuffle=False)
+        train_dataloader = torch.utils.data.DataLoader(train_dataset, batch_size=1, shuffle=False)
         test_dataset = RandomSampleDataset(path_sorted, sample_size, warmup_size, train=False, test=True)
         test_dataloader = torch.utils.data.DataLoader(test_dataset, batch_size=1, shuffle=False)
 
