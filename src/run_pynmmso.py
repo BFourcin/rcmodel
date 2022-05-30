@@ -23,6 +23,7 @@ def make_original_model():
 
     # Laptop
     weather_data_path = '/Users/benfourcin/OneDrive - University of Exeter/PhD/LSI/Data/Met Office Weather Files/JuneSept.csv'
+    csv_path = '/Users/benfourcin/OneDrive - University of Exeter/PhD/LSI/Data/DummyData/train5d_sorted.csv'
 
     # Hydra:
     # weather_data_path = '/home/benf/LSI/Data/Met Office Weather Files/JuneSept.csv'
