@@ -14,6 +14,8 @@ from rcmodel import *
 from rcmodel.tools.helper_functions import model_to_csv
 
 
+torch.set_num_threads(1)
+
 def env_creator(env_config, preprocess=True):
     model_config = env_config["model_config"]
     model = model_creator(model_config)
@@ -38,6 +40,7 @@ weather_data_path = '/Users/benfourcin/OneDrive - University of Exeter/PhD/LSI/D
 dummy_data_path = './outputs/return_to_sender_dummy_data.csv'
 
 from pathlib import Path
+
 Path('./outputs').mkdir(parents=True, exist_ok=True)
 
 # Hydra:
@@ -69,8 +72,7 @@ num_days = 2
 t_eval = torch.arange(0, num_days * 24 * 60 ** 2, 30,
                       dtype=torch.float64) + 1622505600  # + min start time of weather data
 # create a csv file of the timeseries we want.
-pd.DataFrame([t_eval.numpy(), np.ones(len(t_eval))*25]).T.to_csv(dummy_data_path)
-
+pd.DataFrame([t_eval.numpy(), np.ones(len(t_eval)) * 25]).T.to_csv(dummy_data_path)
 
 sample_size = len(t_eval)
 train_dataset_og = BuildingTemperatureDataset(dummy_data_path, sample_size, all=True)
@@ -87,13 +89,12 @@ for i in range(len(train_dataset_og)):
     done = False
     observation = env_og.reset()
     while not done:
-        # env_og.render()
+        env_og.render()
         action = env_og.RC.cooling_policy.get_action(torch.tensor(observation, dtype=torch.float32)).item()
         observation, reward, done, _ = env_og.step(action)
         observations.append(env_og.env.observation)
 
 observations = torch.concat(observations)
-
 
 output_path = './outputs/return_to_sender_out_sorted.csv'
 model_to_csv(observations, output_path)
@@ -134,7 +135,7 @@ model_config = {
     "room_names": ["seminar_rm_a_t0106"],
     "room_coordinates": [[[92.07, 125.94], [92.07, 231.74], [129.00, 231.74], [154.45, 231.74],
                           [172.64, 231.74], [172.64, 125.94]]],
-    "weather_data_path": '/Users/benfourcin/OneDrive - University of Exeter/PhD/LSI/Data/Met Office Weather Files/JuneSept.csv',
+    "weather_data_path": weather_data_path,
     "room_data_path": output_path,
     "load_model_path_policy": load_policy,  # or None
     "load_model_path_physical": load_physical,  # or None
@@ -164,6 +165,7 @@ config = {
 env = env_creator(config["env_config"])
 env.RC.iv_array = iv_array  # correct output from original model so our iv is always correct
 
+
 # for i in range(len(train_dataset)):
 #     done = False
 #     observation = env.reset()
@@ -178,6 +180,8 @@ class MyProblem:
         self.env = env
         self.dataset = dataset
 
+        self.env.RC.transform = None  # turn sigmoid off
+
     def fitness(self, params):
         n = self.env.RC.building.n_params
         self.env.RC.params = torch.nn.Parameter(torch.tensor(params[0:n], dtype=torch.float32))
@@ -189,6 +193,7 @@ class MyProblem:
             done = False
             observation = self.env.reset()
             while not done:
+                self.env.render()
                 action = self.env.RC.cooling_policy.get_action(torch.tensor(observation, dtype=torch.float32)).item()
                 observation, reward, done, _ = self.env.step(action)
                 total_reward += reward
@@ -199,39 +204,76 @@ class MyProblem:
         n = self.env.RC.building.n_params + 2 * len(self.env.RC.building.rooms)
         return list(np.zeros(n)), list(np.ones(n))
 
+p = MyProblem(env, train_dataset)
 
+p.fitness([0.91501832, 0.40254773, 0.04334862, 0.00916933, 0.92736078, 0.94796796, 0.63899424, 0.29366446, 0.00101442])
 
 
 # ----------nmmso----------
-number_of_fitness_evaluations = 30
-num_workers = 8
 
-my_multi_processor_fitness_caller = MultiprocessorFitnessCaller(num_workers)
+def main(dt_string):
+    number_of_fitness_evaluations = 10000
+    num_workers = 10
 
-# with MultiprocessorFitnessCaller(num_workers) as my_multi_processor_fitness_caller:
-nmmso = Nmmso(MyProblem(env, train_dataset), fitness_caller=my_multi_processor_fitness_caller)
-nmmso.add_listener(TraceListener(level=2))
-my_result = nmmso.run(number_of_fitness_evaluations)
+    my_multi_processor_fitness_caller = MultiprocessorFitnessCaller(num_workers)
 
-my_multi_processor_fitness_caller.finish()
+    # with MultiprocessorFitnessCaller(num_workers) as my_multi_processor_fitness_caller:
+    nmmso = Nmmso(MyProblem(env, train_dataset), fitness_caller=my_multi_processor_fitness_caller)
+    nmmso.add_listener(TraceListener(level=2))
+    my_result = nmmso.run(number_of_fitness_evaluations)
 
-# nmmso = Nmmso(MyProblem(model, train_dataset, time_data))
-# nmmso.add_listener(TraceListener(level=5))
-# my_result = nmmso.run(number_of_fitness_evaluations)
+    my_multi_processor_fitness_caller.finish()
 
-for mode_result in my_result:
-    print("Mode at {} has value {}".format(mode_result.location, mode_result.value))
+    # nmmso = Nmmso(MyProblem(model, train_dataset, time_data))
+    # nmmso.add_listener(TraceListener(level=5))
+    # my_result = nmmso.run(number_of_fitness_evaluations)
 
-# ------save results to csv------
-loc = []
-val = []
-for mode_result in my_result:
-    loc.append(mode_result.location)
-    val.append(mode_result.value)
+    for mode_result in my_result:
+        print("Mode at {} has value {}".format(mode_result.location, mode_result.value))
 
-loc = np.array(loc)
-val = np.array(val)
-output = np.concatenate((loc, np.vstack(val)), axis=1)
+    # ------save results to csv------
+    loc = []
+    val = []
+    for mode_result in my_result:
+        loc.append(mode_result.location)
+        val.append(mode_result.value)
 
-df = pd.DataFrame(output)
-df.to_csv('logs/' + dt_string + '_results_nmmso' + '.csv', index=False)
+    loc = np.array(loc)
+    val = np.array(val)
+    output = np.concatenate((loc, np.vstack(val)), axis=1)
+
+    df = pd.DataFrame(output)
+    df.to_csv('logs/' + dt_string + '_results_nmmso' + '.csv', index=False)
+
+
+if __name__ == '__main__':
+    from datetime import datetime
+    from pathlib import Path
+    import time
+    import sys
+    import os
+
+    # ---Add Logging file---
+
+    # datetime object containing current date and time
+    now = datetime.now()
+    # YY/mm/dd H:M:S
+    dt_string = now.strftime("%y-%m-%d_%H:%M:%S")
+
+    logfile = 'logs/' + dt_string + '_log_nmmso' + '.log'
+
+    # Create dir if needed
+    Path("./logs/").mkdir(parents=True, exist_ok=True)
+
+    # Add Logging file:
+    if os.path.exists(logfile):
+        os.remove(logfile)
+
+    # set buffering to none, means that result is written to log in realtime. Otherwise this is done at the end.
+    log = open(logfile, "a", buffering=1)
+    sys.stdout = log  # print() now goes to .log
+
+    # ---Start Run---
+    start = time.time()
+    main(dt_string)
+    print("duration =", time.time() - start)

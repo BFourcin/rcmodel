@@ -34,7 +34,6 @@ class PolicyNetwork(nn.Module):
         return logits
 
     def get_action(self, state):
-        # state = self.inputs_to_state(x, unix_time)
 
         prob_dist = torch.distributions.categorical.Categorical(
             logits=self.forward(state))  # make a probability distribution
@@ -154,6 +153,11 @@ class LSIEnv(gym.Env):
 
         self.t_index += self.step_size
 
+        if torch.isnan(self.observation).any():
+            reward = -1000
+            done = True
+            print('Error in inputs, nan produced')
+
         return self.observation.numpy(), reward, done, self.info
 
     def reset(self):
@@ -241,7 +245,11 @@ class LSIEnv(gym.Env):
         ln3 = ax.plot(t_days_all.numpy(), self.RC.Tout_continuous(self.time_all).numpy(), linestyle=':',
                       color='darkorange', label=r'outside ($^\circ$C)')
 
-        gain = self.RC.scaling.physical_cooling_scaling(self.RC.transform(self.RC.loads[1, :]))
+        if self.RC.transform:
+            gain = self.RC.scaling.physical_cooling_scaling(self.RC.transform(self.RC.loads[1, :]))
+        else:
+            gain = self.RC.scaling.physical_cooling_scaling(self.RC.loads[1, :])
+
         gain_watts = gain * self.RC.building.rooms[0].area
         gain_line = ax2.axhline(gain_watts.detach().numpy(), linestyle='-.', color='k', alpha=0.5, label='gain ($W$)')
 
