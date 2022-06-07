@@ -13,8 +13,8 @@ from pynmmso.listeners import TraceListener
 from rcmodel import *
 from rcmodel.tools.helper_functions import model_to_csv
 
-
 torch.set_num_threads(1)
+
 
 def env_creator(env_config, preprocess=True):
     model_config = env_config["model_config"]
@@ -84,12 +84,13 @@ env_config_og = {"model_config": model_og_config,
 
 env_og = env_creator(env_config_og, preprocess=True)
 
+
 observations = []
 for i in range(len(train_dataset_og)):
     done = False
     observation = env_og.reset()
     while not done:
-        env_og.render()
+        # env_og.render()
         action = env_og.RC.cooling_policy.get_action(torch.tensor(observation, dtype=torch.float32)).item()
         observation, reward, done, _ = env_og.step(action)
         observations.append(env_og.env.observation)
@@ -165,7 +166,6 @@ config = {
 env = env_creator(config["env_config"])
 env.RC.iv_array = iv_array  # correct output from original model so our iv is always correct
 
-
 # for i in range(len(train_dataset)):
 #     done = False
 #     observation = env.reset()
@@ -183,67 +183,75 @@ class MyProblem:
         self.env.RC.transform = None  # turn sigmoid off
 
     def fitness(self, params):
-        n = self.env.RC.building.n_params
-        self.env.RC.params = torch.nn.Parameter(torch.tensor(params[0:n], dtype=torch.float32))
-        loads = torch.tensor(np.array([params[n:n + 2 * len(self.env.RC.building.rooms)]]), dtype=torch.float32)
-        self.env.RC.loads = torch.nn.Parameter(loads.reshape(2, len(self.env.RC.building.rooms)))
+        with torch.no_grad():
+            n = self.env.RC.building.n_params
+            self.env.RC.params = torch.nn.Parameter(torch.tensor(params[0:n], dtype=torch.float32))
+            loads = torch.tensor(np.array([params[n:n + 2 * len(self.env.RC.building.rooms)]]), dtype=torch.float32)
+            self.env.RC.loads = torch.nn.Parameter(loads.reshape(2, len(self.env.RC.building.rooms)))
 
-        total_reward = 0
-        for i in range(len(self.dataset)):
-            done = False
-            observation = self.env.reset()
-            while not done:
-                self.env.render()
-                action = self.env.RC.cooling_policy.get_action(torch.tensor(observation, dtype=torch.float32)).item()
-                observation, reward, done, _ = self.env.step(action)
-                total_reward += reward
+            total_reward = 0
+            for i in range(len(self.dataset)):
+                done = False
+                observation = self.env.reset()
+                while not done:
+                    # self.env.render()
+                    action = self.env.RC.cooling_policy.get_action(torch.tensor(observation, dtype=torch.float32)).item()
+                    observation, reward, done, _ = self.env.step(action)
+                    total_reward += reward
 
-        return total_reward  # pynmmso maximises
+            return total_reward  # pynmmso maximises
 
     def get_bounds(self):
         n = self.env.RC.building.n_params + 2 * len(self.env.RC.building.rooms)
         return list(np.zeros(n)), list(np.ones(n))
 
-p = MyProblem(env, train_dataset)
-
-p.fitness([0.91501832, 0.40254773, 0.04334862, 0.00916933, 0.92736078, 0.94796796, 0.63899424, 0.29366446, 0.00101442])
+# p = MyProblem(env, train_dataset)
+# # p.fitness([0.999717264,	0.723853294,	0.083227898,	0.057744869,	0.26839279,	0.833688435,	0.253881365,	0.592588435,	0.001389264])
+#
+# params = torch.sigmoid(env_og.RC.params).tolist() + torch.sigmoid(env_og.RC.loads)[0].tolist() + torch.sigmoid(env_og.RC.loads)[1].tolist()
+# r = p.fitness(params)
+# print(r)
 
 
 # ----------nmmso----------
 
 def main(dt_string):
-    number_of_fitness_evaluations = 10000
-    num_workers = 10
+    number_of_fitness_evaluations = 20  # steps of size s
+    s = 10  # nmmso step size before reporting results to csv
+    num_workers = 8
 
     my_multi_processor_fitness_caller = MultiprocessorFitnessCaller(num_workers)
 
     # with MultiprocessorFitnessCaller(num_workers) as my_multi_processor_fitness_caller:
     nmmso = Nmmso(MyProblem(env, train_dataset), fitness_caller=my_multi_processor_fitness_caller)
     nmmso.add_listener(TraceListener(level=2))
-    my_result = nmmso.run(number_of_fitness_evaluations)
+
+    num_iter = number_of_fitness_evaluations // s if number_of_fitness_evaluations % s == 0 else \
+        number_of_fitness_evaluations // s + 1
+
+    total_fvals = 0
+    for run in range(num_iter):
+        total_fvals += s
+        my_result = nmmso.run(total_fvals)  # will run one step
+
+        for mode_result in my_result:
+            print("Mode at {} has value {}".format(mode_result.location, mode_result.value))
+
+        # ------save results to csv------
+        loc = []
+        val = []
+        for mode_result in my_result:
+            loc.append(mode_result.location)
+            val.append(mode_result.value)
+
+        loc = np.array(loc)
+        val = np.array(val)
+        output = np.concatenate((loc, np.vstack(val)), axis=1)
+
+        df = pd.DataFrame(output)
+        df.to_csv('logs/' + dt_string + '_results_nmmso' + '.csv', index=False)
 
     my_multi_processor_fitness_caller.finish()
-
-    # nmmso = Nmmso(MyProblem(model, train_dataset, time_data))
-    # nmmso.add_listener(TraceListener(level=5))
-    # my_result = nmmso.run(number_of_fitness_evaluations)
-
-    for mode_result in my_result:
-        print("Mode at {} has value {}".format(mode_result.location, mode_result.value))
-
-    # ------save results to csv------
-    loc = []
-    val = []
-    for mode_result in my_result:
-        loc.append(mode_result.location)
-        val.append(mode_result.value)
-
-    loc = np.array(loc)
-    val = np.array(val)
-    output = np.concatenate((loc, np.vstack(val)), axis=1)
-
-    df = pd.DataFrame(output)
-    df.to_csv('logs/' + dt_string + '_results_nmmso' + '.csv', index=False)
 
 
 if __name__ == '__main__':
