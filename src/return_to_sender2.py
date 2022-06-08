@@ -85,6 +85,7 @@ env_config_og = {"model_config": model_og_config,
 env_og = env_creator(env_config_og, preprocess=True)
 
 
+
 observations = []
 for i in range(len(train_dataset_og)):
     done = False
@@ -102,23 +103,30 @@ model_to_csv(observations, output_path)
 
 iv_array = Interp1D(t_eval, observations[:, 1:].T.detach(), method='linear')
 
+del observations
 # see what the original model looks like:
 # pltsolution_1rm(model_origin, prediction=pred, time=t_eval)
 
 
-# with open('original_params.txt', 'w') as f:
-#     params = model_origin.scaling.physical_param_scaling(model_origin.transform(model_origin.params)).detach().numpy()
-#     loads = model_origin.scaling.physical_cooling_scaling(model_origin.transform(model_origin.loads))
-#     cooling = loads[0, :].detach().numpy()
-#     gain = loads[1, :].detach().numpy()
-#
-#     all_params = np.concatenate((params, gain, cooling))
-#     params_heading = ['Rm Cap/m2 (J/K.m2)', 'Ext Wl Cap 1 (J/K)', 'Ext Wl Cap 2 (J/K)', 'Ext Wl Res 1 (K.m2/W)',
-#                       'Ext Wl Res 2 (K.m2/W)', 'Ext Wl Res 3 (K.m2/W)', 'Int Wl Res (K.m2/W)', 'Offset Gain (W/m2)',
-#                       'Cooling (W)']
-#
-#     for i in range(len(all_params)):
-#         f.write(f'{params_heading[i]}: {all_params[i]:.3f} \n')
+with open('./outputs/original_params.txt', 'w') as f:
+    params = env_og.RC.scaling.physical_param_scaling(env_og.RC.transform(env_og.RC.params)).detach().numpy()
+    loads = env_og.RC.scaling.physical_cooling_scaling(env_og.RC.transform(env_og.RC.loads))
+    cooling = loads[0, :].detach().numpy()
+    gain = loads[1, :].detach().numpy()
+
+    all_params = np.concatenate((params, gain, cooling))
+    params_heading = ['Rm Cap/m2 (J/K.m2)', 'Ext Wl Cap 1 (J/K)', 'Ext Wl Cap 2 (J/K)', 'Ext Wl Res 1 (K.m2/W)',
+                      'Ext Wl Res 2 (K.m2/W)', 'Ext Wl Res 3 (K.m2/W)', 'Int Wl Res (K.m2/W)', 'Offset Gain (W/m2)',
+                      'Cooling (W)']
+
+    for i in range(len(all_params)):
+        f.write(f'{params_heading[i]}: {all_params[i]:.3f} \n')
+
+    vals = env_og.RC.transform(env_og.RC.params).tolist() + env_og.RC.transform(env_og.RC.loads).flatten().tolist()
+    f.write('Vector: ')
+    for item in vals:
+        f.write(f'{item:.3f}, ')
+
 
 # -----------------------------------------------------
 
