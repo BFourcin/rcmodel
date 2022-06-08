@@ -79,14 +79,17 @@ def env_creator(env_config):
 
 # import numpy as np
 # env = env_creator(config["env_config"])
-
+#
 # for i in range(len(train_dataset)):
 #     done = False
-#     env.reset()
+#     observation = env.reset()
 #     while not done:
-#         env.render()
-#         action = np.random.randint(2)
+#         # env.render()
+#         # action = np.random.randint(2)
+#         action = env.RC.cooling_policy.get_action(torch.tensor(observation, dtype=torch.float32)).item()
 #         observation, reward, done, _ = env.step(action)
+
+
 
 
 register_env("LSIEnv", env_creator)
@@ -94,6 +97,9 @@ register_env("LSIEnv", env_creator)
 # ray.init()
 ppo_config = ppo.DEFAULT_CONFIG.copy()
 ppo_config["vf_clip_param"] = 3000
+ppo_config["train_batch_size"] = 10
+ppo_config["sgd_minibatch_size"] = 10
+ppo_config["lr"] = 1e-3
 ppo_config.update(config)
 
 trainer = ppo.PPOTrainer(env="LSIEnv", config=ppo_config)
@@ -117,7 +123,6 @@ for i in trange(1000):
     if i % 100 == 0:
         checkpoint = trainer.save()
         print("checkpoint saved at", checkpoint)
-
 
 
 # tune.run(

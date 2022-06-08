@@ -34,9 +34,30 @@ class PolicyNetwork(nn.Module):
         return logits
 
     def get_action(self, state):
+        logits = self.forward(state)
+
+        # Debugging ----------------------
+        if torch.isnan(logits).any():
+            from datetime import datetime
+            from pathlib import Path
+
+            # datetime object containing current date and time
+            now = datetime.now()
+            # YY/mm/dd H:M:S
+            dt_string = now.strftime("%y-%m-%d_%H:%M:%S")
+            logfile = 'outputs/' + dt_string + '_errorlog' + '.csv'
+            # Create dir if needed
+            Path("./outputs/").mkdir(parents=True, exist_ok=True)
+
+            s = state.detach().numpy()
+            numpy.savetxt(dt_string, s, delimiter=",")
+
+            action = 0
+            return action
+        # ----------------------------------------------------------
 
         prob_dist = torch.distributions.categorical.Categorical(
-            logits=self.forward(state))  # make a probability distribution
+            logits=logits)  # make a probability distribution
 
         action = prob_dist.sample()  # sample from distribution pi(a|s) (action given state)
 
@@ -153,10 +174,15 @@ class LSIEnv(gym.Env):
 
         self.t_index += self.step_size
 
+        # Debugging ----------
         if torch.isnan(self.observation).any():
             reward = -1000
             done = True
             print('Error in inputs, nan produced')
+            print(f'Params: {self.RC.params.tolist() + self.RC.loads.flatten().tolist()}')
+            print(f'Observation \n {self.observation}')
+
+        # -------------------
 
         return self.observation.numpy(), reward, done, self.info
 
@@ -199,7 +225,6 @@ class LSIEnv(gym.Env):
         Q = self.info["actions"] * Q_watts.detach().numpy()
         heat_line.set_data((torch.stack(self.info["t_actions"]) - self.time_min) / self.day, Q)
 
-
         # fig = plt.gcf()
         # ax = plt.gca()
         ax.relim()
@@ -230,7 +255,7 @@ class LSIEnv(gym.Env):
         # y = torch.zeros(len(x))
 
         plt.ion()
-        fig = plt.figure()
+        fig = plt.gcf()
 
         ax = fig.add_subplot(111)
         ax2 = ax.twinx()
