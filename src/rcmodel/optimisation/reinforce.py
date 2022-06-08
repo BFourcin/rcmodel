@@ -50,7 +50,7 @@ class PolicyNetwork(nn.Module):
             Path("./outputs/").mkdir(parents=True, exist_ok=True)
 
             s = state.detach().numpy()
-            numpy.savetxt(dt_string, s, delimiter=",")
+            np.savetxt(logfile, s, delimiter=",")
 
             action = 0
             return action
