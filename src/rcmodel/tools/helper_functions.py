@@ -69,13 +69,32 @@ def model_creator(model_config):
         model.init_physical()  # re-randomise physical params, as they were also copied from the loaded policy
 
     if model_config['load_model_path_physical']:
-        # m = initialise_model(None, scaling, weather_data_path)  # dummy model to load physical params on to.
-        m = initialise_model(None, scaling,
-                             model_config['weather_data_path'], model_config['room_data_path'])  # dummy model to load physical params on to.
-        m.load(model_config['load_model_path_physical'])
+        # Try loading a dummy model with no policy, if it fails load with a policy. (We don't know what file contains)
+        try:
+            m = initialise_model(None, scaling, model_config['weather_data_path'], model_config['room_data_path'])
+            m.load(model_config['load_model_path_physical'])
+
+        except RuntimeError:
+            m = initialise_model(pi, scaling, model_config['weather_data_path'], model_config['room_data_path'])
+            m.load(model_config['load_model_path_physical'])
+
         model.params = m.params  # put loaded physical parameters onto model.
         model.loads = m.loads
         del m
+
+    # check if any parameters have been chosen by the user:
+    try:
+        loads = model.loads.detach()
+        if model_config['cooling_param']:
+            loads[0, :] = torch.logit(torch.tensor(model_config['cooling_param']))
+
+        if model_config['gain_param']:
+            loads[1, :] = torch.logit(torch.tensor(model_config['gain_param']))
+
+        model.loads = torch.nn.Parameter(loads)
+
+    except KeyError as exception:  # input not found
+        print(f'Exception during RCmodel creation, missing var in model config: {exception}')
 
     return model
 
@@ -234,10 +253,10 @@ def model_to_csv(observations, output_path):
     titles = [item for sublist in titles for item in sublist]
 
     # sort into date-time, unix time and temp data columns. (date-time exists just to keep format consistent)
-    df = torch.hstack((torch.zeros(len(observations), 1) * torch.nan, observations[:, 0].unsqueeze(1), observations[:, 3:]))
+    df = torch.hstack(
+        (torch.zeros(len(observations), 1) * torch.nan, observations[:, 0].unsqueeze(1), observations[:, 3:]))
     df = pd.DataFrame(df.detach().numpy())
     df.to_csv(output_path, index=False, header=titles)
-
 
 
 def convergence_criteria(y, n=10):

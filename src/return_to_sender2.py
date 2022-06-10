@@ -84,8 +84,6 @@ env_config_og = {"model_config": model_og_config,
 
 env_og = env_creator(env_config_og, preprocess=True)
 
-
-
 observations = []
 for i in range(len(train_dataset_og)):
     done = False
@@ -126,7 +124,6 @@ with open('./outputs/original_params.txt', 'w') as f:
     f.write('Vector: ')
     for item in vals:
         f.write(f'{item:.3f}, ')
-
 
 # -----------------------------------------------------
 
@@ -174,6 +171,7 @@ config = {
 env = env_creator(config["env_config"])
 env.RC.iv_array = iv_array  # correct output from original model so our iv is always correct
 
+
 # for i in range(len(train_dataset)):
 #     done = False
 #     observation = env.reset()
@@ -203,7 +201,8 @@ class MyProblem:
                 observation = self.env.reset()
                 while not done:
                     # self.env.render()
-                    action = self.env.RC.cooling_policy.get_action(torch.tensor(observation, dtype=torch.float32)).item()
+                    action = self.env.RC.cooling_policy.get_action(
+                        torch.tensor(observation, dtype=torch.float32)).item()
                     observation, reward, done, _ = self.env.step(action)
                     total_reward += reward
 
@@ -212,6 +211,7 @@ class MyProblem:
     def get_bounds(self):
         n = self.env.RC.building.n_params + 2 * len(self.env.RC.building.rooms)
         return list(np.zeros(n)), list(np.ones(n))
+
 
 # p = MyProblem(env, train_dataset)
 # # p.fitness([0.999717264,	0.723853294,	0.083227898,	0.057744869,	0.26839279,	0.833688435,	0.253881365,	0.592588435,	0.001389264])
@@ -238,26 +238,49 @@ def main(dt_string):
         number_of_fitness_evaluations // s + 1
 
     total_fvals = 0
-    for run in range(num_iter):
-        total_fvals += s
-        my_result = nmmso.run(total_fvals)  # will run one step
+    while True:
+        for run in range(num_iter):
+            total_fvals += s
+            my_result = nmmso.run(total_fvals)  # will run one step
 
-        for mode_result in my_result:
-            print("Mode at {} has value {}".format(mode_result.location, mode_result.value))
+            for mode_result in my_result:
+                print("Mode at {} has value {}".format(mode_result.location, mode_result.value))
 
-        # ------save results to csv------
-        loc = []
-        val = []
-        for mode_result in my_result:
-            loc.append(mode_result.location)
-            val.append(mode_result.value)
+            # ------save results to csv------
+            loc = []
+            val = []
+            for mode_result in my_result:
+                loc.append(mode_result.location)
+                val.append(mode_result.value)
 
-        loc = np.array(loc)
-        val = np.array(val)
-        output = np.concatenate((loc, np.vstack(val)), axis=1)
+            o = [torch.concat((env_og.RC.transform(env_og.RC.params).detach(),
+                               env_og.RC.transform(env_og.RC.loads).flatten().detach())).numpy()]  # OG params
 
-        df = pd.DataFrame(output)
-        df.to_csv('logs/' + dt_string + '_results_nmmso' + '.csv', index=False)
+            # put the original parameters with reward of NaN at the top.
+            loc = np.array(o + loc)
+            val = np.array([0] + val)
+
+            output = np.concatenate((loc, np.vstack(val)), axis=1)
+
+            headings = ['Rm Cap/m2 (J/K.m2)', 'Ext Wl Cap 1 (J/K)', 'Ext Wl Cap 2 (J/K)', 'Ext Wl Res 1 (K.m2/W)',
+                        'Ext Wl Res 2 (K.m2/W)', 'Ext Wl Res 3 (K.m2/W)', 'Int Wl Res (K.m2/W)', 'Cooling (W)',
+                        'Offset Gain (W/m2)', 'Final Reward']
+
+            df = pd.DataFrame(output, columns=headings)
+            df.to_csv('./outputs/logs/' + dt_string + '_results_nmmso' + '.csv', index=False)
+
+        while True:
+            try:
+                print('Finished Iteration, check console to continue or quit.')
+                sys.stdout = sys.__stdout__  # reset output to default
+                num_iter = int(input('Number of further iterations to do: '))
+                sys.stdout = log  # swap output back to log file
+                break
+            except ValueError:
+                print('Not a number try again.', flush=True)
+
+        if num_iter == 0:
+            break
 
     my_multi_processor_fitness_caller.finish()
 
@@ -276,10 +299,10 @@ if __name__ == '__main__':
     # YY/mm/dd H:M:S
     dt_string = now.strftime("%y-%m-%d_%H:%M:%S")
 
-    logfile = 'logs/' + dt_string + '_log_nmmso' + '.log'
+    logfile = './outputs/logs/' + dt_string + '_log_nmmso' + '.log'
 
     # Create dir if needed
-    Path("./logs/").mkdir(parents=True, exist_ok=True)
+    Path("./outputs/logs/").mkdir(parents=True, exist_ok=True)
 
     # Add Logging file:
     if os.path.exists(logfile):
