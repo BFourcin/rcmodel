@@ -34,7 +34,9 @@ model_config = {
     "weather_data_path": '/Users/benfourcin/OneDrive - University of Exeter/PhD/LSI/Data/Met Office Weather Files/JuneSept.csv',
     "room_data_path": '/Users/benfourcin/OneDrive - University of Exeter/PhD/LSI/Data/DummyData/train5d_sorted.csv',
     "load_model_path_policy": './prior_policy.pt',  # or None
-    "load_model_path_physical": './prior_physical.pt',  # or None
+    "load_model_path_physical": 'trained_model.pt',  # or None
+    "cooling_param": tune.uniform(0, 1),
+    "gain_param": tune.uniform(0, 1),
 }
 
 # Initialise Model
@@ -50,46 +52,47 @@ train_dataset = RandomSampleDataset(model_config['room_data_path'], sample_size,
 test_dataset = RandomSampleDataset(model_config['room_data_path'], sample_size, warmup_size, train=False, test=True)
 
 config = {
-    "env": LSIEnv,  # or "corridor" if registered above
+    "env": "LSIEnv",  # or "corridor" if registered above
     "env_config": {"model_config": model_config,
                    "dataloader": torch.utils.data.DataLoader(train_dataset, batch_size=1, shuffle=False),
-                    "step_length": 15  # minutes passed in each step.
+                   "step_length": 15  # minutes passed in each step.
                    },
 
     # Use GPUs iff `RLLIB_NUM_GPUS` env var set to > 0.
     "num_gpus": 0,
-    "num_workers": 8,  # parallelism
+    # "lr": 0.01,
+    "num_workers": 7,  # parallelism
     "framework": "torch",
 }
 
 
 def env_creator(env_config):
-    model_config = env_config["model_config"]
-    model = model_creator(model_config)
-    time_data = torch.tensor(pd.read_csv(model_config['room_data_path'], skiprows=0).iloc[:, 1], dtype=torch.float64)
-    model.iv_array = model.get_iv_array(time_data)
+    with torch.no_grad():
+        model_config = env_config["model_config"]
+        model = model_creator(model_config)
+        time_data = torch.tensor(pd.read_csv(model_config['room_data_path'], skiprows=0).iloc[:, 1], dtype=torch.float64)
+        model.iv_array = model.get_iv_array(time_data)
 
-    env_config["RC_model"] = model
 
-    env = LSIEnv(env_config)
-    # wrap environment:
-    env = PreprocessEnv(env, mu=23.359, std_dev=1.41)
+
+        env_config["RC_model"] = model
+
+        env = LSIEnv(env_config)
+        # wrap environment:
+        env = PreprocessEnv(env, mu=23.359, std_dev=1.41)
 
     return env
 
-# import numpy as np
+
 # env = env_creator(config["env_config"])
-#
 # for i in range(len(train_dataset)):
 #     done = False
 #     observation = env.reset()
 #     while not done:
-#         # env.render()
+#         env.render()
 #         # action = np.random.randint(2)
 #         action = env.RC.cooling_policy.get_action(torch.tensor(observation, dtype=torch.float32)).item()
 #         observation, reward, done, _ = env.step(action)
-
-
 
 
 register_env("LSIEnv", env_creator)
@@ -97,38 +100,62 @@ register_env("LSIEnv", env_creator)
 # ray.init()
 ppo_config = ppo.DEFAULT_CONFIG.copy()
 ppo_config["vf_clip_param"] = 3000
-ppo_config["train_batch_size"] = 10
+ppo_config["rollout_fragment_length"] = 96
+ppo_config["train_batch_size"] = 20
 ppo_config["sgd_minibatch_size"] = 10
-ppo_config["lr"] = 1e-3
+# ppo_config["lr"] = 1e-3
+# ppo_config["create_env_on_driver"] = True
 ppo_config.update(config)
 
-trainer = ppo.PPOTrainer(env="LSIEnv", config=ppo_config)
+# trainer = ppo.PPOTrainer(env="LSIEnv", config=ppo_config)
 
 # Can optionally call trainer.restore(path) to load a checkpoint.
 
-keys = ["episode_reward_min", "episode_reward_max", "episode_reward_mean", "episodes_this_iter", "episodes_total"]
+# keys = ["episode_reward_min", "episode_reward_max", "episode_reward_mean", "episodes_this_iter", "episodes_total"]
+#
+# n = 100
+# for i in trange(n):
+#     # Perform one iteration of training the policy with PPO
+#     result = trainer.train()
+#
+#     string = ""
+#     for key in keys:
+#         string += key + f": {result[key]:.2f}, "
+#
+#     print(string)
+#
+#     # print(pretty_print(result))
+#
+#     if (i + 1) % n == 0:
+#         checkpoint = trainer.save()
+#         print("checkpoint saved at", checkpoint)
+#
+# trainer.evaluate()
 
-for i in trange(1000):
-    # Perform one iteration of training the policy with PPO
-    result = trainer.train()
 
-    string = ""
-    for key in keys:
-        string += key + f": {result[key]:.2f}, "
+from ray.tune.suggest.bohb import TuneBOHB
+algo = TuneBOHB(metric="episode_reward_mean", mode="max")
+bohb = ray.tune.schedulers.HyperBandForBOHB(
+    time_attr="training_iteration",
+    metric="episode_reward_mean",
+    mode="max",
+    max_t=100)
 
-    print(string)
+tune.run(
+    "PPO",
+    stop={"episode_reward_mean": -2,
+          "training_iteration": 25},
+    config=ppo_config,
+    scheduler=bohb,
+    search_alg=algo,
+    local_dir="./outputs/checkpoints",
+    checkpoint_at_end=True,
+    checkpoint_score_attr="episode_reward_mean",
+    keep_checkpoints_num=5,
+    # reuse_actors=True
+    sync_config=tune.SyncConfig(),
+    verbose=3  # Verbosity mode. 0 = silent, 1 = only status updates, 2 = status and brief trial results, 3 = status and detailed trial results. Defaults to 3.
+    # fail_fast="raise",
 
-    # print(pretty_print(result))
-
-    if i % 100 == 0:
-        checkpoint = trainer.save()
-        print("checkpoint saved at", checkpoint)
-
-
-# tune.run(
-#     "PPO",
-#     # stop={"episode_reward_mean": 200},
-#     config=ppo_config,
-#     checkpoint_at_end=True,
-#     reuse_actors=True
-# )
+    # resume="AUTO",  # resume from the last run specified in sync_config
+)

@@ -122,11 +122,12 @@ def worker():
 
     def env_creator(env_config, model=None):
         if model is None:
-            model_config = env_config["model_config"]
-            model = model_creator(model_config)
-            time_data = torch.tensor(pd.read_csv(model_config['room_data_path'], skiprows=0).iloc[:, 1],
-                                     dtype=torch.float64)
-            model.iv_array = model.get_iv_array(time_data)
+            with torch.no_grad():
+                model_config = env_config["model_config"]
+                model = model_creator(model_config)
+                time_data = torch.tensor(pd.read_csv(model_config['room_data_path'], skiprows=0).iloc[:, 1],
+                                         dtype=torch.float64)
+                model.iv_array = model.get_iv_array(time_data)
 
         env_config["RC_model"] = model
 
@@ -163,13 +164,18 @@ def worker():
     ppo_config["sgd_minibatch_size"] = 10
     ppo_config["lr"] = 1e-3
 
-    model_config["load_model_path_policy"] = f'.outputs/rcmodel{model_id}.pt'
-    model_config["load_model_path_physical"] = f'.outputs/rcmodel{model_id}.pt'
-    train_dataset = BuildingTemperatureDataset(model_config['room_data_path'], sample_size, all=True)
-    config["env_config"]["dataloader"] = torch.utils.data.DataLoader(train_dataset, batch_size=1, shuffle=False)
+    model_config["load_model_path_policy"] = f'./outputs/models/rcmodel{model_id}.pt'
+    model_config["load_model_path_physical"] = f'./outputs/models/rcmodel{model_id}.pt'
+    # train_dataset = BuildingTemperatureDataset(model_config['room_data_path'], sample_size, all=True)
+    # config["env_config"]["dataloader"] = torch.utils.data.DataLoader(train_dataset, batch_size=1, shuffle=False)
     ppo_config.update(config)
 
     # error because env already exists, maybe del env?
+
+    del env
+
+    env = env_creator(config["env_config"])
+
     trainer = ppo.PPOTrainer(env="LSIEnv", config=ppo_config)
 
     # Can optionally call trainer.restore(path) to load a checkpoint.
@@ -228,6 +234,8 @@ def cmaes(env, dataset, x0):
     s = es.pickle_dumps()  # return pickle.dumps(es) with safeguards
     # save string s to file like open(filename, 'wb').write(s)
     open('savedrun', 'wb').write(s)
+
+    ray.shutdown()
 
     return es.best.get()
 
