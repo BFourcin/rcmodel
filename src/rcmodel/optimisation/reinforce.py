@@ -128,8 +128,8 @@ class LSIEnv(gym.Env):
         time_low = [0]
         time_high = [np.float32(np.inf)]
 
-        temp_low = [-10.] * (self.n_rooms + 2)  # +2 accounts for the latent nodes
-        temp_high = [50.] * (self.n_rooms + 2)
+        temp_low = [-np.float32(np.inf)] * (self.n_rooms + 2)  # +2 accounts for the latent nodes
+        temp_high = [np.float32(np.inf)] * (self.n_rooms + 2)
 
         low = np.array([time_low + temp_low] * self.step_size)  # extend the vector by the number of timesteps
         high = np.array([time_high + temp_high] * self.step_size)
@@ -222,7 +222,7 @@ class LSIEnv(gym.Env):
         ax.plot((self.observation[:, 0] - self.time_min).numpy() / self.day, self.observation[:, 3:].numpy(), 'k-')
 
         Q_watts = self.RC.building.proportional_heating(self.RC.cool_load)  # convert from W/m2 to W
-        Q = self.info["actions"] * Q_watts.detach().numpy()
+        Q = self.info["actions"] * -Q_watts.detach().numpy()  # negative because cooling
         heat_line.set_data((torch.stack(self.info["t_actions"]) - self.time_min) / self.day, Q)
 
         # fig = plt.gcf()
@@ -304,8 +304,8 @@ class PreprocessEnv(gym.Wrapper):
         time_high = [1.] * 4
         time_low = [-1.] * 4
 
-        temp_high = [50.] * self.env.n_rooms  # This is normalised temperature so the limits are a guess.
-        temp_low = [-50.] * self.env.n_rooms
+        temp_high = [np.float32(np.inf)] * self.env.n_rooms  # This is normalised temperature so the limits are a guess.
+        temp_low = [-np.float32(np.inf)] * self.env.n_rooms
 
         self.observation_space = spaces.Box(np.array(temp_low + time_low), np.array(temp_high + time_high),
                                             dtype=np.float64)
