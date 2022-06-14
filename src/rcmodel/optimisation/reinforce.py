@@ -95,11 +95,11 @@ class LSIEnv(gym.Env):
     """
     metadata = {'render.modes': ['human']}
 
-    def __init__(self, config):
+    def __init__(self, env_config: dict):
         super().__init__()
 
-        self.RC = config["RC_model"]  # RCModel Class
-        self.dataloader = config["dataloader"]
+        self.RC = env_config["RC_model"]  # RCModel Class
+        self.dataloader = env_config["dataloader"]
         self.enum_data = None  # enumerate(dataloader)
         self.batch_idx = len(self.dataloader) - 1  # Keeps track of batch number in dataloader, initialised in reset()
         self.epochs = -1  # keeps count of the total epochs of data seen.
@@ -117,7 +117,7 @@ class LSIEnv(gym.Env):
 
         self.day = 24 * 60 ** 2
 
-        self.step_length = config["step_length"]  # Minutes
+        self.step_length = env_config["step_length"]  # Minutes
         self.step_size = int((self.step_length * 60) / self.dt)  # num rows of data needed for step_length minutes.
         self.t_index = 0  # used to keep track of index through timeseries
         self.loss_fn = torch.nn.MSELoss()
@@ -347,7 +347,7 @@ class PreprocessEnv(gym.Wrapper):
                                    np.sin(unix_time * (2 * np.pi / week)),
                                    np.cos(unix_time * (2 * np.pi / week))]
 
-        return state
+        return np.array(state)
 
     def step(self, action):
         observation, reward, done, info = self.env.step(action)

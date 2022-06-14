@@ -4,6 +4,7 @@ import torch
 import numpy as np
 import ray
 from ray.rllib.agents import ppo
+from ray import tune
 from ray.tune.logger import pretty_print
 from ray.tune.registry import register_env
 from pathlib import Path
@@ -33,6 +34,23 @@ load_model_path_policy = './prior_policy.pt'
 
 
 ####################
+def env_creator(env_config):
+    with torch.no_grad():
+        model_config = env_config["model_config"]
+        model = model_creator(model_config)
+        time_data = torch.tensor(pd.read_csv(model_config['room_data_path'], skiprows=0).iloc[:, 1],
+                                 dtype=torch.float64)
+        model.iv_array = model.get_iv_array(time_data)
+
+        env_config["RC_model"] = model
+
+        env = LSIEnv(env_config)
+        # wrap environment:
+        env = PreprocessEnv(env, mu=23.359, std_dev=1.41)
+
+    return env
+
+
 def replace_parameters(state_dict, new_parameters):
     # new_parameters between 0-1
 
@@ -52,12 +70,14 @@ def replace_parameters(state_dict, new_parameters):
 
 
 @ray.remote
-def fitness(params, env, dataset):
+def fitness(params, env):
     # with FileLock("parameters.csv.lock"):
     #     with open("parameters.csv","a") as f:
     #         np.savetxt(f, [params], delimiter=', ')
 
     env.RC.load_state_dict(replace_parameters(env.RC.state_dict(), list(params)))
+
+    dataset = env.dataloader.dataset
 
     t, T = dataset.get_all_data()
 
@@ -90,25 +110,21 @@ def worker():
         "room_names": ["seminar_rm_a_t0106"],
         "room_coordinates": [[[92.07, 125.94], [92.07, 231.74], [129.00, 231.74], [154.45, 231.74],
                               [172.64, 231.74], [172.64, 125.94]]],
-        "weather_data_path": '/Users/benfourcin/OneDrive - University of Exeter/PhD/LSI/Data/Met Office Weather Files/JuneSept.csv',
-        "room_data_path": '/Users/benfourcin/OneDrive - University of Exeter/PhD/LSI/Data/DummyData/train5d_sorted.csv',
+        "weather_data_path": weather_data_path,
+        "room_data_path": csv_path,
         "load_model_path_policy": load_model_path_policy,  # or None
         "load_model_path_physical": load_model_path_physical,  # or None
     }
 
-    # Initialise Model
-    # model = model_creator(model_config)
 
-    # # Initialise Optimise Class - for training physical model
     dt = 30
     sample_size = 24 * 60 ** 2 / dt  # ONE DAY
     # warmup_size = sample_size * 7  # ONE WEEK
     warmup_size = 0
     train_dataset = BuildingTemperatureDataset(model_config['room_data_path'], sample_size, all=True)
 
-
     config = {
-        "env": LSIEnv,
+        "env": "LSIEnv",
         "env_config": {"model_config": model_config,
                        "dataloader": torch.utils.data.DataLoader(train_dataset, batch_size=1, shuffle=False),
                        "step_length": 15  # minutes passed in each step.
@@ -116,97 +132,65 @@ def worker():
 
         # Use GPUs iff `RLLIB_NUM_GPUS` env var set to > 0.
         "num_gpus": 0,
-        "num_workers": 8,  # parallelism
+        "num_workers": n_workers - 1,  # parallelism (-1 because 1 worker is reserved by tune for summin or other)
         "framework": "torch",
     }
 
-    def env_creator(env_config, model=None):
-        if model is None:
-            with torch.no_grad():
-                model_config = env_config["model_config"]
-                model = model_creator(model_config)
-                time_data = torch.tensor(pd.read_csv(model_config['room_data_path'], skiprows=0).iloc[:, 1],
-                                         dtype=torch.float64)
-                model.iv_array = model.get_iv_array(time_data)
-
-        env_config["RC_model"] = model
-
-        env = LSIEnv(env_config)
-        # wrap environment:
-        env = PreprocessEnv(env, mu=23.359, std_dev=1.41)
-
-        return env
-
-    env = env_creator(config["env_config"])
-
-    # physical training:
-    x0 = env.RC.params.tolist() + env.RC.loads.flatten().tolist()
-
-    result = cmaes(env, train_dataset, x0)
-
-    best_params = result[0].tolist()
-    env.RC.load_state_dict(replace_parameters(env.RC.state_dict(), list(best_params)))
-
-    model_id = 1
-    env.RC.save(model_id)
-
-    # Policy Training:
-
-    # def dummy_env_creator(dummy_config): # passes env straight to ppo
-    #     return dummy_config["env"]
-
     register_env("LSIEnv", env_creator)
 
-    # ray.init()
     ppo_config = ppo.DEFAULT_CONFIG.copy()
     ppo_config["vf_clip_param"] = 3000
-    ppo_config["train_batch_size"] = 10
-    ppo_config["sgd_minibatch_size"] = 10
-    ppo_config["lr"] = 1e-3
+    ppo_config["rollout_fragment_length"] = 96  # number of steps per rollout
+    ppo_config["train_batch_size"] = 1000
+    ppo_config["sgd_minibatch_size"] = 100
 
-    model_config["load_model_path_policy"] = f'./outputs/models/rcmodel{model_id}.pt'
-    model_config["load_model_path_physical"] = f'./outputs/models/rcmodel{model_id}.pt'
-    # train_dataset = BuildingTemperatureDataset(model_config['room_data_path'], sample_size, all=True)
-    # config["env_config"]["dataloader"] = torch.utils.data.DataLoader(train_dataset, batch_size=1, shuffle=False)
-    ppo_config.update(config)
 
-    # error because env already exists, maybe del env?
+    num_cycles = 5
+    for cycle in range(num_cycles):
 
-    del env
+        # physical training:
+        phys_train(env_creator(config["env_config"]), cycle)
 
-    env = env_creator(config["env_config"])
+        # Policy Training:
+        model_config["load_model_path_policy"] = f'./outputs/models/rcmodel{cycle}.pt'
+        model_config["load_model_path_physical"] = f'./outputs/models/rcmodel{cycle}.pt'
+        ppo_config.update(config)
 
-    trainer = ppo.PPOTrainer(env="LSIEnv", config=ppo_config)
+        register_env("LSIEnv", env_creator)
 
-    # Can optionally call trainer.restore(path) to load a checkpoint.
+        tune.run(
+            "PPO",
+            stop={"episode_reward_mean": -2,
+                  "training_iteration": 25},
+            config=ppo_config,
+            local_dir="./outputs/checkpoints",
+            checkpoint_at_end=True,
+            checkpoint_score_attr="episode_reward_mean",
+            keep_checkpoints_num=5,
+            # reuse_actors=True
+            sync_config=tune.SyncConfig(),
+            verbose=3
+            # Verbosity mode. 0 = silent, 1 = only status updates, 2 = status and brief trial results, 3 = status and detailed trial results. Defaults to 3.
+            # fail_fast="raise",
 
-    keys = ["episode_reward_min", "episode_reward_max", "episode_reward_mean", "episodes_this_iter", "episodes_total"]
+            # resume="AUTO",  # resume from the last run specified in sync_config
+        )
 
-    for i in trange(10):
-        # Perform one iteration of training the policy with PPO
-        result = trainer.train()
+        # How to output tune results to use in next iteration?
 
-        string = ""
-        for key in keys:
-            string += key + f": {result[key]:.2f}, "
+    ray.shutdown()
 
-        print(string)
 
-        # print(pretty_print(result))
-
-        if i % 100 == 0:
-            checkpoint = trainer.save()
-            print("checkpoint saved at", checkpoint)
 
 
 @ray.remote
-def get_results(env, dataset, X):
-    return ray.get([fitness.remote(params, env, dataset) for params in X])
+def get_results(env, X):
+    return ray.get([fitness.remote(params, env) for params in X])
 
 
-def cmaes(env, dataset, x0):
+def cmaes(env, x0):
     # hyper parameters:
-    n_workers = 2  # multiprocessing
+    global n_workers
     # maxfevals = n_workers*150
     maxfevals = 1
 
@@ -215,7 +199,7 @@ def cmaes(env, dataset, x0):
         # 'bounds': [0, 1],
         'maxfevals': maxfevals,
         'tolfun': 1e-6,
-        'popsize': n_workers
+        'popsize': n_workers  # doesnt control multi-processing
     }
 
     es = cma.CMAEvolutionStrategy(x0, sigma0, opts)
@@ -224,9 +208,11 @@ def cmaes(env, dataset, x0):
     # res = es.result
     # print(res)
 
+    ray.init(num_cpus=n_workers)
+
     while not es.stop():
         X = es.ask()
-        es.tell(X, ray.get(get_results.remote(env, dataset, X)))
+        es.tell(X, ray.get(get_results.remote(env, X)))
         es.disp()
         es.logger.add()
 
@@ -240,5 +226,18 @@ def cmaes(env, dataset, x0):
     return es.best.get()
 
 
+def phys_train(env, cycle):
+    x0 = env.RC.params.tolist() + env.RC.loads.flatten().tolist()
+
+    result = cmaes(env, x0)
+
+    best_params = result[0].tolist()
+    env.RC.load_state_dict(replace_parameters(env.RC.state_dict(), list(best_params)))
+
+    model_id = cycle
+    env.RC.save(model_id)
+
+
 if __name__ == '__main__':
+    n_workers = 3
     worker()

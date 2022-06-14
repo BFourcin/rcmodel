@@ -19,6 +19,8 @@ csv_path = '/Users/benfourcin/OneDrive - University of Exeter/PhD/LSI/Data/Dummy
 # weather_data_path = '/home/benf/LSI/Data/Met Office Weather Files/JuneSept.csv'
 # csv_path = '/home/benf/LSI/Data/DummyData/train5d_sorted.csv'  # where building data
 
+torch.set_num_threads(1)
+
 
 model_config = {
     "rm_cap_per_area_min": 1e2,
@@ -31,8 +33,8 @@ model_config = {
     "room_names": ["seminar_rm_a_t0106"],
     "room_coordinates": [[[92.07, 125.94], [92.07, 231.74], [129.00, 231.74], [154.45, 231.74],
                           [172.64, 231.74], [172.64, 125.94]]],
-    "weather_data_path": '/Users/benfourcin/OneDrive - University of Exeter/PhD/LSI/Data/Met Office Weather Files/JuneSept.csv',
-    "room_data_path": '/Users/benfourcin/OneDrive - University of Exeter/PhD/LSI/Data/DummyData/train5d_sorted.csv',
+    "weather_data_path": weather_data_path,
+    "room_data_path": csv_path,
     "load_model_path_policy": './prior_policy.pt',  # or None
     "load_model_path_physical": 'trained_model.pt',  # or None
     "cooling_param": tune.uniform(0, 1),
@@ -63,6 +65,7 @@ config = {
     # "lr": 0.01,
     "num_workers": 7,  # parallelism
     "framework": "torch",
+    "horizon": None,  # Number of steps after which the episode is forced to terminate
 }
 
 
@@ -73,11 +76,10 @@ def env_creator(env_config):
         time_data = torch.tensor(pd.read_csv(model_config['room_data_path'], skiprows=0).iloc[:, 1], dtype=torch.float64)
         model.iv_array = model.get_iv_array(time_data)
 
-
-
         env_config["RC_model"] = model
 
         env = LSIEnv(env_config)
+
         # wrap environment:
         env = PreprocessEnv(env, mu=23.359, std_dev=1.41)
 
@@ -100,9 +102,9 @@ register_env("LSIEnv", env_creator)
 # ray.init()
 ppo_config = ppo.DEFAULT_CONFIG.copy()
 ppo_config["vf_clip_param"] = 3000
-ppo_config["rollout_fragment_length"] = 96
-ppo_config["train_batch_size"] = 20
-ppo_config["sgd_minibatch_size"] = 10
+ppo_config["rollout_fragment_length"] = 96  # number of steps per rollout
+ppo_config["train_batch_size"] = 1000
+ppo_config["sgd_minibatch_size"] = 100
 # ppo_config["lr"] = 1e-3
 # ppo_config["create_env_on_driver"] = True
 ppo_config.update(config)
