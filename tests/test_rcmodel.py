@@ -39,6 +39,7 @@ def test_run_model(building):
     model = RCModel(building, scaling, dummy_tout, transform)
 
     model.loads = torch.nn.Parameter(model.loads * 0)  # no heating
+    model._build_loads()
 
     # Set parameters for forward run:
     t_eval = torch.arange(0, 200000, 30, dtype=torch.float32)
@@ -65,7 +66,9 @@ def test_save_load(building_n9):
     scaling = InputScaling(rm_CA, ex_C, R, Q_limit)
     transform = torch.sigmoid
 
-    model = RCModel(building_n9, scaling, dummy_tout, transform)
+    Tin_continuous = None  # not called during test so can get away with None.
+
+    model = RCModel(building_n9, scaling, dummy_tout, Tin_continuous, transform)
 
     rm_cap = 500
     ex_cap = [1e4, 2e4]
@@ -95,7 +98,7 @@ def test_save_load(building_n9):
         scaling = InputScaling(rm_CA, ex_C, R, Q_limit)
         transform = torch.sigmoid
 
-        model2 = RCModel(building_n9, scaling, dummy_tout, transform)
+        model2 = RCModel(building_n9, scaling, dummy_tout, Tin_continuous, transform)
 
         path = f"{tmpdirname}/rcmodel{num}.pt"
         model2.load(path=path)
