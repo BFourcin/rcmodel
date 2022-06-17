@@ -27,12 +27,17 @@ def dummy_tout(t):
 def test_run_model(building):
 
     # Initialise scaling methods:
-    rm_CA = [200, 800]  # [min, max] Capacitance/area
-    ex_C = [1.5 * 10 ** 4, 10 ** 6]  # Capacitance
-    R = [0.2, 1.2]  # Resistance ((K.m^2)/W)
-    Q_limit = [0, 0]  # gain limit (W/m^2) no additional energy
+    rm_CA = [200, 800]   # [min, max] Capacitance/m2
+    C1 = [1.5 * 10 ** 4, 10 ** 6]  # Capacitance
+    C2 = [1.5 * 10 ** 4, 10 ** 6]
+    R1 = [0.2, 1.2]  # Resistance ((K.m^2)/W)
+    R2 = [0.2, 1.2]
+    R3 = [0.2, 1.2]
+    Rin = [0.2, 1.2]
+    cool = [0, 0]  # Cooling limit in W/m2
+    gain = [0, 0]  # gain limit (W/m^2) no additional energy
 
-    scaling = InputScaling(rm_CA, ex_C, R, Q_limit)
+    scaling = InputScaling(rm_CA, C1, C2, R1, R2, R3, Rin, cool, gain)
 
     # Initialise RCModel with the building and InputScaling
     transform = torch.sigmoid
@@ -58,12 +63,17 @@ def test_save_load(building_n9):
     """
 
     # Initialise scaling methods:
-    rm_CA = [200, 800]  # [min, max] Capacitance/area
-    ex_C = [1e3, 1e6]  # Capacitance
-    R = [0.1, 1.3]  # Resistance ((K.m^2)/W)
-    Q_limit = [10000]  # gain limit (W/m^2)
+    rm_CA = [200, 800]  # [min, max] Capacitance/m2
+    C1 = [1e3, 1e6]  # Capacitance
+    C2 = [1e3, 1e6]
+    R1 = [0.1, 1.3]  # Resistance ((K.m^2)/W)
+    R2 = [0.1, 1.3]
+    R3 = [0.1, 1.3]
+    Rin = [0.1, 1.3]
+    cool = [0, 10000]  # Cooling limit in W/m2
+    gain = [0, 10000]  # gain limit (W/m^2) no additional energy
 
-    scaling = InputScaling(rm_CA, ex_C, R, Q_limit)
+    scaling = InputScaling(rm_CA, C1, C2, R1, R2, R3, Rin, cool, gain)
     transform = torch.sigmoid
 
     Tin_continuous = None  # not called during test so can get away with None.
@@ -80,7 +90,7 @@ def test_save_load(building_n9):
     original_loads = 3000 * torch.rand(2, len(model.building.rooms))
 
     model.params = torch.nn.Parameter(torch.logit(model.scaling.model_param_scaling(original_params)))
-    model.loads = torch.nn.Parameter(torch.logit(model.scaling.model_cooling_scaling(original_loads)))
+    model.loads = torch.nn.Parameter(torch.logit(model.scaling.model_loads_scaling(original_loads)))
 
     with tempfile.TemporaryDirectory() as tmpdirname:
         num = 0
@@ -90,12 +100,17 @@ def test_save_load(building_n9):
         del model
 
         # Initialise new model with different scaling:
-        rm_CA = [50, 901]
-        ex_C = [1e2, 1e5]
-        R = [0.2, 2]
-        Q_limit = [-5200, 8100]
+        rm_CA = [50, 901]  # [min, max] Capacitance/m2
+        C1 = [1e2, 1e5]  # Capacitance
+        C2 = [1e2, 1e5]
+        R1 = [0.2, 2]  # Resistance ((K.m^2)/W)
+        R2 = [0.2, 2]
+        R3 = [0.2, 2]
+        Rin = [0.2, 2]
+        cool = [-5200, 8100]  # Cooling limit in W/m2
+        gain = [-5200, 8100]  # gain limit (W/m^2) no additional energy
 
-        scaling = InputScaling(rm_CA, ex_C, R, Q_limit)
+        scaling = InputScaling(rm_CA, C1, C2, R1, R2, R3, Rin, cool, gain)
         transform = torch.sigmoid
 
         model2 = RCModel(building_n9, scaling, dummy_tout, Tin_continuous, transform)
@@ -104,7 +119,7 @@ def test_save_load(building_n9):
         model2.load(path=path)
 
         loaded_params = model2.scaling.physical_param_scaling(transform(model2.params))
-        loaded_loads = model2.scaling.physical_cooling_scaling(transform(model2.loads))
+        loaded_loads = model2.scaling.physical_loads_scaling(transform(model2.loads))
 
         diff_params = abs(loaded_params-original_params)
         diff_loads = abs(loaded_loads-original_loads)

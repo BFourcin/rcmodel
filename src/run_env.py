@@ -2,6 +2,7 @@ import gym
 import ray
 import torch
 import pandas as pd
+import numpy as np
 import time
 from ray.rllib.agents import ppo
 from ray.tune.logger import pretty_print
@@ -21,15 +22,19 @@ csv_path = '/Users/benfourcin/OneDrive - University of Exeter/PhD/LSI/Data/Dummy
 
 torch.set_num_threads(1)
 
+n_workers = 3  # workers per env instance
 
 model_config = {
-    "rm_cap_per_area_min": 1e2,
-    "rm_cap_per_area_max": 1e4,
-    "external_capacitance_min": 1e3,
-    "external_capacitance_max": 1e8,
-    "resistance_min": 0.1,
-    "resistance_max": 5,
-    "Q_max": 300,
+    # Ranges:
+    "C_rm": [1e2, 1e4],  # [min, max] Capacitance/m2
+    "C1": [1e3, 1e8],  # Capacitance
+    "C2": [1e3, 1e8],
+    "R1": [0.1, 5],  # Resistance ((K.m^2)/W)
+    "R2": [0.1, 5],
+    "R3": [0.1, 5],
+    "Rin": [0.1, 5],
+    "cool": [0, 300],  # Cooling limit in W/m2
+    "gain": [0, 300],  # Gain limit in W/m2
     "room_names": ["seminar_rm_a_t0106"],
     "room_coordinates": [[[92.07, 125.94], [92.07, 231.74], [129.00, 231.74], [154.45, 231.74],
                           [172.64, 231.74], [172.64, 125.94]]],
@@ -63,9 +68,8 @@ config = {
     # Use GPUs iff `RLLIB_NUM_GPUS` env var set to > 0.
     "num_gpus": 0,
     # "lr": 0.01,
-    "num_workers": 7,  # parallelism
+    "num_workers": n_workers,  # parallelism
     "framework": "torch",
-    "horizon": None,  # Number of steps after which the episode is forced to terminate
 }
 
 
@@ -102,9 +106,10 @@ register_env("LSIEnv", env_creator)
 # ray.init()
 ppo_config = ppo.DEFAULT_CONFIG.copy()
 ppo_config["vf_clip_param"] = 3000
-ppo_config["rollout_fragment_length"] = 96  # number of steps per rollout
-ppo_config["train_batch_size"] = 1000
-ppo_config["sgd_minibatch_size"] = 100
+ppo_config["rollout_fragment_length"] = 96 * 5  # number of steps per rollout
+ppo_config["train_batch_size"] = 96 * 5 * n_workers
+ppo_config["sgd_minibatch_size"] = 96
+ppo_config["horizon"] = None  # Number of steps after which the episode is forced to terminate
 # ppo_config["lr"] = 1e-3
 # ppo_config["create_env_on_driver"] = True
 ppo_config.update(config)
@@ -135,20 +140,38 @@ ppo_config.update(config)
 # trainer.evaluate()
 
 
+mu = 3
+R = 2000
+
 from ray.tune.suggest.bohb import TuneBOHB
 algo = TuneBOHB(metric="episode_reward_mean", mode="max")
 bohb = ray.tune.schedulers.HyperBandForBOHB(
     time_attr="training_iteration",
     metric="episode_reward_mean",
     mode="max",
-    max_t=100)
+    reduction_factor=mu,
+    max_t=R)
 
+num_samples = 0
+for s in reversed(range(bohb._s_max_1-1)):
+    n = bohb.get_n0(s)
+    for i in range(s + 1):
+        num_samples += n
+        # print(n)
+        n /= 3
+        n = int(np.ceil(n))
+
+
+ray.init(num_cpus=8)
+
+# TO DO, limit the scaling to be much more realistic
 tune.run(
     "PPO",
-    stop={"episode_reward_mean": -2,
-          "training_iteration": 25},
+    # stop={"episode_reward_mean": -2,
+    #       "training_iteration": 25},
     config=ppo_config,
     scheduler=bohb,
+    num_samples=num_samples,  # number of trials to perform
     search_alg=algo,
     local_dir="./outputs/checkpoints",
     checkpoint_at_end=True,
@@ -161,3 +184,5 @@ tune.run(
 
     # resume="AUTO",  # resume from the last run specified in sync_config
 )
+
+ray.shutdown()

@@ -26,12 +26,17 @@ def model_creator(model_config):
 
     def init_scaling():
         # Initialise scaling class
-        rm_CA = [model_config['rm_cap_per_area_min'],
-                 model_config['rm_cap_per_area_max']]  # [min, max] Capacitance/area
-        ex_C = [model_config['external_capacitance_min'], model_config['external_capacitance_max']]  # Capacitance
-        R = [model_config['resistance_min'], model_config['resistance_max']]  # Resistance ((K.m^2)/W)
-        Q_limit = [model_config['Q_max']]  # Cooling limit and gain limit in W/m2
-        scaling = InputScaling(rm_CA, ex_C, R, Q_limit)
+        C_rm = model_config['C_rm']  # [min, max] Capacitance/m2
+        C1 = model_config['C1']  # Capacitance
+        C2 = model_config['C2']
+        R1 = model_config['R1']  # Resistance ((K.m^2)/W)
+        R2 = model_config['R2']
+        R3 = model_config['R3']
+        Rin = model_config['Rin']
+        cool = model_config['cool']  # Cooling limit in W/m2
+        gain = model_config['gain']  # Gain limit in W/m2
+
+        scaling = InputScaling(C_rm, C1, C2, R1, R2, R3, Rin, cool, gain)
         return scaling
 
     rooms = []

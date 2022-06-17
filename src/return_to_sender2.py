@@ -108,7 +108,7 @@ del observations
 
 with open('./outputs/original_params.txt', 'w') as f:
     params = env_og.RC.scaling.physical_param_scaling(env_og.RC.transform(env_og.RC.params)).detach().numpy()
-    loads = env_og.RC.scaling.physical_cooling_scaling(env_og.RC.transform(env_og.RC.loads))
+    loads = env_og.RC.scaling.physical_loads_scaling(env_og.RC.transform(env_og.RC.loads))
     cooling = loads[0, :].detach().numpy()
     gain = loads[1, :].detach().numpy()
 
