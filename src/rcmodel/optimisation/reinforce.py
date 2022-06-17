@@ -271,9 +271,9 @@ class LSIEnv(gym.Env):
                       color='darkorange', label=r'outside ($^\circ$C)')
 
         if self.RC.transform:
-            gain = self.RC.scaling.physical_cooling_scaling(self.RC.transform(self.RC.loads[1, :]))
+            gain = self.RC.scaling.physical_loads_scaling(self.RC.transform(self.RC.loads[1, :]))
         else:
-            gain = self.RC.scaling.physical_cooling_scaling(self.RC.loads[1, :])
+            gain = self.RC.scaling.physical_loads_scaling(self.RC.loads[1, :])
 
         gain_watts = gain * self.RC.building.rooms[0].area
         gain_line = ax2.axhline(gain_watts.detach().numpy(), linestyle='-.', color='k', alpha=0.5, label='gain ($W$)')
