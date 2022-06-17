@@ -50,7 +50,7 @@ if load_physical:
 
 with open('original_params.txt', 'w') as f:
     params = model_origin.scaling.physical_param_scaling(model_origin.transform(model_origin.params)).detach().numpy()
-    loads = model_origin.scaling.physical_cooling_scaling(model_origin.transform(model_origin.loads))
+    loads = model_origin.scaling.physical_loads_scaling(model_origin.transform(model_origin.loads))
     cooling = loads[0, :].detach().numpy()
     gain = loads[1, :].detach().numpy()
 
@@ -341,7 +341,7 @@ def worker(opt_id):
         pd.DataFrame(avg_test_loss_plot).to_csv(f'./outputs/run{opt_id}/plots/test_loss.csv', index=False)
 
     final_params = model.scaling.physical_param_scaling(model.transform(model.params)).detach().numpy()
-    loads = model.scaling.physical_cooling_scaling(model.transform(model.loads))
+    loads = model.scaling.physical_loads_scaling(model.transform(model.loads))
     final_cooling = loads[0, :].detach().numpy()
     final_gain = loads[1, :].detach().numpy()
 
@@ -349,13 +349,13 @@ def worker(opt_id):
     with open(f'./outputs/run{opt_id}/percentage_diff_params.txt', 'w') as f:
         params = model_origin.scaling.physical_param_scaling(
             model_origin.transform(model_origin.params)).detach().numpy()
-        loads = model_origin.scaling.physical_cooling_scaling(model_origin.transform(model_origin.loads))
+        loads = model_origin.scaling.physical_loads_scaling(model_origin.transform(model_origin.loads))
         cooling = loads[0, :].detach().numpy()
         gain = loads[1, :].detach().numpy()
         all_params_og = np.concatenate((params, gain, cooling)).copy()
 
         params = model.scaling.physical_param_scaling(model.transform(model.params)).detach().numpy()
-        loads = model.scaling.physical_cooling_scaling(model.transform(model.loads))
+        loads = model.scaling.physical_loads_scaling(model.transform(model.loads))
         cooling = loads[0, :].detach().numpy()
         gain = loads[1, :].detach().numpy()
         all_params_new = np.concatenate((params, gain, cooling)).copy()
@@ -389,7 +389,7 @@ if __name__ == '__main__':
 
     # add the true values to results
     params = model_origin.scaling.physical_param_scaling(model_origin.transform(model_origin.params)).detach().numpy()
-    loads = model_origin.scaling.physical_cooling_scaling(model_origin.transform(model_origin.loads))
+    loads = model_origin.scaling.physical_loads_scaling(model_origin.transform(model_origin.loads))
     cooling = loads[0, :].detach().numpy()
     gain = loads[1, :].detach().numpy()
     results.append(np.concatenate(([-1], params, gain, cooling, [0])))

@@ -109,9 +109,9 @@ class RCModel(nn.Module):
         #         if self.cooling_policy.training:  # if in training mode store log_prob
         #             self.cooling_policy.log_probs.append(log_prob)
 
-        if self.cooling_policy:  # policy exists
+        # if self.cooling_policy:  # policy exists
             # record every time-step
-            self.record_action.append([t, self.action])  # This is just used for plotting the cooling after.
+            # self.record_action.append([t, self.action])  # This is just used for plotting the cooling after.
 
         # Get energy input at timestep:
         Q_area = -self.cool_load * self.action  # W/m2
@@ -155,7 +155,7 @@ class RCModel(nn.Module):
         else:
             loads = self.loads
 
-        loads = self.scaling.physical_cooling_scaling(loads)
+        loads = self.scaling.physical_loads_scaling(loads)
         self.cool_load = loads[0, :]
         self.gain_load = loads[1, :]
 
@@ -274,7 +274,7 @@ class RCModel(nn.Module):
         """
         scaled_state_dict = self.state_dict()
         scaled_state_dict['params'] = self.scaling.physical_param_scaling(self.transform(scaled_state_dict['params']))
-        scaled_state_dict['loads'] = self.scaling.physical_cooling_scaling(self.transform(scaled_state_dict['loads']))
+        scaled_state_dict['loads'] = self.scaling.physical_loads_scaling(self.transform(scaled_state_dict['loads']))
 
         if dir_path is None:
             dir_path = "./outputs/models/"
@@ -296,7 +296,7 @@ class RCModel(nn.Module):
         )
 
         scaled_state_dict['loads'] = torch.logit(
-            self.scaling.model_cooling_scaling(scaled_state_dict['loads']) + 1e-15
+            self.scaling.model_loads_scaling(scaled_state_dict['loads']) + 1e-15
         )
 
         self.load_state_dict(scaled_state_dict)
