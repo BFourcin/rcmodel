@@ -40,7 +40,7 @@ def pltsolution_1rm(model, dataloader=None, filename=None, prediction=None, time
         Q_on_off = record_action[:, 1:]  # Cooling actions
 
         Q_area = model.transform(model.loads)
-        Q_area = model.scaling.physical_cooling_scaling(Q_area)
+        Q_area = model.scaling.physical_loads_scaling(Q_area)
         Q_watts = model.building.proportional_heating(Q_area)  # convert from W/m2 to W
 
         Q = Q_on_off * -Q_watts.unsqueeze(1)  # Q is timeseries of Watts for each room.
@@ -49,7 +49,7 @@ def pltsolution_1rm(model, dataloader=None, filename=None, prediction=None, time
         Q_tdays = t_days
         Q = torch.zeros(len(Q_tdays))
 
-    gain = model.scaling.physical_cooling_scaling(model.transform(model.loads[1, :]))
+    gain = model.scaling.physical_loads_scaling(model.transform(model.loads[1, :]))
     gain_watts = gain * model.building.rooms[0].area
 
     # Compute and print loss.
