@@ -109,9 +109,9 @@ class RCModel(nn.Module):
         #         if self.cooling_policy.training:  # if in training mode store log_prob
         #             self.cooling_policy.log_probs.append(log_prob)
 
-        # if self.cooling_policy:  # policy exists
+        if self.cooling_policy:  # policy exists
             # record every time-step
-            # self.record_action.append([t, self.action])  # This is just used for plotting the cooling after.
+            self.record_action.append([t, self.action])  # This is just used for plotting the cooling after.
 
         # Get energy input at timestep:
         Q_area = -self.cool_load * self.action  # W/m2

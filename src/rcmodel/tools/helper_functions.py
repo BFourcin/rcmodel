@@ -18,11 +18,16 @@ def model_creator(model_config):
         x0 = 92.07
         y0 = 125.94
 
-        for i in range(len(coords)):
-            coords[i][0] = round((coords[i][0] - x0) / 10, 2)
-            coords[i][1] = round((coords[i][1] - y0) / 10, 2)
+        new_coords = []
 
-        return coords
+        for i in range(len(coords)):
+            l = [round((coords[i][0] - x0) / 10, 2), round((coords[i][1] - y0) / 10, 2)]
+            new_coords.append(l)
+
+            # coords[i][0] = round((coords[i][0] - x0) / 10, 2)
+            # coords[i][1] = round((coords[i][1] - y0) / 10, 2)
+
+        return new_coords
 
     def init_scaling():
         # Initialise scaling class

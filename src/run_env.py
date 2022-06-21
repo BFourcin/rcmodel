@@ -24,26 +24,38 @@ torch.set_num_threads(1)
 
 n_workers = 3  # workers per env instance
 
+# "C_rm": [1e2, 1e4],  # [min, max] Capacitance/m2
+# "C1": [1e3, 1e8],  # Capacitance
+# "C2": [1e3, 1e8],
+# "R1": [0.1, 5],  # Resistance ((K.m^2)/W)
+# "R2": [0.1, 5],
+# "R3": [0.1, 5],
+# "Rin": [0.1, 5],
+# "cool": [0, 300],  # Cooling limit in W/m2
+# "gain": [0, 300],  # Gain limit in W/m2
+
 model_config = {
     # Ranges:
-    "C_rm": [1e2, 1e4],  # [min, max] Capacitance/m2
-    "C1": [1e3, 1e8],  # Capacitance
-    "C2": [1e3, 1e8],
+    "C_rm": [1e3, 1e5],  # [min, max] Capacitance/m2
+    "C1": [1e5, 1e8],  # Capacitance
+    "C2": [1e5, 1e8],
     "R1": [0.1, 5],  # Resistance ((K.m^2)/W)
     "R2": [0.1, 5],
-    "R3": [0.1, 5],
+    "R3": [0.5, 6],
     "Rin": [0.1, 5],
-    "cool": [0, 300],  # Cooling limit in W/m2
-    "gain": [0, 300],  # Gain limit in W/m2
+    "cool": [0, 50],  # Cooling limit in W/m2
+    "gain": [0, 5],  # Gain limit in W/m2
     "room_names": ["seminar_rm_a_t0106"],
     "room_coordinates": [[[92.07, 125.94], [92.07, 231.74], [129.00, 231.74], [154.45, 231.74],
                           [172.64, 231.74], [172.64, 125.94]]],
     "weather_data_path": weather_data_path,
     "room_data_path": csv_path,
-    "load_model_path_policy": './prior_policy.pt',  # or None
+    "load_model_path_policy": None,  #'./prior_policy.pt',  # or None
     "load_model_path_physical": 'trained_model.pt',  # or None
     "cooling_param": tune.uniform(0, 1),
     "gain_param": tune.uniform(0, 1),
+    # "cooling_param": None,
+    # "gain_param": None,
 }
 
 # Initialise Model
@@ -58,11 +70,20 @@ warmup_size = 0
 train_dataset = RandomSampleDataset(model_config['room_data_path'], sample_size, warmup_size, train=True, test=False)
 test_dataset = RandomSampleDataset(model_config['room_data_path'], sample_size, warmup_size, train=False, test=True)
 
+# Get iv array because we can pre calc for this experiment
+def func_iv_array(model_config):
+    mc = model_config.copy()
+    mc["cooling_param"], mc["gain_param"] = None, None
+    model = model_creator(mc)
+    time_data = torch.tensor(pd.read_csv(mc['room_data_path'], skiprows=0).iloc[:, 1], dtype=torch.float64)
+    return model.get_iv_array(time_data)
+
 config = {
     "env": "LSIEnv",  # or "corridor" if registered above
     "env_config": {"model_config": model_config,
                    "dataloader": torch.utils.data.DataLoader(train_dataset, batch_size=1, shuffle=False),
-                   "step_length": 15  # minutes passed in each step.
+                   "step_length": 15,  # minutes passed in each step.
+                   "iv_array": func_iv_array(model_config),  # because phys parameters aren't changing.
                    },
 
     # Use GPUs iff `RLLIB_NUM_GPUS` env var set to > 0.
@@ -77,8 +98,9 @@ def env_creator(env_config):
     with torch.no_grad():
         model_config = env_config["model_config"]
         model = model_creator(model_config)
-        time_data = torch.tensor(pd.read_csv(model_config['room_data_path'], skiprows=0).iloc[:, 1], dtype=torch.float64)
-        model.iv_array = model.get_iv_array(time_data)
+        # time_data = torch.tensor(pd.read_csv(model_config['room_data_path'], skiprows=0).iloc[:, 1], dtype=torch.float64)
+        # model.iv_array = model.get_iv_array(time_data)
+        model.iv_array = env_config["iv_array"]
 
         env_config["RC_model"] = model
 
@@ -91,11 +113,11 @@ def env_creator(env_config):
 
 
 # env = env_creator(config["env_config"])
-# for i in range(len(train_dataset)):
+# for i in range(10*len(train_dataset)):
 #     done = False
 #     observation = env.reset()
 #     while not done:
-#         env.render()
+#         # env.render()
 #         # action = np.random.randint(2)
 #         action = env.RC.cooling_policy.get_action(torch.tensor(observation, dtype=torch.float32)).item()
 #         observation, reward, done, _ = env.step(action)
@@ -153,14 +175,15 @@ bohb = ray.tune.schedulers.HyperBandForBOHB(
     max_t=R)
 
 num_samples = 0
+list_n = []
 for s in reversed(range(bohb._s_max_1-1)):
     n = bohb.get_n0(s)
     for i in range(s + 1):
         num_samples += n
-        # print(n)
-        n /= 3
+        list_n.append(n)
+        n /= mu
         n = int(np.ceil(n))
-
+print(list_n)
 
 ray.init(num_cpus=8)
 
@@ -179,7 +202,7 @@ tune.run(
     keep_checkpoints_num=5,
     # reuse_actors=True
     sync_config=tune.SyncConfig(),
-    verbose=3  # Verbosity mode. 0 = silent, 1 = only status updates, 2 = status and brief trial results, 3 = status and detailed trial results. Defaults to 3.
+    verbose=2  # Verbosity mode. 0 = silent, 1 = only status updates, 2 = status and brief trial results, 3 = status and detailed trial results. Defaults to 3.
     # fail_fast="raise",
 
     # resume="AUTO",  # resume from the last run specified in sync_config
