@@ -52,13 +52,15 @@ load_physical = './return_model.pt'
 
 # original model config dict:
 model_og_config = {
-    "rm_cap_per_area_min": 1e2,
-    "rm_cap_per_area_max": 1e4,
-    "external_capacitance_min": 1e3,
-    "external_capacitance_max": 1e8,
-    "resistance_min": 0.1,
-    "resistance_max": 5,
-    "Q_max": 300,
+    "C_rm": [1e2, 1e4],  # [min, max] Capacitance/m2
+    "C1": [1e3, 1e8],  # Capacitance
+    "C2": [1e3, 1e8],
+    "R1": [0.1, 5],  # Resistance ((K.m^2)/W)
+    "R2": [0.1, 5],
+    "R3": [0.1, 5],
+    "Rin": [0.1, 5],
+    "cool": [0, 300],  # Cooling limit in W/m2
+    "gain": [0, 300],  # Gain limit in W/m2
     "room_names": ["seminar_rm_a_t0106"],
     "room_coordinates": [[[92.07, 125.94], [92.07, 231.74], [129.00, 231.74], [154.45, 231.74],
                           [172.64, 231.74], [172.64, 125.94]]],
@@ -131,13 +133,15 @@ with open('./outputs/original_params.txt', 'w') as f:
 
 
 model_config = {
-    "rm_cap_per_area_min": 1e2,
-    "rm_cap_per_area_max": 1e4,
-    "external_capacitance_min": 1e3,
-    "external_capacitance_max": 1e8,
-    "resistance_min": 0.1,
-    "resistance_max": 5,
-    "Q_max": 300,
+    "C_rm": [1e2, 1e4],  # [min, max] Capacitance/m2
+    "C1": [1e3, 1e8],  # Capacitance
+    "C2": [1e3, 1e8],
+    "R1": [0.1, 5],  # Resistance ((K.m^2)/W)
+    "R2": [0.1, 5],
+    "R3": [0.1, 5],
+    "Rin": [0.1, 5],
+    "cool": [0, 300],  # Cooling limit in W/m2
+    "gain": [0, 300],  # Gain limit in W/m2
     "room_names": ["seminar_rm_a_t0106"],
     "room_coordinates": [[[92.07, 125.94], [92.07, 231.74], [129.00, 231.74], [154.45, 231.74],
                           [172.64, 231.74], [172.64, 125.94]]],
@@ -200,7 +204,7 @@ class MyProblem:
                 done = False
                 observation = self.env.reset()
                 while not done:
-                    # self.env.render()
+                    self.env.render()
                     action = self.env.RC.cooling_policy.get_action(
                         torch.tensor(observation, dtype=torch.float32)).item()
                     observation, reward, done, _ = self.env.step(action)
@@ -213,8 +217,8 @@ class MyProblem:
         return list(np.zeros(n)), list(np.ones(n))
 
 
-# p = MyProblem(env, train_dataset)
-# # p.fitness([0.999717264,	0.723853294,	0.083227898,	0.057744869,	0.26839279,	0.833688435,	0.253881365,	0.592588435,	0.001389264])
+p = MyProblem(env, train_dataset)
+p.fitness([0.908598186, 0.02005488, 0.19026246, 0.036782882, 0.005074634, 0.896428514, 0.869218101, 0.494917939, 0.001629876])
 #
 # params = torch.sigmoid(env_og.RC.params).tolist() + torch.sigmoid(env_og.RC.loads)[0].tolist() + torch.sigmoid(env_og.RC.loads)[1].tolist()
 # r = p.fitness(params)
