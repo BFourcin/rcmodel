@@ -49,7 +49,7 @@ def pltsolution_1rm(model, dataloader=None, filename=None, prediction=None, time
         Q_tdays = t_days
         Q = torch.zeros(len(Q_tdays))
 
-    gain = model.scaling.physical_loads_scaling(model.transform(model.loads[1, :]))
+    gain = model.scaling.physical_loads_scaling(model.transform(model.loads))[1, :]
     gain_watts = gain * model.building.rooms[0].area
 
     # Compute and print loss.
