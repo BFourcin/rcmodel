@@ -95,10 +95,10 @@ def model_creator(model_config):
     # check if any parameters have been chosen by the user:
     try:
         loads = model.loads.detach()
-        if model_config['cooling_param']:
+        if model_config['cooling_param'] is not None:
             loads[0, :] = torch.logit(torch.tensor(model_config['cooling_param']))
 
-        if model_config['gain_param']:
+        if model_config['gain_param'] is not None:
             loads[1, :] = torch.logit(torch.tensor(model_config['gain_param']))
 
         model.loads = torch.nn.Parameter(loads)
