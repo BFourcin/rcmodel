@@ -12,9 +12,12 @@ from tqdm import trange
 
 from rcmodel import *
 
+start_time = time.time()
+
 # Laptop
 weather_data_path = '/Users/benfourcin/OneDrive - University of Exeter/PhD/LSI/Data/Met Office Weather Files/JuneSept.csv'
-csv_path = '/Users/benfourcin/OneDrive - University of Exeter/PhD/LSI/Data/DummyData/train5d_sorted.csv'
+# csv_path = '/Users/benfourcin/OneDrive - University of Exeter/PhD/LSI/Data/DummyData/train5d_sorted.csv'
+csv_path = '/Users/benfourcin/OneDrive - University of Exeter/PhD/LSI/Data/DummyData/summer2021_sorted.csv'
 
 # Hydra:
 # weather_data_path = '/home/benf/LSI/Data/Met Office Weather Files/JuneSept.csv'
@@ -22,7 +25,7 @@ csv_path = '/Users/benfourcin/OneDrive - University of Exeter/PhD/LSI/Data/Dummy
 
 torch.set_num_threads(1)
 
-n_workers = 1  # workers per env instance
+n_workers = 7  # workers per env instance
 
 # "C_rm": [1e2, 1e4],  # [min, max] Capacitance/m2
 # "C1": [1e3, 1e8],  # Capacitance
@@ -52,8 +55,10 @@ model_config = {
     "room_data_path": csv_path,
     "load_model_path_policy": None,  # './prior_policy.pt',  # or None
     "load_model_path_physical": 'trained_model.pt',  # or None
-    "cooling_param": tune.uniform(0, 1),
-    "gain_param": tune.uniform(0, 1),
+    'cooling_param': 0.09133423646610082,
+    'gain_param': 0.9086668150306394
+    # "cooling_param": tune.uniform(0, 1),
+    # "gain_param": tune.uniform(0, 1),
     # "cooling_param": 0.5,
     # "gain_param": 0.5,
 }
@@ -66,9 +71,11 @@ model_config = {
 dt = 30
 sample_size = 24 * 60 ** 2 / dt  # ONE DAY
 # warmup_size = sample_size * 7  # ONE WEEK
-warmup_size = 0
-train_dataset = RandomSampleDataset(model_config['room_data_path'], sample_size, warmup_size, train=True, test=False)
-test_dataset = RandomSampleDataset(model_config['room_data_path'], sample_size, warmup_size, train=False, test=True)
+warmup_size = 7 * sample_size
+
+train_dataloader, test_dataloader = dataset_creator(model_config['room_data_path'], sample_size, warmup_size, dt=30)
+# train_dataset = RandomSampleDataset(model_config['room_data_path'], sample_size, warmup_size, train=True, test=False)
+# test_dataset = RandomSampleDataset(model_config['room_data_path'], sample_size, warmup_size, train=False, test=True)
 
 
 # Get iv array because we can pre calc for this experiment
@@ -76,18 +83,17 @@ def func_iv_array(model_config):
     mc = model_config.copy()
     mc["cooling_param"], mc["gain_param"] = None, None
     model = model_creator(mc)
-    time_data = torch.tensor(pd.read_csv(mc['room_data_path'], skiprows=0).iloc[:, 1], dtype=torch.float64)
+    time_data = model.Tin_continuous.obj.x  # all time data on .csv
     return model.get_iv_array(time_data)
 
 
 ppo_config = {
     "env": "LSIEnv",  # or "corridor" if registered above
     "env_config": {"model_config": model_config,
-                   "dataloader": torch.utils.data.DataLoader(train_dataset, batch_size=1, shuffle=False),
+                   "dataloader": train_dataloader,
                    "step_length": 15,  # minutes passed in each step.
                    "iv_array": func_iv_array(model_config),  # because phys parameters aren't changing.
-                   # "cooling_param": tune.uniform(0, 1),
-                   # "gain_param": tune.uniform(0, 1)
+                   "render_mode": 'rgb_array',  # "single_rgb_array"
                    },
 
     # PPO Stuff:
@@ -101,6 +107,8 @@ ppo_config = {
     "train_batch_size": 96 * 5 * n_workers,
     "sgd_minibatch_size": 96,
     "horizon": None,
+    # "render_env": True,
+    # "monitor": True
 }
 
 
@@ -112,7 +120,6 @@ def env_creator(env_config):
         # print(tune_parameters)
         # model_config["cooling_param"] = env_config["cooling_param"]
         # model_config["gain_param"] = env_config["gain_param"]
-        print(model_config["cooling_param"], model_config["gain_param"])
         model = model_creator(model_config)
         # time_data = torch.tensor(pd.read_csv(model_config['room_data_path'], skiprows=0).iloc[:, 1], dtype=torch.float64)
         # model.iv_array = model.get_iv_array(time_data)
@@ -133,7 +140,7 @@ def env_creator(env_config):
 #     done = False
 #     observation = env.reset()
 #     while not done:
-#         # env.render()
+#         env.render()
 #         # action = np.random.randint(2)
 #         action = env.RC.cooling_policy.get_action(torch.tensor(observation, dtype=torch.float32)).item()
 #         observation, reward, done, _ = env.step(action)
@@ -203,56 +210,49 @@ register_env("LSIEnv", env_creator)
 
 # -------------------------------
 
-from ray.tune.schedulers import AsyncHyperBandScheduler
-from ray.tune.suggest.hebo import HEBOSearch
-
-hebo = HEBOSearch(metric="episode_reward_mean", mode="max",)
-hebo = tune.suggest.ConcurrencyLimiter(hebo, max_concurrent=8)
-
-# parameters = [
-#     {"name": "cooling_param", "type": "range", "bounds": [0.0, 1.0], "value_type": "float"},
-#     {"name": "gain_param", "type": "range", "bounds": [0.0, 1.0], "value_type": "float"},
-# ]
-# ax_search = AxSearch(space=parameters, metric="episode_reward_mean", mode="max",)
-# ax_search = AxSearch(metric="episode_reward_mean", mode="max",)
-# ax_search = tune.suggest.ConcurrencyLimiter(ax_search, max_concurrent=6)
-
-# AsyncHyperBand enables aggressive early stopping of bad trials.
-scheduler = AsyncHyperBandScheduler(
-    time_attr="training_iteration",
-    metric="episode_reward_mean",
-    mode="max",
-    grace_period=2,
-    max_t=2000,
-)
-
-print(scheduler.debug_string())
-bracket = scheduler._brackets[0]
-print(bracket.cutoff({str(i): i for i in range(20)}))
-# tune_parameters = {"cooling_param": tune.uniform(0, 1), "gain_param": tune.uniform(0, 1)}
+# from ray.tune.schedulers import AsyncHyperBandScheduler
+# from ray.tune.suggest.hebo import HEBOSearch
+#
+# hebo = HEBOSearch(metric="episode_reward_mean", mode="max",)
+# hebo = tune.suggest.ConcurrencyLimiter(hebo, max_concurrent=8)
+#
+# # AsyncHyperBand enables aggressive early stopping of bad trials.
+# scheduler = AsyncHyperBandScheduler(
+#     time_attr="training_iteration",
+#     metric="episode_reward_mean",
+#     mode="max",
+#     grace_period=2,
+#     max_t=2000,
+# )
+#
+# print(scheduler.debug_string())
+# bracket = scheduler._brackets[0]
+# print(bracket.cutoff({str(i): i for i in range(20)}))
 
 # trainer = ppo.PPOTrainer(env="LSIEnv", config=ppo_config)
+
+print(f'Completed setup & calculated IV array in: {time.time()- start_time:.1f} seconds')
 
 ray.init(num_cpus=8)
 
 tune.run(
     "PPO",
-    # stop={"episode_reward_mean": -2,
-    #       "training_iteration": 25},
+    stop={"episode_reward_mean": -2,
+          "training_iteration": 2000},
     config=ppo_config,
-    num_samples=2000,  # number of trials to perform
-    scheduler=scheduler,
-    search_alg=hebo,
-    local_dir="./outputs/checkpoints",
+    # num_samples=400,  # number of trials to perform
+    # scheduler=scheduler,
+    # search_alg=hebo,
+    local_dir="./outputs/checkpoints/tuned_trial",
+    checkpoint_freq=5,
     checkpoint_at_end=True,
     checkpoint_score_attr="episode_reward_mean",
-    keep_checkpoints_num=5,
+    # keep_checkpoints_num=5,
     # reuse_actors=True
     sync_config=tune.SyncConfig(),
-    verbose=2
+    verbose=3,
     # Verbosity mode. 0 = silent, 1 = only status updates, 2 = status and brief trial results, 3 = status and detailed trial results. Defaults to 3.
     # fail_fast="raise",
-
     # resume="AUTO",  # resume from the last run specified in sync_config
 )
 
