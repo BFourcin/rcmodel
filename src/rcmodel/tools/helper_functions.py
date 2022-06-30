@@ -59,10 +59,17 @@ def model_creator(model_config):
 
     Tout_continuous = Interp1D(t, Tout, method='linear')
 
-    time_data = torch.tensor(pd.read_csv(model_config['room_data_path'], skiprows=0).iloc[:, 1], dtype=torch.float64)
-    temp_data = torch.tensor(
-        pd.read_csv(model_config['room_data_path'], skiprows=0).iloc[:, 2:].to_numpy(dtype=np.float32),
-        dtype=torch.float32)
+    cols = list(pd.read_csv(model_config['room_data_path'], nrows=1))
+    iter_csv = pd.read_csv(model_config['room_data_path'], usecols=[i for i in cols if i != 'date-time'], iterator=True, chunksize=10000)
+    df2 = pd.concat([chunk.dropna(how='all') for chunk in iter_csv])
+
+    time_data = torch.tensor(df2.iloc[:, 0], dtype=torch.float64)
+    temp_data = torch.tensor(df2.iloc[:, 1:].to_numpy(dtype=np.float32), dtype=torch.float32)
+
+    # time_data = torch.tensor(pd.read_csv(model_config['room_data_path'], skiprows=0).iloc[:, 1], dtype=torch.float64)
+    # temp_data = torch.tensor(
+    #     pd.read_csv(model_config['room_data_path'], skiprows=0).iloc[:, 2:].to_numpy(dtype=np.float32),
+    #     dtype=torch.float32)
 
     Tin_continuous = Interp1D(time_data, temp_data[:, 0:len(bld.rooms)].T, method='linear')
 
@@ -149,20 +156,19 @@ def initialise_model(pi, scaling, weather_data_path, csv_path):
     return model
 
 
-def dataset_creator(path, sample_size, dt):
+def dataset_creator(path, sample_size, warmup_size, dt=30):
     path_sorted = sort_data(path, dt)
     with FileLock(f"{os.path.dirname(os.path.abspath(path_sorted))}.lock"):
         # train_dataset = BuildingTemperatureDataset(path_sorted, sample_size, train=True)
         # train_dataloader = torch.utils.data.DataLoader(train_dataset, batch_size=1, shuffle=False)
         # test_dataset = BuildingTemperatureDataset(path_sorted, sample_size, test=True)
         # test_dataloader = torch.utils.data.DataLoader(test_dataset, batch_size=1, shuffle=False)
-        warmup_size = 7 * sample_size
         train_dataset = RandomSampleDataset(path_sorted, sample_size, warmup_size, train=True, test=False)
         train_dataloader = torch.utils.data.DataLoader(train_dataset, batch_size=1, shuffle=False)
         test_dataset = RandomSampleDataset(path_sorted, sample_size, warmup_size, train=False, test=True)
         test_dataloader = torch.utils.data.DataLoader(test_dataset, batch_size=1, shuffle=False)
 
-    return train_dataset, train_dataloader, test_dataset, test_dataloader
+    return train_dataloader, test_dataloader
 
 
 def sort_data(path, dt):
@@ -202,7 +208,8 @@ def sort_data(path, dt):
         df["time"] = (df.index - pd.Timestamp("1970-01-01")) // pd.Timedelta("1s")
 
         # change date-time from UTC to Local time
-        df = df.tz_localize('Europe/London')
+        infer_dst = np.array([False] * df.shape[0])  # all False -> every row considered DT, alternative is True to indicate DST. The array must correspond to the iloc of df.index
+        df = df.tz_localize('Europe/London', ambiguous=infer_dst, nonexistent='shift_forward')  # causes error so commented out
 
         df = df.interpolate().round(2)  # interpolate missing values NaN
 

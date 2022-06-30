@@ -7,6 +7,8 @@ from .helper_functions import model_to_csv
 from .helper_functions import convergence_criteria
 from .helper_functions import exponential_smoothing
 from .helper_functions import policy_image
+from .helper_functions import sort_data
+from .helper_functions import dataset_creator
 from .ray_actor import RayActor
 
 
@@ -20,5 +22,7 @@ __all__ = [
     "convergence_criteria",
     "exponential_smoothing",
     "policy_image",
+    "sort_data",
+    "dataset_creator",
     "RayActor",
 ]
