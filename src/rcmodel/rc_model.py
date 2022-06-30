@@ -114,12 +114,6 @@ class RCModel(nn.Module):
             self.record_action.append([t, self.action])  # This is just used for plotting the cooling after.
 
         # Get energy input at timestep:
-        if self.cool_load is None or self.action is None:
-            print(f'Cool_load: {self.cool_load} {self.action}')
-            print(f'Loads: {self.loads}')
-            print(f'Params: {self.params}')
-
-
         Q_area = -self.cool_load * self.action  # W/m2
         Q_area = Q_area + self.gain_load  # add the constant gain term
         Q_watts = self.building.proportional_heating(Q_area)
