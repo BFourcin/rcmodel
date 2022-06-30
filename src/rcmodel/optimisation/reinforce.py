@@ -4,6 +4,8 @@ from gym import spaces
 import torch
 import torch.nn as nn
 from matplotlib import pyplot as plt
+from matplotlib.figure import Figure
+from matplotlib.backends.backend_agg import FigureCanvasAgg as FigureCanvas
 import pandas as pd
 import numpy as np
 from xitorch.interpolate import Interp1D
@@ -93,7 +95,10 @@ class LSIEnv(gym.Env):
     .                                                   tn
     ]
     """
-    metadata = {'render.modes': ['human']}
+    metadata = {
+        "render_modes": ["human", "rgb_array", "single_rgb_array"],
+        "render_fps": 20,
+    }
 
     def __init__(self, env_config: dict):
         super().__init__()
@@ -105,6 +110,11 @@ class LSIEnv(gym.Env):
         self.epochs = -1  # keeps count of the total epochs of data seen.
         self.time_min = None  # used to help render graph. initialised in _init_render()
         self.time_max = None
+
+        try:
+            self.render_mode = env_config["render_mode"]  # explicitly state render mode in config file if needed
+        except KeyError:
+            self.render_mode = None
 
         # init info dictionary:
         self.info = {"actions": [],  # place to record actions
@@ -174,24 +184,14 @@ class LSIEnv(gym.Env):
 
         self.t_index += self.step_size
 
-        # Debugging ----------
-        if torch.isnan(self.observation).any():
-            reward = -1000
-            done = True
-            print('Error in inputs, nan produced')
-            print(f'Params: {self.RC.params.tolist() + self.RC.loads.flatten().tolist()}')
-            print(f'Observation \n {self.observation}')
-
-        # -------------------
-
         return self.observation.numpy(), reward, done, self.info
 
     def reset(self):
         # Reset the state of the environment to an initial state
         self.t_index = 0
         self.need_init_render = True  # reset render logic
-        self.info["actions"] = []
-        self.info["t_actions"] = []
+        self.info["actions"] = []  # reset recorded actions
+        self.info["t_actions"] = []  # reset recorded action timeseries
 
         # check if we have reached end of data and need to reset enumerate.
         if self.batch_idx + 1 == len(self.dataloader):
@@ -210,13 +210,22 @@ class LSIEnv(gym.Env):
 
         return self.observation.numpy()
 
-    def render(self, mode='human', close=False):
-        # Render the environment to the screen
+    def render(self, mode='human'):
 
+        if self.render_mode:  # overwrite mode
+            mode = self.render_mode
+
+        assert mode in self.metadata["render_modes"]
+
+        # set up render environment
         if self.need_init_render:
-            self._init_render()
+            self._init_render(mode)
             self.need_init_render = False
             return
+
+        if mode == 'single_rgb_array':  # only do plot if it's the last timestep in episode:
+            if not self.time_data[self.t_index+self.step_size-1] >= self.time_data[-1]:
+                return []
 
         # line1.set_data(self.observation[:, 0].numpy(), self.observation[:, 3:].numpy())
         ax.plot((self.observation[:, 0] - self.time_min).numpy() / self.day, self.observation[:, 3:].numpy(), 'k-')
@@ -234,14 +243,28 @@ class LSIEnv(gym.Env):
         fig.canvas.draw()
         # fig.canvas.flush_events()
         # plt.draw()
-        plt.pause(0.0001)
 
-        return fig
+        if mode == 'human':
+            plt.pause(0.0001)
+            return fig
+        elif mode in {"rgb_array", "single_rgb_array"}:
+            width, height = fig.get_size_inches() * fig.get_dpi()
+            img = np.frombuffer(fig.canvas.tostring_rgb(), dtype='uint8').reshape((int(height), int(width), 3))
 
-    def _init_render(self):
+            return img
+
+    def _init_render(self, mode):
         from matplotlib.lines import Line2D
 
         global fig, line1, heat_line, ax, ax2
+
+        if mode == 'human':
+            plt.ion()
+            fig = plt.gcf()
+        else:
+            plt.ioff()
+            fig = plt.figure()
+            # canvas = FigureCanvas(fig)
 
         if self.time_min is None:
             t, temp = self.dataloader.dataset.get_all_data()
@@ -253,9 +276,6 @@ class LSIEnv(gym.Env):
         x = torch.arange(0, self.time_max - self.time_min, self.dt) / self.day
         y = torch.empty(len(x)) * torch.nan
         # y = torch.zeros(len(x))
-
-        plt.ion()
-        fig = plt.gcf()
 
         ax = fig.add_subplot(111)
         ax2 = ax.twinx()
@@ -285,7 +305,8 @@ class LSIEnv(gym.Env):
         labs = [l.get_label() for l in lns]
         ax.legend(lns, labs, loc='upper right')
 
-        fig.show()
+        if mode == 'human':
+            fig.show()
 
         # return fig, line1
 
@@ -480,7 +501,7 @@ class PriorEnv(gym.Env):
 
         self.RC.cooling_policy.on_policy_reset()
 
-    def render(self, mode='human', close=False):
+    def render(self, mode='human'):
         # Render the environment to the screen
 
         return
