@@ -32,6 +32,9 @@ warmup_size = 0
 
 train_dataloader, test_dataloader = dataloader_creator(csv_path, sample_size, warmup_size, dt=30)
 
+# dataloader to use:
+dataloader = train_dataloader
+
 n_workers = 7  # workers per env instance
 
 model_config = {
@@ -49,7 +52,6 @@ model_config = {
     "room_coordinates": [[[92.07, 125.94], [92.07, 231.74], [129.00, 231.74], [154.45, 231.74],
                           [172.64, 231.74], [172.64, 125.94]]],
     "weather_data_path": weather_data_path,
-    "room_data_path": csv_path,
     "load_model_path_policy": None,  # './prior_policy.pt',  # or None
     "load_model_path_physical": 'trained_model.pt',  # or None
     'cooling_param': 0.09133423646610082,
@@ -74,20 +76,19 @@ model_config = {
 
 
 # Get iv array because we can pre calc for this experiment
-def func_iv_array(model_config):
+def func_iv_array(model_config, dataset):
     mc = model_config.copy()
     mc["cooling_param"], mc["gain_param"] = None, None
     model = model_creator(mc)
-    time_data = model.Tin_continuous.obj.x  # all time data on .csv
-    return model.get_iv_array(time_data)
+    return get_iv_array(model, dataset)
 
 
 ppo_config = {
     "env": "LSIEnv",
     "env_config": {"model_config": model_config,
-                   "dataloader": train_dataloader,
+                   "dataloader": dataloader,
                    "step_length": 15,  # minutes passed in each step.
-                   "iv_array": func_iv_array(model_config),  # because phys parameters aren't changing.
+                   "iv_array": func_iv_array(model_config, dataloader.dataset),  # because phys parameters aren't changing.
                    "render_mode": 'rgb_array',  # "single_rgb_array"
                    },
 
@@ -95,7 +96,7 @@ ppo_config = {
     # Use GPUs iff `RLLIB_NUM_GPUS` env var set to > 0.
     "num_gpus": 0,
     # "lr": 0.01,
-    "num_workers": n_workers,  # parallelism
+    "num_workers": n_workers,  # workers per env instance
     "framework": "torch",
     "vf_clip_param": 3000,
     "rollout_fragment_length": 96 * 5,  # number of steps per rollout
@@ -122,7 +123,6 @@ def env_creator(env_config):
         env = PreprocessEnv(env, mu=23.359, std_dev=1.41)
 
     return env
-
 
 # env = env_creator(ppo_config["env_config"])
 # for i in range(len(train_dataset)):
@@ -151,17 +151,13 @@ register_env("LSIEnv", env_creator)
 #     grace_period=2,
 #     max_t=2000,
 # )
-#
-# print(scheduler.debug_string())
-# bracket = scheduler._brackets[0]
-# print(bracket.cutoff({str(i): i for i in range(20)}))
 
-# trainer = ppo.PPOTrainer(env="LSIEnv", config=ppo_config)
 
 print(f'Completed setup & calculated IV array in: {time.time()- start_time:.1f} seconds')
 
 ray.init(num_cpus=8)
 
+# Will fail if env initialised before tune()
 tune.run(
     "PPO",
     stop={"episode_reward_mean": -2,

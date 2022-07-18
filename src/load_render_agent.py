@@ -44,11 +44,11 @@ def env_creator(env_config):
 # --------------------------
 
 
-def func_iv_array(model_config, time_data):
+def func_iv_array(model_config, dataset):
     mc = model_config.copy()
     mc["cooling_param"], mc["gain_param"] = None, None
     model = model_creator(mc)
-    return get_iv_array(model, time_data)
+    return get_iv_array(model, dataset)
 
 
 weather_data_path = '/Users/benfourcin/OneDrive - University of Exeter/PhD/LSI/Data/Met Office Weather Files/JuneSept.csv'
