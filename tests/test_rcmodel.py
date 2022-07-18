@@ -78,7 +78,7 @@ def test_save_load(building_n9):
 
     Tin_continuous = None  # not called during test so can get away with None.
 
-    model = RCModel(building_n9, scaling, dummy_tout, Tin_continuous, transform)
+    model = RCModel(building_n9, scaling, dummy_tout, transform)
 
     rm_cap = 500
     ex_cap = [1e4, 2e4]
