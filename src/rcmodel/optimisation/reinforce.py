@@ -105,6 +105,7 @@ class LSIEnv(gym.Env):
 
         self.RC = env_config["RC_model"]  # RCModel Class
         self.dataloader = env_config["dataloader"]
+        # self.dataloader = self.RC.dataloader
         self.enum_data = None  # enumerate(dataloader)
         self.batch_idx = len(self.dataloader) - 1  # Keeps track of batch number in dataloader, initialised in reset()
         self.epochs = -1  # keeps count of the total epochs of data seen.
@@ -221,7 +222,11 @@ class LSIEnv(gym.Env):
         if self.need_init_render:
             self._init_render(mode)
             self.need_init_render = False
-            return
+            if mode in {"rgb_array", "single_rgb_array"}:
+                fig.canvas.draw()
+                width, height = fig.get_size_inches() * fig.get_dpi()
+                img = np.frombuffer(fig.canvas.tostring_rgb(), dtype='uint8').reshape((int(height), int(width), 3))
+                return img
 
         if mode == 'single_rgb_array':  # only do plot if it's the last timestep in episode:
             if not self.time_data[self.t_index+self.step_size-1] >= self.time_data[-1]:
@@ -248,6 +253,7 @@ class LSIEnv(gym.Env):
             plt.pause(0.0001)
             return fig
         elif mode in {"rgb_array", "single_rgb_array"}:
+            # Return a numpy RGB array of the figure
             width, height = fig.get_size_inches() * fig.get_dpi()
             img = np.frombuffer(fig.canvas.tostring_rgb(), dtype='uint8').reshape((int(height), int(width), 3))
 
@@ -263,7 +269,14 @@ class LSIEnv(gym.Env):
             fig = plt.gcf()
         else:
             plt.ioff()
-            fig = plt.figure()
+            entrys = self.dataloader.dataset.entry_count
+            inches_per_day = 0.5
+            days = entrys/2880
+            width = days*inches_per_day
+            if width < 10:
+                width = 10
+
+            fig = plt.figure(figsize=(width, width*0.75))
             # canvas = FigureCanvas(fig)
 
         if self.time_min is None:
@@ -287,8 +300,8 @@ class LSIEnv(gym.Env):
         t_days_all = (self.time_all - self.time_min) / self.day
         line1, = ax.plot(x, y, 'k-', label=r'model ($^\circ$C)')
         ln2 = ax.plot(t_days_all.numpy(), self.temp_data_all[:, 0].numpy(), ':r', label=r'data ($^\circ$C)')
-        ln3 = ax.plot(t_days_all.numpy(), self.RC.Tout_continuous(self.time_all).numpy(), linestyle=':',
-                      color='darkorange', label=r'outside ($^\circ$C)')
+        # ln3 = ax.plot(t_days_all.numpy(), self.RC.Tout_continuous(self.time_all).numpy(), linestyle=':',
+        #               color='darkorange', label=r'outside ($^\circ$C)')
 
         if self.RC.transform:
             gain = self.RC.scaling.physical_loads_scaling(self.RC.transform(self.RC.loads))[1, :]
@@ -301,7 +314,7 @@ class LSIEnv(gym.Env):
         # fake line so we can get a legend now. Real line is created in render()
         heat_line, = ax2.plot([0], [0], color='k', linestyle='--', alpha=0.5, label='heat ($W$)')
 
-        lns = [line1, heat_line, gain_line] + ln2 + ln3
+        lns = [line1, heat_line, gain_line] + ln2  # + ln3
         labs = [l.get_label() for l in lns]
         ax.legend(lns, labs, loc='upper right')
 
