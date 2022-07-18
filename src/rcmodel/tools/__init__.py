@@ -8,7 +8,8 @@ from .helper_functions import convergence_criteria
 from .helper_functions import exponential_smoothing
 from .helper_functions import policy_image
 from .helper_functions import sort_data
-from .helper_functions import dataset_creator
+from .helper_functions import dataloader_creator
+from .helper_functions import get_iv_array
 from .ray_actor import RayActor
 
 
@@ -23,6 +24,7 @@ __all__ = [
     "exponential_smoothing",
     "policy_image",
     "sort_data",
-    "dataset_creator",
+    "dataloader_creator",
+    "get_iv_array",
     "RayActor",
 ]
