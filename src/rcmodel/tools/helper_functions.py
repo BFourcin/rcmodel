@@ -3,6 +3,7 @@ from ..rc_model import RCModel
 from ..optimisation import PolicyNetwork
 from .rcmodel_dataset import BuildingTemperatureDataset, RandomSampleDataset
 from xitorch.interpolate import Interp1D
+from torchdiffeq import odeint
 from filelock import FileLock
 import matplotlib.pyplot as plt
 
@@ -13,22 +14,6 @@ import os
 
 
 def model_creator(model_config):
-    # values taken from architectural drawing
-    def change_origin(coords):
-        x0 = 92.07
-        y0 = 125.94
-
-        new_coords = []
-
-        for i in range(len(coords)):
-            l = [round((coords[i][0] - x0) / 10, 2), round((coords[i][1] - y0) / 10, 2)]
-            new_coords.append(l)
-
-            # coords[i][0] = round((coords[i][0] - x0) / 10, 2)
-            # coords[i][1] = round((coords[i][1] - y0) / 10, 2)
-
-        return new_coords
-
     def init_scaling():
         # Initialise scaling class
         C_rm = model_config['C_rm']  # [min, max] Capacitance/m2
@@ -44,41 +29,11 @@ def model_creator(model_config):
         scaling = InputScaling(C_rm, C1, C2, R1, R2, R3, Rin, cool, gain)
         return scaling
 
-    rooms = []
-    for i in range(len(model_config['room_names'])):
-        name = model_config['room_names'][i]
-        coords = change_origin(model_config['room_coordinates'][i])
-        rooms.append(Room(name, coords))
-
-    # Initialise Building
-    bld = Building(rooms)
-
-    df = pd.read_csv(model_config['weather_data_path'])
-    Tout = torch.tensor(df['Hourly Temperature (°C)'])
-    t = torch.tensor(df['time'])
-
-    Tout_continuous = Interp1D(t, Tout, method='linear')
-
-    cols = list(pd.read_csv(model_config['room_data_path'], nrows=1))
-    iter_csv = pd.read_csv(model_config['room_data_path'], usecols=[i for i in cols if i != 'date-time'], iterator=True, chunksize=10000)
-    df2 = pd.concat([chunk.dropna(how='all') for chunk in iter_csv])
-
-    time_data = torch.tensor(df2.iloc[:, 0], dtype=torch.float64)
-    temp_data = torch.tensor(df2.iloc[:, 1:].to_numpy(dtype=np.float32), dtype=torch.float32)
-
-    # time_data = torch.tensor(pd.read_csv(model_config['room_data_path'], skiprows=0).iloc[:, 1], dtype=torch.float64)
-    # temp_data = torch.tensor(
-    #     pd.read_csv(model_config['room_data_path'], skiprows=0).iloc[:, 2:].to_numpy(dtype=np.float32),
-    #     dtype=torch.float32)
-
-    Tin_continuous = Interp1D(time_data, temp_data[:, 0:len(bld.rooms)].T, method='linear')
-
     pi = PolicyNetwork(5, 2)
     scaling = init_scaling()
 
     # Initialise RCModel with the building
-    transform = torch.sigmoid
-    model = RCModel(bld, scaling, Tout_continuous, Tin_continuous, transform, pi)
+    model = initialise_model(pi, scaling, model_config['weather_data_path'], model_config['room_names'], model_config['room_coordinates'])
 
     # load physical and/or policy models if available
     if model_config['load_model_path_policy']:
@@ -88,11 +43,11 @@ def model_creator(model_config):
     if model_config['load_model_path_physical']:
         # Try loading a dummy model with no policy, if it fails load with a policy. (We don't know what file contains)
         try:
-            m = initialise_model(None, scaling, model_config['weather_data_path'], model_config['room_data_path'])
+            m = initialise_model(None, scaling, model_config['weather_data_path'], model_config['room_names'], model_config['room_coordinates'])
             m.load(model_config['load_model_path_physical'])
 
         except RuntimeError:
-            m = initialise_model(pi, scaling, model_config['weather_data_path'], model_config['room_data_path'])
+            m = initialise_model(pi, scaling, model_config['weather_data_path'], model_config['room_names'], model_config['room_coordinates'])
             m.load(model_config['load_model_path_physical'])
 
         model.params = m.params  # put loaded physical parameters onto model.
@@ -116,23 +71,23 @@ def model_creator(model_config):
     return model
 
 
-def initialise_model(pi, scaling, weather_data_path, csv_path):
+def initialise_model(pi, scaling, weather_data_path, room_names, room_coordinates):
     def change_origin(coords):
         x0 = 92.07
         y0 = 125.94
 
+        new_coords = []
         for i in range(len(coords)):
-            coords[i][0] = round((coords[i][0] - x0) / 10, 2)
-            coords[i][1] = round((coords[i][1] - y0) / 10, 2)
+            l = [round((coords[i][0] - x0) / 10, 2), round((coords[i][1] - y0) / 10, 2)]
+            new_coords.append(l)
 
-        return coords
+        return new_coords
 
     rooms = []
-
-    name = "seminar_rm_a_t0106"
-    coords = change_origin(
-        [[92.07, 125.94], [92.07, 231.74], [129.00, 231.74], [154.45, 231.74], [172.64, 231.74], [172.64, 125.94]])
-    rooms.append(Room(name, coords))
+    for i in range(len(room_names)):
+        name = room_names[i]
+        coords = change_origin(room_coordinates[i])
+        rooms.append(Room(name, coords))
 
     # Initialise Building
     bld = Building(rooms)
@@ -140,23 +95,16 @@ def initialise_model(pi, scaling, weather_data_path, csv_path):
     df = pd.read_csv(weather_data_path)
     Tout = torch.tensor(df['Hourly Temperature (°C)'])
     t = torch.tensor(df['time'])
-
-    Tout_continuous = Interp1D(t, Tout, method='linear')
-
-    time_data = torch.tensor(pd.read_csv(csv_path, skiprows=0).iloc[:, 1], dtype=torch.float64)
-    temp_data = torch.tensor(pd.read_csv(csv_path, skiprows=0).iloc[:, 2:].to_numpy(dtype=np.float32),
-                             dtype=torch.float32)
-
-    Tin_continuous = Interp1D(time_data, temp_data[:, 0:len(bld.rooms)].T, method='linear')
+    Tout_continuous = Interp1D(t, Tout, method='linear')  # Interp1D object
 
     # Initialise RCModel with the building
     transform = torch.sigmoid
-    model = RCModel(bld, scaling, Tout_continuous, Tin_continuous, transform, pi)
+    model = RCModel(bld, scaling, Tout_continuous, transform, pi)
 
     return model
 
 
-def dataset_creator(path, sample_size, warmup_size, dt=30):
+def dataloader_creator(path, sample_size, warmup_size, dt=30):
     path_sorted = sort_data(path, dt)
     with FileLock(f"{os.path.dirname(os.path.abspath(path_sorted))}.lock"):
         # train_dataset = BuildingTemperatureDataset(path_sorted, sample_size, train=True)
@@ -208,8 +156,10 @@ def sort_data(path, dt):
         df["time"] = (df.index - pd.Timestamp("1970-01-01")) // pd.Timedelta("1s")
 
         # change date-time from UTC to Local time
-        infer_dst = np.array([False] * df.shape[0])  # all False -> every row considered DT, alternative is True to indicate DST. The array must correspond to the iloc of df.index
-        df = df.tz_localize('Europe/London', ambiguous=infer_dst, nonexistent='shift_forward')  # causes error so commented out
+        infer_dst = np.array([False] * df.shape[
+            0])  # all False -> every row considered DT, alternative is True to indicate DST. The array must correspond to the iloc of df.index
+        df = df.tz_localize('Europe/London', ambiguous=infer_dst,
+                            nonexistent='shift_forward')  # causes error so commented out
 
         df = df.interpolate().round(2)  # interpolate missing values NaN
 
@@ -387,3 +337,87 @@ def policy_image(policy, n=100, path=None):
         fig.savefig(path)
     else:
         plt.show()
+
+
+def get_iv_array(model, dataset):
+    """
+    Perform the integration but force outside and inside temperature to be from data.
+    Only the latent temperature nodes in the external walls are free to change meaning we can find out their true
+    values for a given model.
+    """
+    # Update building with current parameters, if needed.
+    if not torch.eq(model.params_old, model.params).all():
+        model._build_matrices()
+
+    with torch.no_grad():
+        t_eval, temp_data = dataset.get_all_data()
+        Tin_continuous = Interp1D(t_eval, temp_data[:, 0:len(model.building.rooms)].T, method='linear')
+
+        bl = model.building
+
+        # Recalculate the A & B matrices. We could chop and re jig from the full matrices, but it is not super
+        # simple so recalculating is less risky.
+        A = torch.zeros([2, 2])
+        A[0, 0] = bl.surf_area * (-1 / (bl.Re[0] * bl.Ce[0]) - 1 / (bl.Re[1] * bl.Ce[0]))
+        A[0, 1] = bl.surf_area / (bl.Re[1] * bl.Ce[0])
+        A[1, 0] = bl.surf_area / (bl.Re[1] * bl.Ce[1])
+        A[1, 1] = bl.surf_area * (-1 / (bl.Re[1] * bl.Ce[1]) - 1 / (bl.Re[2] * bl.Ce[1]))
+
+        B = torch.zeros([2, 2])
+        B[0, 0] = bl.surf_area / (bl.Re[0] * bl.Ce[0])
+        B[1, 1] = bl.surf_area / (bl.Re[2] * bl.Ce[1])
+
+        # check if t_eval is formatted correctly:
+        if t_eval.dim() > 1:
+            t_eval = t_eval.squeeze(0)
+
+        avg_tout = model.Tout_continuous(t_eval).mean()
+        avg_tin = Tin_continuous(t_eval).mean()
+
+        t0 = t_eval[0]
+        t_eval = t_eval - t0
+
+        model.iv = steady_state_iv(model, avg_tout, avg_tin)  # Use avg temp as a good starting guess for iv.
+
+        def latent_f_ode(t, x):
+            Tout = model.Tout_continuous(t.item() + t0)
+            Tin = Tin_continuous(t.item() + t0)
+
+            u = torch.tensor([[Tout],
+                              [Tin]])
+
+            return A @ x + B @ u.to(torch.float32)
+
+        integrate = odeint(latent_f_ode, model.iv[0:2], t_eval,
+                           method='rk4')  # https://github.com/rtqichen/torchdiffeq
+
+        integrate = integrate.squeeze()
+
+        # Add on inside temperature data to be used to initialise rooms at the correct temp.
+        iv_array = torch.empty(len(integrate), len(bl.rooms) + 2)
+        iv_array[:, 0:2] = integrate
+        iv_array[:, 2:] = Tin_continuous(t_eval + t0).T
+        iv_array = Interp1D(t_eval + t0, iv_array.T, method='linear')
+
+    return iv_array
+
+
+def steady_state_iv(model, temp_out, temp_in):
+    """
+    Calculate the initial conditions of the latent variables given a steady state indoor and outdoor temperature.
+    Initial values of room nodes are set to temp in.
+
+    temp_out: float
+        Steady state outside temperature.
+    temp_in: tensor
+        Steady state inside temperature. len(temp_in) = n_rooms
+    :return: tensor
+        Column tensor of initial values at each node.
+    """
+    I = (temp_out - temp_in) / sum(model.building.Re)  # I=V/R
+    v1 = temp_out - I * model.building.Re[0]
+    v2 = v1 - I * model.building.Re[1]
+
+    iv = torch.tensor([[v1], [v2], [temp_in]]).to(torch.float32)
+
+    return iv

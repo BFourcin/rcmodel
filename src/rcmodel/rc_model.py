@@ -1,5 +1,6 @@
 import torch
 import numpy as np
+import pandas as pd
 from torch import nn
 from torchdiffeq import odeint
 from datetime import datetime
@@ -17,15 +18,22 @@ class RCModel(nn.Module):
     Runs using forward method should be sequential as the output is used as the initial condition for the next run, unless manually reset using self.iv
     """
 
-    def __init__(self, building, scaling, Tout_continuous, Tin_continuous, transform=None, cooling_policy=None):
+    def __init__(self, building, scaling, Tout_continuous, transform=None, cooling_policy=None):
 
         super().__init__()
         self.building = building
 
         self.transform = transform  # transform performed on parameters e.g. sigmoid
         self.scaling = scaling  # InputScaling class (helper class to go between machine (0-1) and physical values)
+
+        # df = pd.read_csv(weather_data_path)
+        # Tout = torch.tensor(df['Hourly Temperature (°C)'])
+        # t = torch.tensor(df['time'])
         self.Tout_continuous = Tout_continuous  # Interp1D object
-        self.Tin_continuous = Tin_continuous  # Interp1D object
+
+        # time_data, temp_data = room_dataset.get_all_data()
+        # self.Tin_continuous = Interp1D(time_data, temp_data[:, 0:len(self.building.rooms)].T, method='linear')
+
         self.cooling_policy = cooling_policy  # Neural net: pi(state) --> action
         self.action = 0  # initialise cooling action
 
@@ -161,91 +169,11 @@ class RCModel(nn.Module):
 
         self.loads_old = self.loads.detach().clone()
 
-    def get_iv_array(self, t_eval):
-        """
-        Perform the integration but force outside and inside temperature to be from data.
-        Only the latent temperature nodes in the external walls are free to change meaning we can find out their true
-        values for a given model.
-        """
-        # Update building with current parameters, if needed.
-        if not torch.eq(self.params_old, self.params).all():
-            self._build_matrices()
-
-        with torch.no_grad():
-
-            bl = self.building
-
-            # Recalculate the A & B matrices. We could chop and re jig from the full matrices, but it is not super
-            # simple so recalculating is less risky.
-            A = torch.zeros([2, 2])
-            A[0, 0] = bl.surf_area * (-1 / (bl.Re[0] * bl.Ce[0]) - 1 / (bl.Re[1] * bl.Ce[0]))
-            A[0, 1] = bl.surf_area / (bl.Re[1] * bl.Ce[0])
-            A[1, 0] = bl.surf_area / (bl.Re[1] * bl.Ce[1])
-            A[1, 1] = bl.surf_area * (-1 / (bl.Re[1] * bl.Ce[1]) - 1 / (bl.Re[2] * bl.Ce[1]))
-
-            B = torch.zeros([2, 2])
-            B[0, 0] = bl.surf_area / (bl.Re[0] * bl.Ce[0])
-            B[1, 1] = bl.surf_area / (bl.Re[2] * bl.Ce[1])
-
-            # check if t_eval is formatted correctly:
-            if t_eval.dim() > 1:
-                t_eval = t_eval.squeeze(0)
-
-            avg_tout = self.Tout_continuous(t_eval).mean()
-            avg_tin = self.Tin_continuous(t_eval).mean()
-
-            t0 = t_eval[0]
-            t_eval = t_eval - t0
-
-            self.iv = self.steady_state_iv(avg_tout, avg_tin)  # Use avg temp as a good starting guess for iv.
-
-            def latent_f_ode(t, x):
-                Tout = self.Tout_continuous(t.item() + t0)
-                Tin = self.Tin_continuous(t.item() + t0)
-
-                u = torch.tensor([[Tout],
-                                  [Tin]])
-
-                return A @ x + B @ u.to(torch.float32)
-
-            integrate = odeint(latent_f_ode, self.iv[0:2], t_eval,
-                               method='rk4')  # https://github.com/rtqichen/torchdiffeq
-
-            integrate = integrate.squeeze()
-
-            # Add on inside temperature data to be used to initialise rooms at the correct temp.
-            iv_array = torch.empty(len(integrate), len(bl.rooms) + 2)
-            iv_array[:, 0:2] = integrate
-            iv_array[:, 2:] = self.Tin_continuous(t_eval + t0).T
-            iv_array = Interp1D(t_eval + t0, iv_array.T, method='linear')
-
-        return iv_array
-
     def reset_iv(self):
         # Starting Temperatures of nodes. Column vector of shape ([n,1]) n=rooms+2
         self.iv = 26 * torch.ones(2 + len(self.building.rooms))  # set iv at 26 degrees
         # Set iv as column vector. Errors caused if Row vector which are difficult to trace.
         self.iv = self.iv.unsqueeze(1)
-
-    def steady_state_iv(self, temp_out, temp_in):
-        """
-        Calculate the initial conditions of the latent variables given a steady state indoor and outdoor temperature.
-        Initial values of room nodes are set to temp in.
-
-        temp_out: float
-            Steady state outside temperature.
-        temp_in: tensor
-            Steady state inside temperature. len(temp_in) = n_rooms
-        :return: tensor
-            Column tensor of initial values at each node.
-        """
-        I = (temp_out - temp_in) / sum(self.building.Re)  # I=V/R
-        v1 = temp_out - I * self.building.Re[0]
-        v2 = v1 - I * self.building.Re[1]
-
-        iv = torch.tensor([[v1], [v2], [temp_in]]).to(torch.float32)
-
-        return iv
 
     def init_physical(self):
         params = torch.rand(self.building.n_params, dtype=torch.float32, requires_grad=True)
