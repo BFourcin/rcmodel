@@ -228,7 +228,7 @@ class RandomSampleDataset(Dataset):
             entry_count = int(total_entries * train_split)
             return rows_to_skip, entry_count
         elif self.test:
-            rows_to_skip = int(total_entries * train_split) + self.warmup_size
+            rows_to_skip = int(total_entries * train_split) - self.warmup_size  # do warm up in training section.
             entry_count = int(total_entries * test_split)
             return rows_to_skip, entry_count
         elif self.all:
@@ -241,15 +241,17 @@ class RandomSampleDataset(Dataset):
     def get_all_data(self):
         start_idx = self.rows_to_skip
 
-        # Get pandas df of entire valid dataset
-        df_sample = pd.read_csv(self.csv_path, skiprows=start_idx, nrows=self.entry_count + self.sample_size)
+        # Get pandas df of entire valid dataset (iterate to avoid errors)
+        # df_sample = pd.read_csv(self.csv_path, skiprows=start_idx, nrows=self.entry_count + self.sample_size)  #OLD
+        iter_csv = pd.read_csv(self.csv_path, skiprows=start_idx, nrows=self.entry_count + self.sample_size,
+                               iterator=True, chunksize=10000)
+        df_sample = pd.concat([chunk.dropna(how='all') for chunk in iter_csv])
 
         # Get time column (time must be in the 1th column)
         t_sample = torch.tensor(df_sample.iloc[:, 1].values, dtype=torch.float64)  # units (s)
 
         # Get temp matrix
-        temp_sample = torch.tensor(df_sample.iloc[:, 2:].values,
-                                   dtype=torch.float32)  # pandas needs 2: to get all but first & second column
+        temp_sample = torch.tensor(df_sample.iloc[:, 2:].values, dtype=torch.float32)
 
         # apply transforms if required
         if self.transform:

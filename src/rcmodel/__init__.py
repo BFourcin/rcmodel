@@ -25,7 +25,8 @@ from .tools import convergence_criteria
 from .tools import exponential_smoothing
 from .tools import policy_image
 from .tools import sort_data
-from .tools import dataset_creator
+from .tools import dataloader_creator
+from .tools import get_iv_array
 from .tools import RayActor
 from .rc_model import RCModel
 
