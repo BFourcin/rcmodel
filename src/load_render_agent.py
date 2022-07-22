@@ -1,17 +1,15 @@
 from ray.tune import ExperimentAnalysis
 from ray.tune.registry import register_env
 from ray.rllib.agents import ppo
+from tqdm.auto import tqdm, trange
 import pandas as pd
 import numpy as np
 import ray
 import torch
 import time
-from moviepy.editor import ImageSequenceClip
-import tempfile
-from PIL import Image
-# from moviepy.video.io.bindings import mplfig_to_npimage
 
 from rcmodel import *
+from rcmodel.tools.video_recorder import VideoRecorder
 
 
 # ray.init()
@@ -39,6 +37,10 @@ def env_creator(env_config):
         # wrap environment:
         env = PreprocessEnv(env, mu=23.359, std_dev=1.41)
 
+        # num_episodes = 96*len(env_config["dataloader"].dataset)
+
+        env = VideoRecorder(env)
+
     return env
 
 # --------------------------
@@ -57,9 +59,7 @@ csv_path = '/Users/benfourcin/OneDrive - University of Exeter/PhD/LSI/Data/Dummy
 
 dt = 30
 sample_size = 67 * 24 * 60 ** 2 / dt
-# sample_size = 1 * 24 * 60 ** 2 / dt  # ONE DAY
 warmup_size = 7 * 24 * 60 ** 2 / dt  # ONE WEEK
-# warmup_size = 0
 
 # train_dataloader, test_dataloader = dataloader_creator(csv_path, sample_size, warmup_size)
 
@@ -92,7 +92,8 @@ best_config = {'env': 'LSIEnv',
                                                'gain_param': 0.9086668150306394},
                               'dataloader': dataloader,
                               'step_length': 15,
-                              'iv_array': None},
+                              'iv_array': None,
+                              'render_mode': 'rgb_array'},
                'num_gpus': 0,
                'num_workers': 1,
                'framework': 'torch',
@@ -104,7 +105,7 @@ best_config = {'env': 'LSIEnv',
 
 start = time.time()
 best_config['env_config']['iv_array'] = func_iv_array(best_config['env_config']['model_config'], dataloader.dataset)
-print(f'time for IV array: {time.time() - start:.2f} seconds')
+print(f'Time to calculate IV array: {time.time() - start:.2f} seconds')
 
 
 print(f'Dataset length: {len(best_config["env_config"]["dataloader"].dataset)}')
@@ -120,36 +121,22 @@ checkpoint_path = '/Users/benfourcin/Desktop/tuned_trial/PPO/PPO_LSIEnv_60f2f_00
 
 agent.restore(checkpoint_path)
 
+env = env_creator(best_config["env_config"])
+print("env created")
 
-def save_image_from_array(image_arr, tmpdirname, image_num):
-    im = Image.fromarray(image_arr)
-    im.save(f"{tmpdirname}/frame{image_num}.jpeg")
+for i in trange(len(best_config['env_config']['dataloader'].dataset)):
+    done = False
+    observation = env.reset()
+    tot_reward = 0
+    while not done:
+        action = agent.compute_single_action(observation)
+        observation, reward, done, _ = env.step(action)
+        tot_reward += reward
+        if done:
+            print(f'Reward for episode {i}: {tot_reward:.2f}')
 
-
-with tempfile.TemporaryDirectory() as tmpdirname:
-
-    env = env_creator(best_config["env_config"])
-    print("env created")
-    images_list = []
-    image_num = 0
-    for i in range(len(best_config['env_config']['dataloader'].dataset)):
-        # print(i)
-        done = False
-        observation = env.reset()
-        tot_reward = 0
-        while not done:
-            save_image_from_array(env.render('rgb_array'), tmpdirname, image_num)
-            image_num += 1
-            # env.render('human')
-            action = agent.compute_single_action(observation)
-            observation, reward, done, _ = env.step(action)
-            tot_reward += reward
-            if done:
-                print(f'Reward for episode: {tot_reward:.2f}')
-
-    print('Done!')
-
-    clip = ImageSequenceClip(tmpdirname, fps=25)
-    clip.write_videofile('./outputs/trained_model.mp4')
+print('Done!')
 
 ray.shutdown()
+
+
