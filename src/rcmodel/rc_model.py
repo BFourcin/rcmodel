@@ -53,6 +53,7 @@ class RCModel(nn.Module):
         self.iv = None  # initial value
         self.iv_array = None  # Interp1D object of pre found initial values. Means we can get correct iv with just time.
 
+        self._build_loads()  # get cool and gain load
         self.reset_iv()  # sets iv
 
     def forward(self, t_eval, action=0):

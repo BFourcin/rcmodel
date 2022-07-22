@@ -1,5 +1,8 @@
 import gym
 from gym import spaces
+from gym.utils.renderer import Renderer
+from typing import Optional
+
 
 import torch
 import torch.nn as nn
@@ -97,7 +100,7 @@ class LSIEnv(gym.Env):
     """
     metadata = {
         "render_modes": ["human", "rgb_array", "single_rgb_array"],
-        "render_fps": 20,
+        "render_fps": 25,
     }
 
     def __init__(self, env_config: dict):
@@ -111,12 +114,7 @@ class LSIEnv(gym.Env):
         self.epochs = -1  # keeps count of the total epochs of data seen.
         self.time_min = None  # used to help render graph. initialised in _init_render()
         self.time_max = None
-
-        try:
-            self.render_mode = env_config["render_mode"]  # explicitly state render mode in config file if needed
-        except KeyError:
-            self.render_mode = None
-
+        self.fig = None  # figure used in render
         # init info dictionary:
         self.info = {"actions": [],  # place to record actions
                      "t_actions": [],  # record time action took place
@@ -154,6 +152,10 @@ class LSIEnv(gym.Env):
         self.observation_space = spaces.Box(low, high,
                                             dtype=np.float64)
 
+        self.render_mode = env_config["render_mode"]
+        assert self.render_mode is None or self.render_mode in self.metadata["render_modes"]
+        self.renderer = Renderer(self.render_mode, self._render)
+
     def step(self, action):
         # Execute a chunk of timeseries
         t_start = self.t_index - 1 if self.t_index > 0 else self.t_index  # solves an off by one issue caused by the iv technically being t0.
@@ -185,12 +187,19 @@ class LSIEnv(gym.Env):
 
         self.t_index += self.step_size
 
+        self.renderer.render_step()
         return self.observation.numpy(), reward, done, self.info
 
-    def reset(self):
+    def reset(self,
+              seed: Optional[int] = None,
+              return_info: bool = False,
+              options: Optional[dict] = None,
+              ):
+        super().reset(seed=seed)
+
         # Reset the state of the environment to an initial state
         self.t_index = 0
-        self.need_init_render = True  # reset render logic
+
         self.info["actions"] = []  # reset recorded actions
         self.info["t_actions"] = []  # reset recorded action timeseries
 
@@ -209,64 +218,78 @@ class LSIEnv(gym.Env):
 
         self.observation = torch.concat((self.time_data[0].unsqueeze(0), self.RC.iv.T.squeeze(0))).unsqueeze(0)
 
+        self.need_init_render = True  # reset render logic
+        self.renderer.reset()
+        self.renderer.render_step()
+
         return self.observation.numpy()
 
-    def render(self, mode='human'):
+    def render(self, mode="human"):
+        if self.render_mode is not None:
+            return self.renderer.get_renders()
+        else:
+            return self._render(mode)
 
-        if self.render_mode:  # overwrite mode
-            mode = self.render_mode
+    def _render(self, mode='human'):
+        # if self.render_mode:  # overwrite mode
+        #     mode = self.render_mode
 
         assert mode in self.metadata["render_modes"]
 
-        # set up render environment
-        if self.need_init_render:
-            self._init_render(mode)
-            self.need_init_render = False
-            if mode in {"rgb_array", "single_rgb_array"}:
-                fig.canvas.draw()
-                width, height = fig.get_size_inches() * fig.get_dpi()
-                img = np.frombuffer(fig.canvas.tostring_rgb(), dtype='uint8').reshape((int(height), int(width), 3))
+        with torch.no_grad():
+            # set up render environment
+            if self.need_init_render:
+                self._init_render(mode)
+                self.need_init_render = False
+                # img = None
+                # if mode in {"rgb_array", "single_rgb_array"}:
+                #     self.fig.canvas.draw()
+                #     width, height = self.fig.get_size_inches() * self.fig.get_dpi()
+                #     img = np.frombuffer(self.fig.canvas.tostring_rgb(), dtype='uint8').reshape((int(height), int(width), 3))
+                #
+                # return img
+
+            if mode == 'single_rgb_array':  # only do plot if it's the last timestep in episode:
+                if not self.time_data[self.t_index+self.step_size-1] >= self.time_data[-1]:
+                    return []
+
+            # line1.set_data(self.observation[:, 0].numpy(), self.observation[:, 3:].numpy())
+            ax.plot((self.observation[:, 0] - self.time_min).numpy() / self.day, self.observation[:, 3:].numpy(), 'k-')
+
+            Q_watts = self.RC.building.proportional_heating(self.RC.cool_load)  # convert from W/m2 to W
+            Q = self.info["actions"] * -Q_watts.detach().numpy()  # negative because cooling
+
+            if len(Q) > 0:  # if not empty
+                heat_line.set_data((torch.stack(self.info["t_actions"]) - self.time_min) / self.day, Q)
+
+            # fig = plt.gcf()
+            # ax = plt.gca()
+            ax.relim()
+            ax.autoscale_view(tight=None, scalex=False, scaley=True)
+            ax2.relim()
+            ax2.autoscale_view(tight=None, scalex=False, scaley=True)
+            self.fig.canvas.draw()
+            # fig.canvas.flush_events()
+            # plt.draw()
+
+            if mode == 'human':
+                plt.pause(0.0001)
+                return self.fig
+            elif mode in {"rgb_array", "single_rgb_array"}:
+                # Return a numpy RGB array of the figure
+                width, height = self.fig.get_size_inches() * self.fig.get_dpi()
+                img = np.frombuffer(self.fig.canvas.tostring_rgb(), dtype='uint8').reshape((int(height), int(width), 3))
+
                 return img
-
-        if mode == 'single_rgb_array':  # only do plot if it's the last timestep in episode:
-            if not self.time_data[self.t_index+self.step_size-1] >= self.time_data[-1]:
-                return []
-
-        # line1.set_data(self.observation[:, 0].numpy(), self.observation[:, 3:].numpy())
-        ax.plot((self.observation[:, 0] - self.time_min).numpy() / self.day, self.observation[:, 3:].numpy(), 'k-')
-
-        Q_watts = self.RC.building.proportional_heating(self.RC.cool_load)  # convert from W/m2 to W
-        Q = self.info["actions"] * -Q_watts.detach().numpy()  # negative because cooling
-        heat_line.set_data((torch.stack(self.info["t_actions"]) - self.time_min) / self.day, Q)
-
-        # fig = plt.gcf()
-        # ax = plt.gca()
-        ax.relim()
-        ax.autoscale_view(tight=None, scalex=False, scaley=True)
-        ax2.relim()
-        ax2.autoscale_view(tight=None, scalex=False, scaley=True)
-        fig.canvas.draw()
-        # fig.canvas.flush_events()
-        # plt.draw()
-
-        if mode == 'human':
-            plt.pause(0.0001)
-            return fig
-        elif mode in {"rgb_array", "single_rgb_array"}:
-            # Return a numpy RGB array of the figure
-            width, height = fig.get_size_inches() * fig.get_dpi()
-            img = np.frombuffer(fig.canvas.tostring_rgb(), dtype='uint8').reshape((int(height), int(width), 3))
-
-            return img
 
     def _init_render(self, mode):
         from matplotlib.lines import Line2D
 
-        global fig, line1, heat_line, ax, ax2
+        global line1, heat_line, ax, ax2
 
         if mode == 'human':
             plt.ion()
-            fig = plt.gcf()
+            self.fig = plt.gcf()
         else:
             plt.ioff()
             entrys = self.dataloader.dataset.entry_count
@@ -276,7 +299,8 @@ class LSIEnv(gym.Env):
             if width < 10:
                 width = 10
 
-            fig = plt.figure(figsize=(width, width*0.75))
+            if self.fig is None:
+                self.fig = plt.figure(figsize=(width, width*0.75))
             # canvas = FigureCanvas(fig)
 
         if self.time_min is None:
@@ -290,7 +314,7 @@ class LSIEnv(gym.Env):
         y = torch.empty(len(x)) * torch.nan
         # y = torch.zeros(len(x))
 
-        ax = fig.add_subplot(111)
+        ax = self.fig.add_subplot(111)
         ax2 = ax.twinx()
         ax.set_xlim([0, (self.time_max - self.time_min) / self.day])
         ax.set_title('Model Output')
@@ -319,9 +343,9 @@ class LSIEnv(gym.Env):
         ax.legend(lns, labs, loc='upper right')
 
         if mode == 'human':
-            fig.show()
+            self.fig.show()
 
-        # return fig, line1
+        # return line1, heat_line, ax, ax2
 
 
 class PreprocessEnv(gym.Wrapper):
@@ -394,55 +418,6 @@ class PreprocessEnv(gym.Wrapper):
         self.observation = self.preprocess_observation(observation)
 
         return self.observation
-
-
-# def _inputs_to_state(self, x, unix_time):
-#     """
-#     Convenience function to transform raw input from model into the NN state.
-#
-#     x: torch.tensor,
-#         Tensor of temperatures from the model.
-#
-#     unix_time: float,
-#         Unix epoch time in seconds.
-#     """
-#     x = x.detach()
-#
-#     if x.ndim == 0:
-#         x = x.unsqueeze(0)
-#     if unix_time.ndim == 0:
-#         unix_time = unix_time.unsqueeze(0)
-#
-#     # normalise x using info obtained from data.
-#     x_norm = (x - self.mu) / self.std_dev
-#     # x_norm = torch.reshape(x_norm, (1,))
-#
-#     day = 24 * 60 ** 2
-#     week = 7 * day
-#     # year = (365.2425) * day
-#
-#     state = torch.stack([torch.flatten(x_norm),
-#                         np.sin(unix_time * (2 * np.pi / day)),
-#                         np.cos(unix_time * (2 * np.pi / day)),
-#                         np.sin(unix_time * (2 * np.pi / week)),
-#                         np.cos(unix_time * (2 * np.pi / week))]).to(torch.float32).T
-#     # state = state.to(torch.float32)
-#
-#     # Adds broadcasting to function.
-#     # if len(unix_time) > 1:
-#     #     state = state.T
-#
-#     # except TypeError:  # Occurs when no len()
-#     #     pass
-#     #
-#     # try:
-#     #     state = torch.cat((x_norm, state), dim=1)
-#     #
-#     # except RuntimeError:
-#     #     # Occurs when single time is being simulated
-#     #     state = torch.cat((x_norm, state.unsqueeze(0)), dim=1)
-#
-#     return state
 
 
 class PriorEnv(gym.Env):

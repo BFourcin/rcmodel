@@ -89,7 +89,7 @@ ppo_config = {
                    "dataloader": dataloader,
                    "step_length": 15,  # minutes passed in each step.
                    "iv_array": func_iv_array(model_config, dataloader.dataset),  # because phys parameters aren't changing.
-                   "render_mode": 'rgb_array',  # "single_rgb_array"
+                   "render_mode": 'human',  # "single_rgb_array"
                    },
 
     # PPO Stuff:
@@ -103,7 +103,7 @@ ppo_config = {
     "train_batch_size": 96 * 5 * n_workers,
     "sgd_minibatch_size": 96,
     "horizon": None,
-    # "render_env": True,
+    "render_env": True,
     # "monitor": True
 }
 
@@ -125,7 +125,7 @@ def env_creator(env_config):
     return env
 
 # env = env_creator(ppo_config["env_config"])
-# for i in range(len(train_dataset)):
+# for i in range(len(dataloader.dataset)):
 #     done = False
 #     observation = env.reset()
 #     while not done:
