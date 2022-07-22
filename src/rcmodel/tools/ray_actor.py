@@ -10,6 +10,7 @@ from ..tools import BuildingTemperatureDataset, pltsolution_1rm,\
     exponential_smoothing, convergence_criteria
 from ..physical import InputScaling
 
+
 class RayActor:
     """
     Class provides basic framework to call ray for multiprocessing.
