@@ -60,7 +60,8 @@ csv_path = '/Users/benfourcin/OneDrive - University of Exeter/PhD/LSI/Data/Dummy
 dt = 30
 sample_size = 67 * 24 * 60 ** 2 / dt
 warmup_size = 7 * 24 * 60 ** 2 / dt  # ONE WEEK
-
+# sample_size = 24 * 60 ** 2 / dt
+# warmup_size = 0
 # train_dataloader, test_dataloader = dataloader_creator(csv_path, sample_size, warmup_size)
 
 all_dataset = RandomSampleDataset(csv_path, sample_size, warmup_size, all=True)
@@ -93,7 +94,7 @@ best_config = {'env': 'LSIEnv',
                               'dataloader': dataloader,
                               'step_length': 15,
                               'iv_array': None,
-                              'render_mode': 'rgb_array'},
+                              'render_mode': 'human'},
                'num_gpus': 0,
                'num_workers': 1,
                'framework': 'torch',
@@ -117,7 +118,7 @@ agent = ppo.PPOTrainer(env="LSIEnv", config=best_config)
 # agent.restore(checkpoint_path[0][0])
 
 # checkpoint_path = '/Users/benfourcin/Documents/Github/rcmodel/src/outputs/checkpoints/PPO/PPO_LSIEnv_38dd8635_91_env=LSIEnv,dataloader=torch_utils_data_dataloader_DataLoader_object_at_0x7fd9d210ddc0,iv_array=xitorch_inte_2022-06-23_06-21-14/checkpoint_002000/checkpoint-2000'
-checkpoint_path = '/Users/benfourcin/Desktop/tuned_trial/PPO/PPO_LSIEnv_60f2f_00000_0_2022-06-30_11-14-08/checkpoint_000275/checkpoint-275'
+checkpoint_path = './tuned_trial/PPO/PPO_LSIEnv_60f2f_00000_0_2022-06-30_11-14-08/checkpoint_000275/checkpoint-275'
 
 agent.restore(checkpoint_path)
 
@@ -129,6 +130,7 @@ for i in trange(len(best_config['env_config']['dataloader'].dataset)):
     observation = env.reset()
     tot_reward = 0
     while not done:
+        # env.render()
         action = agent.compute_single_action(observation)
         observation, reward, done, _ = env.step(action)
         tot_reward += reward
@@ -136,6 +138,12 @@ for i in trange(len(best_config['env_config']['dataloader'].dataset)):
             print(f'Reward for episode {i}: {tot_reward:.2f}')
 
 print('Done!')
+
+# mins = len(best_config['env_config']['dataloader'].dataset) * sample_size*dt/60  #minutes in dataset
+# total_frames = mins/best_config['env_config']['step_length']
+# duration = total_frames/env.fps
+#
+# env.make_video_from_VideoClip_method(agent, duration)
 
 ray.shutdown()
 
