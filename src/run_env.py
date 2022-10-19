@@ -54,12 +54,28 @@ model_config = {
     "weather_data_path": weather_data_path,
     "load_model_path_policy": None,  # './prior_policy.pt',  # or None
     "load_model_path_physical": 'trained_model.pt',  # or None
-    'cooling_param': 0.09133423646610082,
-    'gain_param': 0.9086668150306394
-    # "cooling_param": tune.uniform(0, 1),
-    # "gain_param": tune.uniform(0, 1),
-    # "cooling_param": 0.5,
-    # "gain_param": 0.5,
+    "parameters": {
+        "C_rm": tune.uniform(0, 1),
+        "C1": tune.uniform(0, 1),
+        "C2": tune.uniform(0, 1),
+        "R1": tune.uniform(0, 1),
+        "R2": tune.uniform(0, 1),
+        "R3": tune.uniform(0, 1),
+        "Rin": tune.uniform(0, 1),
+        "cool": tune.uniform(0, 1),  # 0.09133423646610082
+        "gain": tune.uniform(0, 1),  # 0.9086668150306394
+    }
+    # "parameters": {
+    #         "C_rm": 0.7,
+    #         "C1": 0.7,
+    #         "C2": 0.7,
+    #         "R1": 0.7,
+    #         "R2": 0.7,
+    #         "R3": 0.7,
+    #         "Rin": 0.7,
+    #         "cool": 0.7,  # 0.09133423646610082
+    #         "gain": 0.7,  # 0.9086668150306394
+    #     }
 }
 
 # Initialise Model
@@ -88,8 +104,9 @@ ppo_config = {
     "env_config": {"model_config": model_config,
                    "dataloader": dataloader,
                    "step_length": 15,  # minutes passed in each step.
-                   "iv_array": func_iv_array(model_config, dataloader.dataset),  # because phys parameters aren't changing.
-                   "render_mode": 'human',  # "single_rgb_array"
+                   # "iv_array": func_iv_array(model_config, dataloader.dataset),  # because phys parameters aren't changing.
+                   "iv_array": None,
+                   "render_mode": 'single_rgb_array',  # "single_rgb_array"
                    },
 
     # PPO Stuff:
@@ -103,7 +120,7 @@ ppo_config = {
     "train_batch_size": 96 * 5 * n_workers,
     "sgd_minibatch_size": 96,
     "horizon": None,
-    "render_env": True,
+    "render_env": False,
     # "monitor": True
 }
 
@@ -113,7 +130,11 @@ def env_creator(env_config):
         model_config = env_config["model_config"]
         model = model_creator(model_config)
         # model.iv_array = model.get_iv_array(time_data)
-        model.iv_array = env_config["iv_array"]
+
+        if not env_config["iv_array"]:
+            model.iv_array = get_iv_array(model, env_config["dataloader"].dataset)
+        else:
+            model.iv_array = env_config["iv_array"]
 
         env_config["RC_model"] = model
 
@@ -137,20 +158,20 @@ def env_creator(env_config):
 
 register_env("LSIEnv", env_creator)
 
-# from ray.tune.schedulers import AsyncHyperBandScheduler
-# from ray.tune.suggest.hebo import HEBOSearch
-#
-# hebo = HEBOSearch(metric="episode_reward_mean", mode="max",)
-# hebo = tune.suggest.ConcurrencyLimiter(hebo, max_concurrent=8)
-#
-# # AsyncHyperBand enables aggressive early stopping of bad trials.
-# scheduler = AsyncHyperBandScheduler(
-#     time_attr="training_iteration",
-#     metric="episode_reward_mean",
-#     mode="max",
-#     grace_period=2,
-#     max_t=2000,
-# )
+from ray.tune.schedulers import AsyncHyperBandScheduler
+from ray.tune.suggest.hebo import HEBOSearch
+
+hebo = HEBOSearch(metric="episode_reward_mean", mode="max",)
+hebo = tune.suggest.ConcurrencyLimiter(hebo, max_concurrent=8)
+
+# AsyncHyperBand enables aggressive early stopping of bad trials.
+scheduler = AsyncHyperBandScheduler(
+    time_attr="training_iteration",
+    metric="episode_reward_mean",
+    mode="max",
+    grace_period=2,
+    max_t=2000,
+)
 
 
 print(f'Completed setup & calculated IV array in: {time.time()- start_time:.1f} seconds')
@@ -163,9 +184,9 @@ tune.run(
     stop={"episode_reward_mean": -2,
           "training_iteration": 2000},
     config=ppo_config,
-    # num_samples=400,  # number of trials to perform
-    # scheduler=scheduler,
-    # search_alg=hebo,
+    num_samples=400,  # number of trials to perform
+    scheduler=scheduler,
+    search_alg=hebo,
     local_dir="./outputs/checkpoints/tuned_trial",
     checkpoint_freq=5,
     checkpoint_at_end=True,

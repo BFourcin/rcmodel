@@ -5,7 +5,7 @@ from typing import Callable
 import gym
 from gym import logger
 
-from moviepy.editor import ImageSequenceClip
+from moviepy.editor import ImageSequenceClip, VideoClip
 from moviepy.video.compositing.CompositeVideoClip import CompositeVideoClip
 
 
@@ -17,6 +17,7 @@ class VideoRecorder(gym.Wrapper):
             video_folder: str = './outputs/Videos',
             episode_trigger: Callable[[int], bool] = lambda x: True,
             name_prefix: str = "env_recording",
+            max_stored_frames: int = 100,
     ):
         """Wrapper is based off 'RecordVideo' wrapper from gym, see for more details: https://github.com/openai/gym/blob/master/gym/wrappers/record_video.py
 
@@ -36,9 +37,9 @@ class VideoRecorder(gym.Wrapper):
         self.video_folder = video_folder
         self.episode_trigger = episode_trigger
         self.name_prefix = name_prefix
+        self.max_stored_frames = max_stored_frames  # max frames stored in list before being pushed to video.
 
         self.video_frames = []  # list of frames to turn into a video clip.
-        self.max_stored_frames = 1000  # max frames stored in list before being pushed to video.
         self.stored_clips = []
         self.recording = False  # bool to determine if frames should be saved or not.
         self.episode_id = 0
@@ -62,7 +63,7 @@ class VideoRecorder(gym.Wrapper):
             self.capture_frame()
 
         if len(self.video_frames) > self.max_stored_frames:
-            print('storage buffer full, making clip')
+            print('Storage buffer full, making clip')
             self.make_clip()
 
         if done:
@@ -124,3 +125,32 @@ class VideoRecorder(gym.Wrapper):
         """Closes the wrapper."""
         super().close()
         self.close_video_recorder()
+
+    def make_video_from_VideoClip_method(self, agent, duration):
+
+        outer_self = self
+
+        class VideoRun:
+            def __init__(self, agent):
+                self.agent = agent
+                self.done = True
+
+            def loop(self):
+                if self.done:
+                    self.observation = outer_self.reset()
+                action = self.agent.compute_single_action(self.observation)
+                self.observation, reward, self.done, _ = outer_self.step(action)
+
+            def make_frame(self, t):
+                if not outer_self.video_frames:
+                    self.loop()  # only run loop if there are no frames collected
+
+                frame = outer_self.video_frames[0]  # get first frame from list
+                outer_self.video_frames = outer_self.video_frames[1:]  # remove this frame
+                return frame
+
+        vid = VideoRun(agent)
+        func_to_provide_single_frame = vid.make_frame
+        clip = VideoClip(func_to_provide_single_frame, duration=duration)
+        clip.write_videofile(self.video_folder + '/' + self.name_prefix + str(self.file_created_id) + '.mp4', self.fps)
+

@@ -8,6 +8,7 @@ src/logs
 src/outcmaes
 src/savedrun
 src/*.pt
+src/tuned_trial
 
 .DS_Store
 .idea

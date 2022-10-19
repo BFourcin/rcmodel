@@ -57,12 +57,18 @@ def model_creator(model_config):
     # check if any parameters have been chosen by the user:
     try:
         loads = model.loads.detach()
-        if model_config['cooling_param'] is not None:
-            loads[0, :] = torch.logit(torch.tensor(model_config['cooling_param']))
+        if model_config['parameters'] is not None:
 
-        if model_config['gain_param'] is not None:
-            loads[1, :] = torch.logit(torch.tensor(model_config['gain_param']))
+            parameters = []
+            for param in model_config['parameters']:
+                parameters.append(model_config['parameters'][param])
 
+            assert len(parameters) == 9, 'Include all parameters'
+
+            params = torch.logit(torch.tensor(parameters[0:7]))
+            loads = torch.logit(torch.tensor(parameters[7:]).unsqueeze(0).T)
+
+        model.params = torch.nn.Parameter(params)
         model.loads = torch.nn.Parameter(loads)
 
     except KeyError as exception:  # input not found
@@ -73,6 +79,8 @@ def model_creator(model_config):
 
 def initialise_model(pi, scaling, weather_data_path, room_names, room_coordinates):
     def change_origin(coords):
+        """This function changes the origin of the coordinate system, so [0,0] is on the building.
+        Function exists because floor plan was offset."""
         x0 = 92.07
         y0 = 125.94
 
