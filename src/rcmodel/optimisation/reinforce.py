@@ -80,7 +80,9 @@ class LSIEnv(gym.Env):
     """Custom Environment that follows gym interface
 
     config = {"RC_model": rcmodel Class,
-              "dataloader": torch.dataloader Object
+              "dataloader": torch.dataloader Object,
+              "step_length": int (Minutes),
+              "render_mode": str,
               }
 
     A dataloader is used to provide batches of time and temperature data to the model. The environment is run in

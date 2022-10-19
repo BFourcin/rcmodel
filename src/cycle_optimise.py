@@ -108,34 +108,29 @@ def worker(opt_id):
             y_hat = [np.array(y[-n]).mean()]
             return y_hat
 
-    def init_scaling():
-        # Initialise scaling class
-        rm_CA = [100, 1e4]  # [min, max] Capacitance/area
-        ex_C = [1e3, 1e8]  # Capacitance
-        R = [0.1, 5]  # Resistance ((K.m^2)/W)
-        Q_limit = [300]  # Cooling limit and gain limit in W/m2
-        scaling = InputScaling(rm_CA, ex_C, R, Q_limit)
-        return scaling
+    model_config = {
+        # Ranges:
+        "C_rm": [1e3, 1e5],  # [min, max] Capacitance/m2
+        "C1": [1e5, 1e8],  # Capacitance
+        "C2": [1e5, 1e8],
+        "R1": [0.1, 5],  # Resistance ((K.m^2)/W)
+        "R2": [0.1, 5],
+        "R3": [0.5, 6],
+        "Rin": [0.1, 5],
+        "cool": [0, 50],  # Cooling limit in W/m2
+        "gain": [0, 5],  # Gain limit in W/m2
+        "room_names": ["seminar_rm_a_t0106"],
+        "room_coordinates": [[[92.07, 125.94], [92.07, 231.74], [129.00, 231.74], [154.45, 231.74],
+                              [172.64, 231.74], [172.64, 125.94]]],
+        "weather_data_path": weather_data_path,
+        "load_model_path_policy": None,  # './prior_policy.pt',  # or None
+        "load_model_path_physical": None,  # or None
+        'cooling_param': 0.09133423646610082,
+        'gain_param': 0.9086668150306394
+    }
 
     # Initialise Model
-    scaling = init_scaling()
-    policy = PolicyNetwork(5, 2)
-    model = initialise_model(policy, scaling, weather_data_path, csv_path)
-
-    # load physical and/or policy models if available
-    if load_model_path_policy:
-        model.load(load_model_path_policy)  # load policy
-        model.init_physical()  # re-randomise physical params, as they were also copied from the loaded policy
-
-    if load_model_path_physical:
-        # m = initialise_model(None, scaling, weather_data_path)  # dummy model to load physical params on to.
-        m = initialise_model(PolicyNetwork(5, 2), scaling,
-                             weather_data_path, csv_path)  # dummy model to load physical params on to.
-        m.load(load_model_path_physical)
-        model.params = m.params  # put loaded physical parameters onto model.
-        model.loads = m.loads
-        del m
-
+    model = model_creator(model_config)
     model.save(0, dir_path)  # save initial model
 
     # # Initialise Optimise Class - for training physical model
@@ -153,12 +148,13 @@ def worker(opt_id):
     temp_data = torch.tensor(pd.read_csv(csv_path, skiprows=0).iloc[:, 2:].to_numpy(dtype=np.float32),
                              dtype=torch.float32)
 
-    config = {"RC_model": model,
-              "dataloader": torch.utils.data.DataLoader(train_dataset, batch_size=1, shuffle=False)
-              }
+    env_config = {"RC_model": model,
+                  "dataloader": torch.utils.data.DataLoader(train_dataset, batch_size=1, shuffle=False),
+                  "step_length": 15,  # minutes passed in each step.
+                  "render_mode": 'human',  # "single_rgb_array"
+                  }
 
-    env = LSIEnv(config)
-    rl = Reinforce(env, gamma=0.999, alpha=1e-2)
+    env = LSIEnv(env_config)
 
     # lists to keep track of process, used for plot at the end
     avg_train_loss_plot = []

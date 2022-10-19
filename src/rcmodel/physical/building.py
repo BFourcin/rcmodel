@@ -191,7 +191,7 @@ class Building:
 
                     # Check for no matches
                     elif Walls_indx == len(Walls):
-                        print("Error: Room: ", rm, ", Wall: ", wl, ". Was not matched")
+                        raise TypeError("Room: ", rm, ", Wall: ", wl, ". Was not matched")
 
     def get_external_walls(self, Walls):
         """
