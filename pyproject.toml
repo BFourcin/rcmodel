@@ -5,6 +5,7 @@ build-backend = "poetry_dynamic_versioning.backend"
 
 [tool.poetry-dynamic-versioning]
 enable = true
+format = "v{base}+{distance}.{commit}"
 #vcs = "git"
 #style = "semver"
 #bumb = true
