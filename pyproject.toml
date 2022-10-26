@@ -39,9 +39,9 @@ matplotlib = "^3.6.1"
 pandas = "^1.5.1"
 xitorch = "^0.3.0"
 filelock = "^3.8.0"
-gym = "^0.25.2"
 tqdm = "^4.64.1"
-ray = "^2.0.0"
+ray = {extras = ["tune"], version = "^2.0.1"}
+hebo = "^0.3.2"
 
 
 [tool.poetry.group.dev.dependencies]
