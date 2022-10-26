@@ -1,10 +1,10 @@
 from .optimise_rc import OptimiseRC
 from .optimise_rc import DDPOptimiseRC
 # from .reinforce import Reinforce
-from .reinforce import PolicyNetwork
-from .reinforce import LSIEnv
-from .reinforce import PriorEnv
-from .reinforce import PreprocessEnv
+from .environment import PolicyNetwork
+from .environment import LSIEnv
+from .environment import PriorEnv
+from .environment import PreprocessEnv
 from .prior_cooling_policy import PriorCoolingPolicy
 
 
