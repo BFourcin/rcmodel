@@ -4,7 +4,6 @@ from .environment import PolicyNetwork
 from .environment import LSIEnv
 from .environment import PriorEnv
 from .environment import PreprocessEnv
-from .environment import env_creator
 from .prior_cooling_policy import PriorCoolingPolicy
 
 
@@ -15,6 +14,5 @@ __all__ = [
     "LSIEnv",
     "PriorEnv",
     "PriorCoolingPolicy",
-    "env_creator",
     "PreprocessEnv",
 ]
