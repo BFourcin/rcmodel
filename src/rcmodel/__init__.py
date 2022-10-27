@@ -6,7 +6,6 @@ from . import rc_model
 
 from .optimisation import OptimiseRC
 from .optimisation import DDPOptimiseRC
-# from .optimisation import Reinforce
 from .optimisation import PolicyNetwork
 from .optimisation import LSIEnv
 from .optimisation import PriorEnv
@@ -20,6 +19,7 @@ from .tools import BuildingTemperatureDataset
 from .tools import RandomSampleDataset
 from .tools import initialise_model
 from .tools import model_creator
+from .tools import env_creator
 from .tools import model_to_csv
 from .tools import convergence_criteria
 from .tools import exponential_smoothing
