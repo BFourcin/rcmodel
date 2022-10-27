@@ -3,7 +3,6 @@ from gym import spaces
 from gym.utils.renderer import Renderer
 from typing import Optional
 
-
 import torch
 import torch.nn as nn
 from matplotlib import pyplot as plt
@@ -110,7 +109,6 @@ class LSIEnv(gym.Env):
 
         self.RC = env_config["RC_model"]  # RCModel Class
         self.dataloader = env_config["dataloader"]
-        # self.dataloader = self.RC.dataloader
         self.enum_data = None  # enumerate(dataloader)
         self.batch_idx = len(self.dataloader) - 1  # Keeps track of batch number in dataloader, initialised in reset()
         self.epochs = -1  # keeps count of the total epochs of data seen.
@@ -190,6 +188,7 @@ class LSIEnv(gym.Env):
         self.t_index += self.step_size
 
         self.renderer.render_step()
+
         return self.observation.numpy(), reward, done, self.info
 
     def reset(self,
@@ -252,7 +251,7 @@ class LSIEnv(gym.Env):
                 # return img
 
             if mode == 'single_rgb_array':  # only do plot if it's the last timestep in episode:
-                if not self.time_data[self.t_index+self.step_size-1] >= self.time_data[-1]:
+                if not self.time_data[self.t_index + self.step_size - 1] >= self.time_data[-1]:
                     return []
 
             # line1.set_data(self.observation[:, 0].numpy(), self.observation[:, 3:].numpy())
@@ -296,13 +295,13 @@ class LSIEnv(gym.Env):
             plt.ioff()
             entrys = self.dataloader.dataset.entry_count
             inches_per_day = 0.5
-            days = entrys/2880
-            width = days*inches_per_day
+            days = entrys / 2880
+            width = days * inches_per_day
             if width < 10:
                 width = 10
 
             if self.fig is None:
-                self.fig = plt.figure(figsize=(width, width*0.75))
+                self.fig = plt.figure(figsize=(width, width * 0.75))
             # canvas = FigureCanvas(fig)
 
         if self.time_min is None:
@@ -495,6 +494,30 @@ class PriorEnv(gym.Env):
         # Render the environment to the screen
 
         return
+
+
+def env_creator(env_config):
+    """
+    Needed for the ray register_env() function.
+    """
+    with torch.no_grad():
+        model_config = env_config["model_config"]
+        model = model_creator(model_config)
+        # model.iv_array = model.get_iv_array(time_data)
+
+        if not env_config["iv_array"]:
+            model.iv_array = get_iv_array(model, env_config["dataloader"].dataset)
+        else:
+            model.iv_array = env_config["iv_array"]
+
+        env_config["RC_model"] = model
+
+        env = LSIEnv(env_config)
+
+        # wrap environment:
+        env = PreprocessEnv(env, mu=23.359, std_dev=1.41)
+
+    return env
 
 # class Reinforce:
 #     def __init__(self, env, gamma=0.99, alpha=1e-3):
