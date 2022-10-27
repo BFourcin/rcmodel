@@ -1,6 +1,6 @@
 from ..physical import Room, Building, InputScaling
 from ..rc_model import RCModel
-from ..optimisation import PolicyNetwork
+from ..optimisation import PolicyNetwork, LSIEnv, PreprocessEnv
 from .rcmodel_dataset import BuildingTemperatureDataset, RandomSampleDataset
 from xitorch.interpolate import Interp1D
 from torchdiffeq import odeint
@@ -75,6 +75,30 @@ def model_creator(model_config):
         print(f'Exception during RCmodel creation, missing var in model config: {exception}')
 
     return model
+
+
+def env_creator(env_config):
+    """
+    Needed for the ray register_env() function.
+    """
+    with torch.no_grad():
+        model_config = env_config["model_config"]
+        model = model_creator(model_config)
+        # model.iv_array = model.get_iv_array(time_data)
+
+        if not env_config["iv_array"]:
+            model.iv_array = get_iv_array(model, env_config["dataloader"].dataset)
+        else:
+            model.iv_array = env_config["iv_array"]
+
+        env_config["RC_model"] = model
+
+        env = LSIEnv(env_config)
+
+        # wrap environment:
+        env = PreprocessEnv(env, mu=23.359, std_dev=1.41)
+
+    return env
 
 
 def initialise_model(pi, scaling, weather_data_path, room_names, room_coordinates):
