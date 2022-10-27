@@ -10,7 +10,7 @@ from .helper_functions import policy_image
 from .helper_functions import sort_data
 from .helper_functions import dataloader_creator
 from .helper_functions import get_iv_array
-from .ray_actor import RayActor
+from ray_actor import RayActor
 
 
 __all__ = [
