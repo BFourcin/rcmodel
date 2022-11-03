@@ -349,6 +349,40 @@ class LSIEnv(gym.Env):
         # return line1, heat_line, ax, ax2
 
 
+def preprocess_observation(observation, mu, std_dev):
+    """
+    Function to transform observation to the state we want the policy to see/use.
+
+    Used to wrap the original environment:
+    env = gym.wrappers.TransformObservation(env, preprocess_observation)
+    """
+
+    # ndim will be different if from reset() or step()
+    # if observation.ndim == 1:
+    #     unix_time = observation[0]
+    #     x = observation[3:]  # remove the latent nodes
+    # else:
+    #     unix_time = observation[-1, 0]
+    #     x = observation[-1, 3:]  # remove the latent nodes
+
+    unix_time = observation[-1, 0]
+    x = observation[-1, 3:]  # remove the latent nodes
+
+    # normalise x using info obtained from data.
+    x_norm = (x - mu) / std_dev
+
+    day = 24 * 60 ** 2
+    week = 7 * day
+    # year = (365.2425) * day
+
+    state = x_norm.tolist() + [np.sin(unix_time * (2 * np.pi / day)),
+                               np.cos(unix_time * (2 * np.pi / day)),
+                               np.sin(unix_time * (2 * np.pi / week)),
+                               np.cos(unix_time * (2 * np.pi / week))]
+
+    return np.array(state)
+
+
 class PreprocessEnv(gym.Wrapper):
     """
     Class used to preprocess the outputs from the environment before being seen by the policy.
@@ -369,48 +403,9 @@ class PreprocessEnv(gym.Wrapper):
         self.observation_space = spaces.Box(np.array(temp_low + time_low), np.array(temp_high + time_high),
                                             dtype=np.float64)
 
-    def preprocess_observation(self, observation):
-        """
-        Function to transform observation to the state we want the policy to see/use.
-
-        Used to wrap the original environment:
-        env = gym.wrappers.TransformObservation(env, preprocess_observation)
-        """
-
-        # ndim will be different if from reset() or step()
-        # if observation.ndim == 1:
-        #     unix_time = observation[0]
-        #     x = observation[3:]  # remove the latent nodes
-        # else:
-        #     unix_time = observation[-1, 0]
-        #     x = observation[-1, 3:]  # remove the latent nodes
-
-        unix_time = observation[-1, 0]
-        x = observation[-1, 3:]  # remove the latent nodes
-
-        # normalise x using info obtained from data.
-        x_norm = (x - self.mu) / self.std_dev
-
-        day = 24 * 60 ** 2
-        week = 7 * day
-        # year = (365.2425) * day
-
-        # state = np.stack([x_norm,
-        #                  np.sin(unix_time * (2 * np.pi / day)),
-        #                  np.cos(unix_time * (2 * np.pi / day)),
-        #                  np.sin(unix_time * (2 * np.pi / week)),
-        #                  np.cos(unix_time * (2 * np.pi / week))]).T
-
-        state = x_norm.tolist() + [np.sin(unix_time * (2 * np.pi / day)),
-                                   np.cos(unix_time * (2 * np.pi / day)),
-                                   np.sin(unix_time * (2 * np.pi / week)),
-                                   np.cos(unix_time * (2 * np.pi / week))]
-
-        return np.array(state)
-
     def step(self, action):
         observation, reward, done, info = self.env.step(action)
-        self.observation = self.preprocess_observation(observation)
+        self.observation = preprocess_observation(observation, self.mu, self.std_dev)
 
         return self.observation, reward, done, info
 
