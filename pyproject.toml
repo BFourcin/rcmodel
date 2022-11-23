@@ -41,6 +41,7 @@ xitorch = "^0.3.0"
 filelock = "^3.8.0"
 tqdm = "^4.64.1"
 ray = {extras = ["tune"], version = "^2.0.1"}
+gym = "0.25.2"
 hebo = "^0.3.2"
 
 
