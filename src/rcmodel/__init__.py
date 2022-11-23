@@ -11,6 +11,7 @@ from .optimisation import LSIEnv
 from .optimisation import PriorEnv
 from .optimisation import PriorCoolingPolicy
 from .optimisation import PreprocessEnv
+from .optimisation import preprocess_observation
 from .physical import Building
 from .physical import Room
 from .physical import InputScaling
