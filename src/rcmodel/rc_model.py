@@ -90,9 +90,9 @@ class RCModel(nn.Module):
         t_eval = t_eval - self.t0
 
         # Find the true iv from an initialised Inter1D object.
-        # if self.iv_array:
-        #     self.iv = self.iv_array(self.t0).unsqueeze(0).T
-        #     if iv_note: print('iv_array not currently valid, check code.')
+        if self.iv_array:
+            self.iv = self.iv_array(self.t0).unsqueeze(0).T
+            if iv_note: print('iv_array not currently valid, check code.')
 
         if self.iv.dtype != torch.float32:
             self.iv = self.iv.to(torch.float32)
