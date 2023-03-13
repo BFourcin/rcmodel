@@ -1,6 +1,6 @@
-from ..physical import Room, Building, InputScaling
-from ..rc_model import RCModel
-from ..optimisation import PolicyNetwork, LSIEnv, PreprocessEnv
+from rcmodel.physical import Room, Building, InputScaling
+from rcmodel.rc_model import RCModel
+import rcmodel.optimisation
 from .rcmodel_dataset import BuildingTemperatureDataset, RandomSampleDataset
 from xitorch.interpolate import Interp1D
 from torchdiffeq import odeint
@@ -14,6 +14,38 @@ import os
 
 
 def model_creator(model_config):
+    """
+    model_config = {
+        # Ranges:
+        "C_rm": [1e3, 1e5],  # [min, max] Capacitance/m2
+        "C1": [1e5, 1e8],  # Capacitance
+        "C2": [1e5, 1e8],
+        "R1": [0.1, 5],  # Resistance ((K.m^2)/W)
+        "R2": [0.1, 5],
+        "R3": [0.5, 6],
+        "Rin": [0.1, 5],
+        "cool": [0, 50],  # Cooling limit in W/m2
+        "gain": [0, 5],  # Gain limit in W/m2
+        "room_names": ["seminar_rm_a_t0106"],
+        "room_coordinates": [[[92.07, 125.94], [92.07, 231.74], [129.00, 231.74], [154.45, 231.74],
+                              [172.64, 231.74], [172.64, 125.94]]],
+        "weather_data_path": weather_data_path,
+        "cooling_policy": None,
+        "load_model_path_policy": None,  # './prior_policy.pt',  # or None
+        "load_model_path_physical": None,  # or None
+        "parameters": {
+            "C_rm": np.random.rand(1).item(),
+            "C1": np.random.rand(1).item(),
+            "C2": np.random.rand(1).item(),
+            "R1": np.random.rand(1).item(),
+            "R2": np.random.rand(1).item(),
+            "R3": np.random.rand(1).item(),
+            "Rin": np.random.rand(1).item(),
+            "cool": np.random.rand(1).item(),  # 0.09133423646610082
+            "gain": np.random.rand(1).item(),  # 0.9086668150306394
+        }
+    }
+    """
     def init_scaling():
         # Initialise scaling class
         C_rm = model_config['C_rm']  # [min, max] Capacitance/m2
@@ -29,11 +61,13 @@ def model_creator(model_config):
         scaling = InputScaling(C_rm, C1, C2, R1, R2, R3, Rin, cool, gain)
         return scaling
 
-    pi = PolicyNetwork(5, 2)
+    # pi = PolicyNetwork(5, 2)
+    pi = model_config["cooling_policy"]
     scaling = init_scaling()
 
     # Initialise RCModel with the building
-    model = initialise_model(pi, scaling, model_config['weather_data_path'], model_config['room_names'], model_config['room_coordinates'])
+    model = initialise_model(pi, scaling, model_config['weather_data_path'], model_config['room_names'],
+                             model_config['room_coordinates'])
 
     # load physical and/or policy models if available
     if model_config['load_model_path_policy']:
@@ -43,11 +77,13 @@ def model_creator(model_config):
     if model_config['load_model_path_physical']:
         # Try loading a dummy model with no policy, if it fails load with a policy. (We don't know what file contains)
         try:
-            m = initialise_model(None, scaling, model_config['weather_data_path'], model_config['room_names'], model_config['room_coordinates'])
+            m = initialise_model(None, scaling, model_config['weather_data_path'], model_config['room_names'],
+                                 model_config['room_coordinates'])
             m.load(model_config['load_model_path_physical'])
 
         except RuntimeError:
-            m = initialise_model(pi, scaling, model_config['weather_data_path'], model_config['room_names'], model_config['room_coordinates'])
+            m = initialise_model(pi, scaling, model_config['weather_data_path'], model_config['room_names'],
+                                 model_config['room_coordinates'])
             m.load(model_config['load_model_path_physical'])
 
         model.params = m.params  # put loaded physical parameters onto model.
@@ -80,23 +116,36 @@ def model_creator(model_config):
 def env_creator(env_config):
     """
     Needed for the ray register_env() function.
+
+    Make a model either by unpickling from a file or by providing a model_config.
+
+    env_config = {
+        "model_config": model_config,
+        "model_pickle_path": None
+        "dataloader": torch.utils.data.DataLoader(train_dataset, batch_size=1, shuffle=False),
+        "step_length": 15,  # minutes passed in each step.
+        "render_mode": 'single_rgb_array',  # "single_rgb_array"
+        }
     """
     with torch.no_grad():
-        model_config = env_config["model_config"]
-        model = model_creator(model_config)
-        # model.iv_array = model.get_iv_array(time_data)
 
-        if not env_config["iv_array"]:
-            model.iv_array = get_iv_array(model, env_config["dataloader"].dataset)
-        else:
-            model.iv_array = env_config["iv_array"]
+        model = None
+        # Unpickle model if a path exists, if not then use model_config
+        try:
+            if env_config["model_pickle_path"]:
+                model = RCModel.load(env_config["model_pickle_path"])
+        except KeyError:
+            pass
+
+        if model is None:
+            model = model_creator(env_config["model_config"])
 
         env_config["RC_model"] = model
 
-        env = LSIEnv(env_config)
+        env = rcmodel.optimisation.LSIEnv(env_config)
 
         # wrap environment:
-        env = PreprocessEnv(env, mu=23.359, std_dev=1.41)
+        env = rcmodel.optimisation.PreprocessEnv(env, mu=23.359, std_dev=1.41)
 
     return env
 
@@ -334,17 +383,30 @@ def exponential_smoothing(y, alpha, y_hat=None, n=10):
     return y_hat
 
 
-def policy_image(policy, n=100, path=None):
+def policy_image(algo, n=100, path=None):
+    """
+
+    :param algo: ray RRLIB algo
+
+    """
     bounds = [15, 30]
     t0 = 4 * 24 * 60 ** 2  # buffer to go from thursday to monday
     time = torch.linspace(0 + t0, 24 * 60 ** 2 + t0, n)
     temp = torch.linspace(bounds[0], bounds[1], n)
     img = torch.zeros((n, n))
 
+    # hardcode mu and std_dev:
+    mu = 23.359
+    std_dev = 1.41
+
     with torch.no_grad():
-        for i, x in enumerate(temp):
-            for j, y in enumerate(time):
-                action, log_prob = policy.get_action(x.unsqueeze(0).unsqueeze(0), y)
+        for i, te in enumerate(temp):
+            for j, ti in enumerate(time):
+                unix_time = ti
+                x = te.unsqueeze(0)  # remove the latent nodes
+                observation = optimisation.preprocess_observation(x, unix_time, mu, std_dev)
+                action, _, info = algo.compute_action(observation, full_fetch=True)
+                log_prob = info['action_logp']
                 # Get prob of getting 1:
                 if action == 1:
                     pr = torch.e ** log_prob  # Convert log_prob to normal prob.
