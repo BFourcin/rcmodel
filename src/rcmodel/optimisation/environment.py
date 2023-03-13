@@ -115,6 +115,7 @@ class LSIEnv(gym.Env):
         self.time_min = None  # used to help render graph. initialised in _init_render()
         self.time_max = None
         self.fig = None  # figure used in render
+        self.collect_rc_grad = False  # Flag to collect in rcModel or not.
         # init info dictionary:
         self.info = {"actions": [],  # place to record actions
                      "t_actions": [],  # record time action took place
@@ -157,39 +158,43 @@ class LSIEnv(gym.Env):
         self.renderer = Renderer(self.render_mode, self._render)
 
     def step(self, action):
-        # Execute a chunk of timeseries
-        t_start = self.t_index - 1 if self.t_index > 0 else self.t_index  # solves an off by one issue caused by the iv technically being t0.
-        t_eval = self.time_data[t_start:int(self.t_index + self.step_size)]
-        temp = self.temp_data[t_start:int(self.t_index + self.step_size), 0:self.n_rooms]
+        with torch.set_grad_enabled(self.collect_rc_grad):
+            # Execute a chunk of timeseries
+            t_start = self.t_index - 1 if self.t_index > 0 else self.t_index  # solves an off by one issue caused by the iv technically being t0.
+            t_eval = self.time_data[t_start:int(self.t_index + self.step_size)]
+            temp = self.temp_data[t_start:int(self.t_index + self.step_size), 0:self.n_rooms]
 
-        self.info["actions"].extend([action, action])  # record both start and end so we can plot actions later
-        self.info["t_actions"].extend([t_eval[0], t_eval[-1]])
+            self.info["actions"].extend([action, action])  # record both start and end so we can plot actions later
+            self.info["t_actions"].extend([t_eval[0], t_eval[-1]])
 
-        # set iv from last observation
-        self.RC.iv = self.observation[-1, 1:].unsqueeze(0).T
+            # set iv from last observation
+            self.RC.iv = self.observation[-1, 1:].unsqueeze(0).T
 
-        pred = self.RC(t_eval, action)
-        pred = pred.squeeze()
+            pred = self.RC(t_eval, action)
+            pred = pred.squeeze()
 
-        # negative so reward can be maximised
-        reward = -self.loss_fn(pred[:, 2:], temp).item()  # Mean Squared Error
+            # negative so reward can be maximised
+            reward = -self.loss_fn(pred[:, 2:], temp)  # Mean Squared Error
 
-        # remove first observation as this was the iv from the previous step
-        if self.t_index == 0:
-            self.observation = torch.concat((t_eval.unsqueeze(0).T, pred.detach().clone()), dim=1)
-        else:
-            self.observation = torch.concat((t_eval[1:].unsqueeze(0).T, pred[1:, :].detach().clone()), dim=1)
+            # remove first observation as this was the iv from the previous step
+            if self.t_index == 0:
+                self.observation = torch.concat((t_eval.unsqueeze(0).T, pred.detach().clone()), dim=1)
+            else:
+                self.observation = torch.concat((t_eval[1:].unsqueeze(0).T, pred[1:, :].detach().clone()), dim=1)
 
-        if t_eval[-1] == self.time_data[-1]:  # if this condition is missed then error
-            done = True
-        else:
-            done = False
+            if t_eval[-1] == self.time_data[-1]:  # if this condition is missed then error
+                done = True
+            else:
+                done = False
 
-        self.t_index += self.step_size
+            self.t_index += self.step_size
 
-        self.renderer.render_step()
+            self.renderer.render_step()
 
-        return self.observation.numpy(), reward, done, self.info
+            if not self.collect_rc_grad:  # Don't need to save grads, keeps ray happy.
+                reward = reward.detach().numpy()
+
+            return self.observation.numpy(), reward, done, self.info
 
     def reset(self,
               seed: Optional[int] = None,
@@ -215,7 +220,9 @@ class LSIEnv(gym.Env):
         self.temp_data = self.temp_data.squeeze(0)
 
         # Find correct initial value for current start from pre-calculated array
-        self.RC.iv = self.RC.iv_array(self.time_data[0]).unsqueeze(0).T
+        # if statement allows iv_array to be none and not cause reset() to fail.
+        if self.RC.iv_array:
+            self.RC.iv = self.RC.iv_array(self.time_data[0]).unsqueeze(0).T
 
         self.observation = torch.concat((self.time_data[0].unsqueeze(0), self.RC.iv.T.squeeze(0))).unsqueeze(0)
 
@@ -349,24 +356,28 @@ class LSIEnv(gym.Env):
         # return line1, heat_line, ax, ax2
 
 
-def preprocess_observation(observation, mu, std_dev):
+
+
+
+
+def preprocess_observation(x, unix_time, mu, std_dev):
     """
     Function to transform observation to the state we want the policy to see/use.
 
     Used to wrap the original environment:
     env = gym.wrappers.TransformObservation(env, preprocess_observation)
+
+    Parameters
+        ----------
+        x: torch.tensor
+            tensor of non latent nodes, i.e. room temperatures.
+        unix_time : float
+            Time at observation.
+        mu: float
+            Mean of data.
+        std_dev: float
+            Standard deviation of data.
     """
-
-    # ndim will be different if from reset() or step()
-    # if observation.ndim == 1:
-    #     unix_time = observation[0]
-    #     x = observation[3:]  # remove the latent nodes
-    # else:
-    #     unix_time = observation[-1, 0]
-    #     x = observation[-1, 3:]  # remove the latent nodes
-
-    unix_time = observation[-1, 0]
-    x = observation[-1, 3:]  # remove the latent nodes
 
     # normalise x using info obtained from data.
     x_norm = (x - mu) / std_dev
@@ -405,13 +416,17 @@ class PreprocessEnv(gym.Wrapper):
 
     def step(self, action):
         observation, reward, done, info = self.env.step(action)
-        self.observation = preprocess_observation(observation, self.mu, self.std_dev)
+        unix_time = observation[-1, 0]
+        x = observation[-1, 3:]  # remove the latent nodes
+        self.observation = preprocess_observation(x, unix_time, self.mu, self.std_dev)
 
         return self.observation, reward, done, info
 
     def reset(self):
         observation = self.env.reset()
-        self.observation = self.preprocess_observation(observation)
+        unix_time = observation[-1, 0]
+        x = observation[-1, 3:]  # remove the latent nodes
+        self.observation = preprocess_observation(x, unix_time, self.mu, self.std_dev)
 
         return self.observation
 
