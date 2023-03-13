@@ -1,6 +1,7 @@
 import torch
 import numpy as np
 import pandas as pd
+import dill
 from torch import nn
 from torchdiffeq import odeint
 from datetime import datetime
@@ -96,6 +97,9 @@ class RCModel(nn.Module):
 
         if self.iv.dtype != torch.float32:
             self.iv = self.iv.to(torch.float32)
+
+        # print(f'params: {self.params}')
+        # print(f'loads: {self.loads}')
 
         # integrate using fixed step (rk4) see torchdiffeq docs for more options.
         integrate = odeint(self.f_ode, self.iv, t_eval, method='rk4')  # https://github.com/rtqichen/torchdiffeq
@@ -195,37 +199,67 @@ class RCModel(nn.Module):
         self.params_old = torch.tensor(torch.nan)
         self.loads_old = torch.tensor(torch.nan)
 
-    def save(self, model_id=0, dir_path=None):
+    def save(self, filename):
         """
-        Save the model, but first transform parameters back to their physical values.
-        This makes passing between models with different scaling limits possible.
-        Use load method to load back in. Parameters will be converted back to 0-1 using the current scaling function.
+        Parameters
+        ----------
+        filename : str
+            Path to save the pickled RCModel to.
+        Returns
+        ----------
+        filename : str
+            Keeps format the same as RLLib
         """
-        scaled_state_dict = self.state_dict()
-        scaled_state_dict['params'] = self.scaling.physical_param_scaling(self.transform(scaled_state_dict['params']))
-        scaled_state_dict['loads'] = self.scaling.physical_loads_scaling(self.transform(scaled_state_dict['loads']))
+        with open(filename, "wb") as dill_file:
+            dill.dump(self, dill_file)
 
-        if dir_path is None:
-            dir_path = "./outputs/models/"
+        return filename
 
-        from pathlib import Path
-        Path(dir_path).mkdir(parents=True, exist_ok=True)
-        torch.save(scaled_state_dict, dir_path + "/rcmodel" + str(model_id) + ".pt")
-
-    def load(self, path):
+    @staticmethod
+    def load(filename):
         """
-        Load in model and convert parameters from their physical values to 0-1 using scaling methods.
-        Only use if model has been saved with self.save() method.
+        Parameters
+        ----------
+        filename : str
+            Path to the pickled RCModel to load.
+        Returns
+        ----------
+        RCModel
         """
-        scaled_state_dict = torch.load(path)
+        with open(filename, "rb") as dill_file:
+            return dill.load(dill_file)
 
-        # plus 1e-15 used to stop log(0)=-inf
-        scaled_state_dict['params'] = torch.logit(
-            self.scaling.model_param_scaling(scaled_state_dict['params']) + 1e-15
-        )
+    # def save(self, model_id=0, dir_path=None):
+    #     """
+    #     Save the model, but first transform parameters back to their physical values.
+    #     This makes passing between models with different scaling limits possible.
+    #     Use load method to load back in. Parameters will be converted back to 0-1 using the current scaling function.
+    #     """
+    #     scaled_state_dict = self.state_dict()
+    #     scaled_state_dict['params'] = self.scaling.physical_param_scaling(self.transform(scaled_state_dict['params']))
+    #     scaled_state_dict['loads'] = self.scaling.physical_loads_scaling(self.transform(scaled_state_dict['loads']))
+    #
+    #     if dir_path is None:
+    #         dir_path = "./outputs/models/"
+    #
+    #     from pathlib import Path
+    #     Path(dir_path).mkdir(parents=True, exist_ok=True)
+    #     torch.save(scaled_state_dict, dir_path + "/rcmodel" + str(model_id) + ".pt")
 
-        scaled_state_dict['loads'] = torch.logit(
-            self.scaling.model_loads_scaling(scaled_state_dict['loads']) + 1e-15
-        )
-
-        self.load_state_dict(scaled_state_dict)
+    # def load(self, path):
+    #     """
+    #     Load in model and convert parameters from their physical values to 0-1 using scaling methods.
+    #     Only use if model has been saved with self.save() method.
+    #     """
+    #     scaled_state_dict = torch.load(path)
+    #
+    #     # plus 1e-15 used to stop log(0)=-inf
+    #     scaled_state_dict['params'] = torch.logit(
+    #         self.scaling.model_param_scaling(scaled_state_dict['params']) + 1e-15
+    #     )
+    #
+    #     scaled_state_dict['loads'] = torch.logit(
+    #         self.scaling.model_loads_scaling(scaled_state_dict['loads']) + 1e-15
+    #     )
+    #
+    #     self.load_state_dict(scaled_state_dict)
