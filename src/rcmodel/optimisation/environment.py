@@ -14,6 +14,8 @@ from xitorch.interpolate import Interp1D
 from tqdm.auto import tqdm, trange
 import time
 
+import rcmodel.tools
+
 
 class PolicyNetwork(nn.Module):
     def __init__(self, in_dim, out_dim):
@@ -107,7 +109,13 @@ class LSIEnv(gym.Env):
     def __init__(self, env_config: dict):
         super().__init__()
 
+        print('I HAVE CREATED A NEW ENVIRONMENT')
+
+        self.config = env_config
         self.RC = env_config["RC_model"]  # RCModel Class
+
+        print('PARAMETERS & LOADS_INIT', self.RC.params, self.RC.loads)
+
         self.dataloader = env_config["dataloader"]
         self.enum_data = None  # enumerate(dataloader)
         self.batch_idx = len(self.dataloader) - 1  # Keeps track of batch number in dataloader, initialised in reset()
@@ -203,6 +211,13 @@ class LSIEnv(gym.Env):
               ):
         super().reset(seed=seed)
 
+        print('I HAVE RESET THE ENVIRONMENT')
+        # Check to see if we need to update the models parameters, config could have been updated externally.
+        if self.config["model_state_dict"] is not None and\
+                set(self.config["model_state_dict"].items()) != set(self.RC.state_dict().items()):
+            self.RC.load_state_dict(self.config["model_state_dict"])
+
+        print('PARAMETERS & LOADS_RESET', self.RC.params, self.RC.loads)
         # Reset the state of the environment to an initial state
         self.t_index = 0
 
@@ -218,6 +233,9 @@ class LSIEnv(gym.Env):
         self.batch_idx, (self.time_data, self.temp_data) = next(self.enum_data)
         self.time_data = self.time_data.squeeze(0)
         self.temp_data = self.temp_data.squeeze(0)
+
+        # Perform integration across entire timeseries to get initial value array, EXPENSIVE
+        self.RC.iv_array = rcmodel.tools.get_iv_array(self.RC, self.dataloader.dataset)
 
         # Find correct initial value for current start from pre-calculated array
         # if statement allows iv_array to be none and not cause reset() to fail.

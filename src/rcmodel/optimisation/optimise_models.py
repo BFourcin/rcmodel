@@ -5,43 +5,51 @@ import datetime
 import torch.distributed as dist
 import torch.multiprocessing as mp
 from torch.nn.parallel import DistributedDataParallel as DDP
+import ray
 from ray.rllib.models.preprocessors import NoPreprocessor, get_preprocessor
 from ray.rllib.algorithms import Algorithm
-
 
 import rcmodel.tools
 
 
-def sample_action(rl_algorithm, obs):
-    """
-    Sample action from policy distribution.
-    Obs must be pre-processed if needed.
-    For more info: https://docs.ray.io/en/latest/rllib/rllib-training.html#accessing-model-state
-    """
-    # Run a forward pass to get model output logits. Note that complex observations
-    # must be preprocessed as in the above code block.
-    logits, _ = rl_algorithm.model({"obs": torch.tensor(obs).unsqueeze(0)})
+# def sample_action(rl_algorithm, obs):
+#     """
+#     Sample action from policy distribution.
+#     Obs must be pre-processed if needed.
+#     For more info: https://docs.ray.io/en/latest/rllib/rllib-training.html#accessing-model-state
+#     """
+#     # Run a forward pass to get model output logits. Note that complex observations
+#     # must be preprocessed as in the above code block.
+#     logits, _ = rl_algorithm.model({"obs": torch.tensor(obs).unsqueeze(0)})
+#
+#     # Compute action distribution given logits
+#     dist = rl_algorithm.dist_class(logits, rl_algorithm.model)
+#
+#     # Query the distribution for samples, sample logp
+#     action = dist.sample()
+#
+#     # logp = dist.logp(torch.tensor(1))
+#
+#     return action
 
-    # Compute action distribution given logits
-    dist = rl_algorithm.dist_class(logits, rl_algorithm.model)
+def make_update_env_fn(env_conf):
+    """Little function to enable updating the environment within Algorithm across all workers.
+    >>> algo.workers.foreach_worker(make_update_env_fn(env_config))"""
 
-    # Query the distribution for samples, sample logp
-    action = dist.sample()
+    def update_env_conf(env):
+        env.config.update(env_conf)  # Only have logic for updating model_state_dict atm.
 
-    # logp = dist.logp(torch.tensor(1))
+    def update_env_fn(worker):
+        worker.foreach_env(update_env_conf)
+    return update_env_fn
 
-    return action
 
-
-def train(env, policy, optimizer):
+def train(env, rl_algorithm, optimizer):
     """
     Performs one epoch of training.
     Order of rooms in building and in data must match otherwise model will fit wrong rooms to data.
     """
     model = env.RC
-
-    # Perform integration across entire timeseries to get initial value array
-    model.iv_array = rcmodel.tools.get_iv_array(model, env.dataloader.dataset)
 
     # Check if DDP
     if type(model) is torch.nn.parallel.distributed.DistributedDataParallel:
@@ -56,7 +64,7 @@ def train(env, policy, optimizer):
     env.env.collect_rc_grad = True
     obs = env.reset()
     while not done:
-        action
+        action = rl_algorithm.compute_single_action(obs)
         obs, reward, done, info = env.step(action)
 
         episode_reward += reward / num_batches
@@ -67,62 +75,6 @@ def train(env, policy, optimizer):
     optimizer.step()
 
     return episode_reward.item()
-
-
-# def train(model, dataloader, optimizer):
-#     """
-#     Performs one epoch of training.
-#     Order of rooms in building and in data must match otherwise model will fit wrong rooms to data.
-#     """
-#
-#     # Check if DDP
-#     if type(model) is torch.nn.parallel.distributed.DistributedDataParallel:
-#         ddp_model = model
-#         model = ddp_model.module
-#
-#     model.train()
-#
-#     # if policy exists:
-#     if model.cooling_policy:
-#         model.cooling_policy.eval()
-#
-#         # This ended up causing the policy not to optimise:
-#         # Stops Autograd endlessly keeping track of the graph. Memory Leak!
-#         # try:
-#         #     for layer in model.cooling_policy.parameters():
-#         #         layer.requires_grad = False
-#         #
-#         # # This occurs when policy contains no parameters e.g. when using prior to train.
-#         # except AttributeError:
-#         #     pass
-#
-#     num_cols = len(model.building.rooms)  # number of columns to use from data.
-#     num_batches = len(dataloader)
-#     train_loss = 0
-#     loss_fn = torch.nn.MSELoss()
-#     sum_loss = 0
-#
-#     for batch, (time, temp) in enumerate(dataloader):
-#         # Get model arguments:
-#         time = time.squeeze(0)
-#         temp = temp.squeeze(0)
-#
-#         # Compute prediction and loss
-#         pred = model(time)
-#         pred = pred.squeeze(-1)  # change from column to row matrix
-#
-#         loss = loss_fn(pred[:, 2:], temp[:, 0:num_cols])
-#         sum_loss += loss/num_batches
-#
-#         # get last output and use for next initial value
-#         # model.iv = pred[-1, :].unsqueeze(1).detach()  # MUST DETACH GRAD
-#
-#     # Backpropagation
-#     optimizer.zero_grad()
-#     sum_loss.backward()
-#     optimizer.step()
-#
-#     return sum_loss.item()
 
 
 def test(env, rl_algorithm):
@@ -148,65 +100,6 @@ def test(env, rl_algorithm):
             episode_reward += reward / num_batches
 
     return episode_reward.item()
-
-
-# def test(model, dataloader):
-#     # Check if DDP
-#     if type(model) is torch.nn.parallel.distributed.DistributedDataParallel:
-#         ddp_model = model
-#         model = ddp_model.module
-#
-#     model.reset_iv()  # Reset initial value
-#     model.eval()  # Put model in evaluation mode
-#     num_batches = len(dataloader)
-#     num_cols = len(model.building.rooms)  # number of columns to take from data.
-#     test_loss = 0
-#     loss_fn = torch.nn.MSELoss()
-#
-#     with torch.no_grad():
-#         for (time, temp) in dataloader:
-#             time = time.squeeze(0)
-#             temp = temp.squeeze(0)
-#
-#             pred = model(time)
-#             pred = pred.squeeze(-1)  # change from column to row matrix
-#             test_loss += loss_fn(pred[:, 2:], temp[:, 0:num_cols]).item()
-#
-#             # get last output and use for next initial value
-#             model.iv = pred[-1, :].unsqueeze(1).detach()  # MUST DETACH GRAD
-#
-#     test_loss /= num_batches
-#
-#     return test_loss
-
-
-def setup_process(rank, world_size, backend="gloo"):
-    """
-    Initialize the distributed environment (for each process).
-
-    gloo: is a collective communications library (https://github.com/facebookincubator/gloo). My understanding is that
-    it's a library/API for process to communicate/coordinate with each other/master. It's a backend library.
-    """
-    # set up the master's ip address so this child process can coordinate
-    # os.environ['MASTER_ADDR'] = '127.0.0.1'
-    os.environ["MASTER_ADDR"] = "localhost"
-    os.environ["MASTER_PORT"] = "12355"  # '12355'
-
-    # - use NCCL if you are using gpus: https://pytorch.org/tutorials/intermediate/dist_tuto.html#communication-backends
-    # if torch.cuda.is_available():
-    #     backend = 'nccl'
-    # Initializes the default distributed process group, and this will also initialize the distributed package.
-    dist.init_process_group(
-        backend,
-        timeout=datetime.timedelta(seconds=10),
-        rank=rank,
-        world_size=world_size,
-    )
-
-
-def cleanup():
-    """Destroy a given process group, and deinitialize the distributed package"""
-    dist.destroy_process_group()
 
 
 class OptimiseRC:
@@ -235,7 +128,7 @@ class OptimiseRC:
         self.env = rcmodel.tools.env_creator(env_config)
         self.rl_algorithm = Algorithm.from_checkpoint(ppo_checkpoint_path)
         self.lr = lr
-        # self.model.init_physical()  # randomise parameters - DO WE WANT THIS?
+
         self.model_id = opt_id
         self.train_dataset = train_dataset
         self.train_dataloader = torch.utils.data.DataLoader(
@@ -263,6 +156,53 @@ class OptimiseRC:
         self.env.dataloader = self.test_dataloader
         avg_reward = test(self.env, self.rl_algorithm)
         return avg_reward
+
+
+class OptimisePolicy:
+    """
+    Parameters
+    ----------
+    model : object
+        RCModel class object.
+    csv_path : string
+        Path to .csv file containing room temperature data.
+        Data will be sorted if not done already and saved to a new file with the tag '_sorted'
+    sample_size : int
+        Length of indexes to sample from dataset per batch.
+    dt : int
+        Timestep data will be resampled to.
+    lr : float
+        Learning rate for optimiser.
+    model_id : int
+        Unique identifier used when optimising multiple models.
+
+    see https://docs.ray.io/en/latest/using-ray-with-pytorch.html
+    """
+
+    def __init__(self, ppo_config, policy_weights, opt_id=0):
+
+        # We need to set build the algorithm then set the weights on each worker
+        self.rl_algorithm = ppo_config.build()
+        weights = ray.put({"default_policy": policy_weights})
+        for w in self.rl_algorithm.workers.remote_workers():
+            # ... so that we can broadcast these weights to all rollout-workers once.
+            w.set_weights.remote(weights)
+
+        # Set additional parameters
+        self.model_id = opt_id
+
+    def train(self):
+        results = self.rl_algorithm.train()
+        avg_reward = results["episode_reward_mean"]
+        return avg_reward
+
+    def test(self, env):
+        env.dataloader = self.test_dataloader
+        avg_reward = test(self.env, self.rl_algorithm)
+        return avg_reward
+
+    def update_environment(self, env_config):
+        self.rl_algorithm.workers.foreach_worker(make_update_env_fn(env_config))
 
 
 class DDPOptimiseRC:
@@ -379,3 +319,32 @@ class DDPOptimiseRC:
     def test(self):
         avg_loss = self.run_parallel_loop(test, self.test_dataset)
         return avg_loss
+
+
+def setup_process(rank, world_size, backend="gloo"):
+    """
+    Initialize the distributed environment (for each process).
+
+    gloo: is a collective communications library (https://github.com/facebookincubator/gloo). My understanding is that
+    it's a library/API for process to communicate/coordinate with each other/master. It's a backend library.
+    """
+    # set up the master's ip address so this child process can coordinate
+    # os.environ['MASTER_ADDR'] = '127.0.0.1'
+    os.environ["MASTER_ADDR"] = "localhost"
+    os.environ["MASTER_PORT"] = "12355"  # '12355'
+
+    # - use NCCL if you are using gpus: https://pytorch.org/tutorials/intermediate/dist_tuto.html#communication-backends
+    # if torch.cuda.is_available():
+    #     backend = 'nccl'
+    # Initializes the default distributed process group, and this will also initialize the distributed package.
+    dist.init_process_group(
+        backend,
+        timeout=datetime.timedelta(seconds=10),
+        rank=rank,
+        world_size=world_size,
+    )
+
+
+def cleanup():
+    """Destroy a given process group, and deinitialize the distributed package"""
+    dist.destroy_process_group()
