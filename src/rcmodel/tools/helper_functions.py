@@ -140,6 +140,10 @@ def env_creator(env_config):
         if model is None:
             model = model_creator(env_config["model_config"])
 
+        if env_config["model_state_dict"]:
+            model.load_state_dict(env_config["model_state_dict"])
+
+
         env_config["RC_model"] = model
 
         env = rcmodel.optimisation.LSIEnv(env_config)
