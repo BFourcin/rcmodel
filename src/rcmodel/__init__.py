@@ -5,6 +5,7 @@ from . import rc_model
 
 
 from .optimisation import OptimiseRC
+from .optimisation import OptimisePolicy
 from .optimisation import DDPOptimiseRC
 from .optimisation import PolicyNetwork
 from .optimisation import LSIEnv
