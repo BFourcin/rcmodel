@@ -31,6 +31,9 @@ def test_run_model(model):
     # Set parameters for forward run:
     t_eval = torch.arange(0, 200000, 30, dtype=torch.float32)
 
+    model.iv = 26 * torch.ones(2 + len(model.building.rooms))
+    model.setup(dataset=None)
+
     output = model(t_eval)
 
     start_temp = output[0][0, 0].item()  # initial value condition
