@@ -9,7 +9,7 @@ from .optimisation import OptimisePolicy
 # from .optimisation import DDPOptimiseRC
 from .optimisation import PolicyNetwork
 from .optimisation import LSIEnv
-from .optimisation import PriorEnv
+# from .optimisation import PriorEnv
 from .optimisation import PriorCoolingPolicy
 from .optimisation import PreprocessEnv
 from .optimisation import preprocess_observation
@@ -30,7 +30,7 @@ from .tools import exponential_smoothing
 from .tools import policy_image
 from .tools import sort_data
 from .tools import dataloader_creator
-from .tools import get_iv_array
+# from .tools import get_iv_array
 from .rc_model import RCModel
 
 
