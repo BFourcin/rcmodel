@@ -3,6 +3,7 @@ import numpy as np
 import tempfile
 import torch
 import ray
+import os
 from ray.tune.registry import register_env
 from ray.rllib.algorithms.ppo import PPOConfig
 
@@ -26,7 +27,7 @@ def tmp_dir():
 
 @pytest.fixture
 def get_datasets():
-    csv_path = "./data/6hrs_testing_data.csv"
+    csv_path = os.path.join(os.path.dirname(__file__), "data/6hrs_testing_data.csv")
     dt = 30  #seconds
     sample_size = 1 * 60**2 / dt  # ONE HOUR
     warmup_size = 0
@@ -119,12 +120,15 @@ def test_policy_optimiser(setup_test):
 
 
 def test_policy_env_update(setup_test):
-    """Test that we can update the environment of the policy optimiser while it's running."""
+    """Test that we can update the environment of the policy optimiser while it's running.
+    We
+    """
     _, _, env_config, policy_config, tmpdirname = setup_test
 
     _, weights = make_first_checkpoint(policy_config, tmpdirname)
 
-    # Worker class so we can throw policy optimiser into a Ray remote object and interact with it while it's running.
+    # Worker class so we can throw policy optimiser into a Ray remote object and
+    # interact with it while it's running.
     @ray.remote
     class Worker:
         def __init__(self, policy_config, weights):
