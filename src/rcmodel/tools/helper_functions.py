@@ -72,7 +72,7 @@ def model_creator(model_config):
     # load physical and/or policy models if available
     if model_config['load_model_path_policy']:
         model.load(model_config['load_model_path_policy'])  # load policy
-        model.init_physical()  # re-randomise physical params, as they were also copied from the loaded policy
+        model.initialise_parameters()  # re-randomise physical params, as they were also copied from the loaded policy
 
     if model_config['load_model_path_physical']:
         # Try loading a dummy model with no policy, if it fails load with a policy. (We don't know what file contains)
@@ -115,38 +115,66 @@ def model_creator(model_config):
 
 def env_creator(env_config):
     """
-    Needed for the ray register_env() function.
+    Creates a Reinforcement Learning environment for use with the Ray RLlib library.
 
-    Make a model either by unpickling from a file or by providing a model_config.
+    If an existing RCModel object is provided in env_config, it will be used directly. If not, the function
+    will attempt to load an RCModel object from a pickled file path provided in env_config. If that fails,
+    it will create a new RCModel object using the model configuration specified in env_config. If an RCModel
+    object is successfully obtained or created, its state_dict can be optionally loaded from a dictionary
+    provided in env_config.
 
-    env_config = {
-        "model_config": model_config,
-        "model_pickle_path": None
-        "dataloader": torch.utils.data.DataLoader(train_dataset, batch_size=1, shuffle=False),
-        "step_length": 15,  # minutes passed in each step.
-        "render_mode": 'single_rgb_array',  # "single_rgb_array"
-        }
+    Args:
+        env_config (dict): A dictionary containing the configuration settings for the environment. It can have
+            the following keys:
+            - "RC_model": An optional RCModel object that will be used directly if provided.
+            - "model_pickle_path": An optional path to a pickled RCModel object.
+            - "model_config": Required if RC_model and model_pickle_path are not provided. A dictionary containing
+                the configuration settings for the RCModel object to be created. It should be in the same format
+                as the config dictionaries used to create RCModel objects.
+            - "update_state_dict": An optional dictionary containing the state_dict for the RCModel object. If provided,
+                it will be loaded into the RCModel object before it is used to create the environment.
+            - "dataloader": Required. A PyTorch DataLoader object that will be used to provide input data to the
+                RCModel object. It should be configured to return batches of data in the format expected by the
+                RCModel object.
+            - "step_length": Required. The number of minutes passed in each environment step.
+            - "render_mode": Optional. The render mode to use for the environment. Currently, only "single_rgb_array"
+                is supported.
+
+    Returns:
+        env (gym.Env): A Reinforcement Learning environment that is ready for use with RLlib.
     """
     with torch.no_grad():
 
-        model = None
-        # Unpickle model if a path exists, if not then use model_config
-        try:
-            if env_config["model_pickle_path"]:
-                model = RCModel.load(env_config["model_pickle_path"])
-        except KeyError:
-            pass
+        # Try to get the model from env_config
+        model = env_config.get("RC_model", None)
 
+        # If model is not provided, try to load it from a pickle file
+        if model is None:
+            model_pickle_path = env_config.get("model_pickle_path", None)
+            if model_pickle_path:
+                model = RCModel.load(model_pickle_path)
+
+        # If model is still not available, create one from a provided model_config.
         if model is None:
             model = model_creator(env_config["model_config"])
 
-        if env_config["model_state_dict"]:
-            model.load_state_dict(env_config["model_state_dict"])
+        # Finally, check if update_state_dict has been provided and load it if so.
+        update_state_dict = env_config.get("update_state_dict", None)
+        if update_state_dict:
+            model.load_state_dict(update_state_dict)
+        env_config["update_state_dict"] = None  # We've done the update.
 
-
+        # env_config now has a model and can be used to create an environment.
         env_config["RC_model"] = model
 
-        env = rcmodel.optimisation.LSIEnv(env_config)
+        # Let's make a new config of just the items needed for the environment
+        env_keys = ["RC_model", "dataloader", "step_length", "render_mode",
+                    "update_state_dict"]
+        config = {}
+        for key in env_keys:
+            config[key] = env_config[key]
+
+        env = rcmodel.optimisation.LSIEnv(config)
 
         # wrap environment:
         env = rcmodel.optimisation.PreprocessEnv(env, mu=23.359, std_dev=1.41)
@@ -442,10 +470,10 @@ def get_iv_array(model, dataset):
     Perform the integration but force outside and inside temperature to be from data.
     Only the latent temperature nodes in the external walls are free to change meaning we can find out their true
     values for a given model.
+
+    Tout --R--|--R--|--R-- Tin
+              C     C
     """
-    # Update building with current parameters, if needed.
-    if not torch.eq(model.params_old, model.params).all():
-        model._build_matrices()
 
     with torch.no_grad():
         t_eval, temp_data = dataset.get_all_data()
@@ -479,7 +507,9 @@ def get_iv_array(model, dataset):
 
         def latent_f_ode(t, x):
             Tout = model.Tout_continuous(t.item() + t0)
-            Tin = Tin_continuous(t.item() + t0)
+            # Tin is the average of all spaces connected to an external wall.
+            external_rooms = bl.connectivity_matrix[0, 1:]
+            Tin = (Tin_continuous(t.item() + t0) * external_rooms).mean()
 
             u = torch.tensor([[Tout],
                               [Tin]])
