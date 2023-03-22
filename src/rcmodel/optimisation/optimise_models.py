@@ -25,10 +25,8 @@ def make_update_env_fn(config):
     >>> algo.workers.foreach_worker(make_update_env_fn(env_config))"""
 
     def update_env_conf(env):
-        env.unwrapped.config.update(
-            config
-        )  # Only have logic for updating update_state_dict atm.
-
+        env.unwrapped.config.update(config)
+        env.unwrapped.update_from_config()  # Do the config update on each worker
     def update_env_fn(worker):
         worker.foreach_env(update_env_conf)
 
@@ -46,8 +44,8 @@ def train(env, rl_algorithm, optimizer):
 
     # Perform integration across entire timeseries to get initial value array, EXPENSIVE
     # TODO: Move this into the manager class to help organise when it must be called.
-    model.setup()  # Rebuild matrices, needed after parameter change
-    model.iv_array = rcmodel.tools.get_iv_array(model, env.dataloader.dataset)
+    # Rebuild matrices and get iv_array, needed after parameter change
+    model.setup(env.dataloader.dataset)
 
     # Check if DDP
     if type(model) is torch.nn.parallel.distributed.DistributedDataParallel:
@@ -164,10 +162,7 @@ class OptimiseRC:
     def test(self):
         base_env = self.env.unwrapped  # Env is likely wrapped.
         base_env.config.update(dataloader=self.test_dataloader)
-        base_env.RC.setup()
-        base_env.RC.iv_array = rcmodel.tools.get_iv_array(
-            base_env.RC, base_env.dataloader.dataset
-        )
+        base_env.RC.setup(base_env.dataloader.dataset)
         avg_reward = test(self.env, self.rl_algorithm)
         return avg_reward
 
