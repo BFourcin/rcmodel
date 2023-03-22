@@ -182,6 +182,29 @@ def env_creator(env_config):
     return env
 
 
+def env_create_and_setup(env_config):
+    """
+    Call env_creator and then set up RC model with system matrix and get iv_array.
+    Usage with:
+        register_env("LSIEnv", env_create_and_setup)
+
+    Parameters
+    ----------
+    env_config: dict
+        Configuration for environment.
+
+    Returns
+    -------
+    env: gym.Env
+        LSIEnv environment with RC model set up.
+    """
+
+    env = env_creator(env_config)
+    # Rebuild matrices and get iv_array, needed after parameter change
+    env.RC.setup(env.dataloader.dataset)
+    return env
+
+
 def initialise_model(pi, scaling, weather_data_path, room_names, room_coordinates):
     def change_origin(coords):
         """This function changes the origin of the coordinate system, so [0,0] is on the building.
@@ -464,88 +487,3 @@ def policy_image(algo, n=100, path=None):
     else:
         plt.show()
 
-
-def get_iv_array(model, dataset):
-    """
-    Perform the integration but force outside and inside temperature to be from data.
-    Only the latent temperature nodes in the external walls are free to change meaning we can find out their true
-    values for a given model.
-
-    Tout --R--|--R--|--R-- Tin
-              C     C
-    """
-
-    with torch.no_grad():
-        t_eval, temp_data = dataset.get_all_data()
-        Tin_continuous = Interp1D(t_eval, temp_data[:, 0:len(model.building.rooms)].T, method='linear')
-
-        bl = model.building
-
-        # Recalculate the A & B matrices. We could chop and re jig from the full matrices, but it is not super
-        # simple so recalculating is less risky.
-        A = torch.zeros([2, 2])
-        A[0, 0] = bl.surf_area * (-1 / (bl.Re[0] * bl.Ce[0]) - 1 / (bl.Re[1] * bl.Ce[0]))
-        A[0, 1] = bl.surf_area / (bl.Re[1] * bl.Ce[0])
-        A[1, 0] = bl.surf_area / (bl.Re[1] * bl.Ce[1])
-        A[1, 1] = bl.surf_area * (-1 / (bl.Re[1] * bl.Ce[1]) - 1 / (bl.Re[2] * bl.Ce[1]))
-
-        B = torch.zeros([2, 2])
-        B[0, 0] = bl.surf_area / (bl.Re[0] * bl.Ce[0])
-        B[1, 1] = bl.surf_area / (bl.Re[2] * bl.Ce[1])
-
-        # check if t_eval is formatted correctly:
-        if t_eval.dim() > 1:
-            t_eval = t_eval.squeeze(0)
-
-        avg_tout = model.Tout_continuous(t_eval).mean()
-        avg_tin = Tin_continuous(t_eval).mean()
-
-        t0 = t_eval[0]
-        t_eval = t_eval - t0
-
-        model.iv = steady_state_iv(model, avg_tout, avg_tin)  # Use avg temp as a good starting guess for iv.
-
-        def latent_f_ode(t, x):
-            Tout = model.Tout_continuous(t.item() + t0)
-            # Tin is the average of all spaces connected to an external wall.
-            external_rooms = bl.connectivity_matrix[0, 1:]
-            Tin = (Tin_continuous(t.item() + t0) * external_rooms).mean()
-
-            u = torch.tensor([[Tout],
-                              [Tin]])
-
-            return A @ x + B @ u.to(torch.float32)
-
-        integrate = odeint(latent_f_ode, model.iv[0:2], t_eval,
-                           method='rk4')  # https://github.com/rtqichen/torchdiffeq
-
-        integrate = integrate.squeeze()
-
-        # Add on inside temperature data to be used to initialise rooms at the correct temp.
-        iv_array = torch.empty(len(integrate), len(bl.rooms) + 2)
-        iv_array[:, 0:2] = integrate
-        iv_array[:, 2:] = Tin_continuous(t_eval + t0).T
-        iv_array = Interp1D(t_eval + t0, iv_array.T, method='linear')
-
-    return iv_array
-
-
-def steady_state_iv(model, temp_out, temp_in):
-    """
-    Calculate the initial conditions of the latent variables given a steady state indoor and outdoor temperature.
-    Initial values of room nodes are set to temp in.
-
-    temp_out: float
-        Steady state outside temperature.
-    temp_in: tensor
-        Steady state inside temperature. len(temp_in) = n_rooms
-    :return: tensor
-        Column tensor of initial values at each node.
-    """
-    I = (temp_out - temp_in) / sum(model.building.Re)  # I=V/R
-    v1 = temp_out - I * model.building.Re[0]
-    v2 = v1 - I * model.building.Re[1]
-
-    iv = torch.tensor([[v1], [v2], [temp_in]]).to(torch.float32)
-
-    return iv
