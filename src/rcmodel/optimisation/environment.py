@@ -317,6 +317,9 @@ class LSIEnv(gym.Env):
 
         env_parameters = self._get_updatable_config()
 
+        # Pop state_dict from new_config, we'll use it to update the model later.
+        new_state_dict = new_config.pop('update_state_dict', None)
+
         # Check if all keys in env_parameters are in new_config
         assert set(env_parameters.keys()).issubset(set(new_config.keys())), \
             'New config does not contain all keys of env_parameters.'
@@ -333,6 +336,9 @@ class LSIEnv(gym.Env):
 
         if changed:
             self._update_environment()
+
+        if new_state_dict:
+            self._update_model(new_state_dict)
 
     # TODO: Better render.
     def render(self, mode="human"):
@@ -496,7 +502,7 @@ class LSIEnv(gym.Env):
             "dataloader": self.dataloader,
             # "step_length": self.step_length,
             # "render_mode": self.render_mode,
-            "update_state_dict": None,
+            # "update_state_dict": None,
         }
         return config
 
@@ -509,45 +515,11 @@ class LSIEnv(gym.Env):
         # self.step_length = self.config["step_length"]
         # self.render_mode = self.config["render_mode"]
 
-        if self.config.get("update_state_dict", None):
-            self.RC.load_state_dict(self.config["update_state_dict"])
-            self.config["update_state_dict"] = None
-
-
-def preprocess_observation(x, unix_time, mu, std_dev):
-    """
-    Function to transform observation to the state we want the policy to see/use.
-
-    Used to wrap the original environment:
-    env = gym.wrappers.TransformObservation(env, preprocess_observation)
-
-    Parameters
-        ----------
-        x: torch.tensor
-            tensor of non latent nodes, i.e. room temperatures.
-        unix_time : float
-            Time at observation.
-        mu: float
-            Mean of data.
-        std_dev: float
-            Standard deviation of data.
-    """
-
-    # normalise x using info obtained from data.
-    x_norm = (x - mu) / std_dev
-
-    day = 24 * 60 ** 2
-    week = 7 * day
-    # year = (365.2425) * day
-
-    state = x_norm.tolist() + [
-        np.sin(unix_time * (2 * np.pi / day)),
-        np.cos(unix_time * (2 * np.pi / day)),
-        np.sin(unix_time * (2 * np.pi / week)),
-        np.cos(unix_time * (2 * np.pi / week)),
-    ]
-
-    return np.array(state)
+    def _update_model(self, state_dict):
+        self.RC.load_state_dict(state_dict)
+        # Parameters have changed, rebuild the RC model and get iv_array.
+        self.RC.setup(self.dataloader.dataset)
+        self.config["update_state_dict"] = None
 
 
 class PreprocessEnv(gym.Wrapper):
@@ -592,92 +564,125 @@ class PreprocessEnv(gym.Wrapper):
 
         return self.observation
 
-    def check_config(self, config):
-        return self.env.check_config(config)
+
+def preprocess_observation(x, unix_time, mu, std_dev):
+    """
+    Function to transform observation to the state we want the policy to see/use.
+
+    Used to wrap the original environment:
+    env = gym.wrappers.TransformObservation(env, preprocess_observation)
+
+    Parameters
+        ----------
+        x: torch.tensor
+            tensor of non latent nodes, i.e. room temperatures.
+        unix_time : float
+            Time at observation.
+        mu: float
+            Mean of data.
+        std_dev: float
+            Standard deviation of data.
+    """
+
+    # normalise x using info obtained from data.
+    x_norm = (x - mu) / std_dev
+
+    day = 24 * 60 ** 2
+    week = 7 * day
+    # year = (365.2425) * day
+
+    state = x_norm.tolist() + [
+        np.sin(unix_time * (2 * np.pi / day)),
+        np.cos(unix_time * (2 * np.pi / day)),
+        np.sin(unix_time * (2 * np.pi / week)),
+        np.cos(unix_time * (2 * np.pi / week)),
+    ]
+
+    return np.array(state)
 
 
-class PriorEnv(gym.Env):
-    """Custom Environment that follows gym interface"""
-
-    metadata = {"render.modes": ["human"]}
-
-    def __init__(self, RC, time_data, temp_data, prior):
-        super().__init__()
-
-        self.RC = RC  # RCModel Class
-        self.time_data = time_data  # timeseries
-        self.temp_data = temp_data  # temp at timeseries
-        self.prior = prior
-        self.t_index = 0  # used to keep track of index through timeseries
-        self.loss_fn = torch.nn.MSELoss(reduction="none")
-
-        print("Getting actions from prior policy.")
-        prior_data = []
-        for i in range(len(temp_data)):
-            action, _ = prior.get_action(temp_data[i], time_data[i])
-            prior_data.append(action)
-
-        self.prior_data = (
-            torch.tensor(prior_data).unsqueeze(0).T
-        )  # Data can be reused each epoch.
-
-        # ----- GYM Stuff -----
-        self.n_rooms = len(self.RC.building.rooms)
-        self.low_state = -10
-        self.high_state = 50
-        # Define action and observation space
-        # They must be gym.spaces objects
-        # Example when using discrete actions:
-        self.action_space = spaces.Discrete(
-            2,
-        )
-
-        # Observation is temperature of each room.
-        self.observation_space = spaces.Box(
-            low=self.low_state,
-            high=self.high_state,
-            shape=(self.n_rooms,),
-            dtype=np.float32,
-        )
-
-    #                  action
-    def step(self, step_size):
-        # Execute a chunk of timeseries
-        t_eval = self.time_data[self.t_index: int(self.t_index + step_size)]
-        dummy_temp = self.temp_data[self.t_index: int(self.t_index + step_size)]
-
-        policy_action, log_prob = self.RC.cooling_policy.get_action(
-            dummy_temp, t_eval
-        )  # Do them all with broadcasting
-
-        if self.RC.cooling_policy.training:  # if in training mode store log_prob
-            self.RC.cooling_policy.log_probs.append(log_prob)
-
-        prior_actions = self.prior_data[
-                        self.t_index: int(self.t_index + step_size), 0: self.n_rooms
-                        ]  # read in
-        policy_actions = policy_action.unsqueeze(0).T
-
-        # negative so reward can be maximised
-        reward = -self.loss_fn(policy_actions, prior_actions)  # Squared Error
-
-        pred = torch.zeros((1, 5))  # Fake pred to be compatible with Reinforce
-        return pred, reward  # No need for grad on pred
-
-    #          (observation, reward, done, info)
-    # self.state, reward, done, {}
-
-    def reset(self):
-        # Reset the state of the environment to an initial state
-        self.t_index = 0
-        self.RC.reset_iv()
-
-        self.RC.cooling_policy.on_policy_reset()
-
-    def render(self, mode="human"):
-        # Render the environment to the screen
-
-        return
+# class PriorEnv(gym.Env):
+#     """Custom Environment that follows gym interface"""
+#
+#     metadata = {"render.modes": ["human"]}
+#
+#     def __init__(self, RC, time_data, temp_data, prior):
+#         super().__init__()
+#
+#         self.RC = RC  # RCModel Class
+#         self.time_data = time_data  # timeseries
+#         self.temp_data = temp_data  # temp at timeseries
+#         self.prior = prior
+#         self.t_index = 0  # used to keep track of index through timeseries
+#         self.loss_fn = torch.nn.MSELoss(reduction="none")
+#
+#         print("Getting actions from prior policy.")
+#         prior_data = []
+#         for i in range(len(temp_data)):
+#             action, _ = prior.get_action(temp_data[i], time_data[i])
+#             prior_data.append(action)
+#
+#         self.prior_data = (
+#             torch.tensor(prior_data).unsqueeze(0).T
+#         )  # Data can be reused each epoch.
+#
+#         # ----- GYM Stuff -----
+#         self.n_rooms = len(self.RC.building.rooms)
+#         self.low_state = -10
+#         self.high_state = 50
+#         # Define action and observation space
+#         # They must be gym.spaces objects
+#         # Example when using discrete actions:
+#         self.action_space = spaces.Discrete(
+#             2,
+#         )
+#
+#         # Observation is temperature of each room.
+#         self.observation_space = spaces.Box(
+#             low=self.low_state,
+#             high=self.high_state,
+#             shape=(self.n_rooms,),
+#             dtype=np.float32,
+#         )
+#
+#     #                  action
+#     def step(self, step_size):
+#         # Execute a chunk of timeseries
+#         t_eval = self.time_data[self.t_index: int(self.t_index + step_size)]
+#         dummy_temp = self.temp_data[self.t_index: int(self.t_index + step_size)]
+#
+#         policy_action, log_prob = self.RC.cooling_policy.get_action(
+#             dummy_temp, t_eval
+#         )  # Do them all with broadcasting
+#
+#         if self.RC.cooling_policy.training:  # if in training mode store log_prob
+#             self.RC.cooling_policy.log_probs.append(log_prob)
+#
+#         prior_actions = self.prior_data[
+#                         self.t_index: int(self.t_index + step_size), 0: self.n_rooms
+#                         ]  # read in
+#         policy_actions = policy_action.unsqueeze(0).T
+#
+#         # negative so reward can be maximised
+#         reward = -self.loss_fn(policy_actions, prior_actions)  # Squared Error
+#
+#         pred = torch.zeros((1, 5))  # Fake pred to be compatible with Reinforce
+#         return pred, reward  # No need for grad on pred
+#
+#     #          (observation, reward, done, info)
+#     # self.state, reward, done, {}
+#
+#     def reset(self):
+#         # Reset the state of the environment to an initial state
+#         self.t_index = 0
+#         self.RC.reset_iv()
+#
+#         self.RC.cooling_policy.on_policy_reset()
+#
+#     def render(self, mode="human"):
+#         # Render the environment to the screen
+#
+#         return
 
 # class Reinforce:
 #     def __init__(self, env, gamma=0.99, alpha=1e-3):
