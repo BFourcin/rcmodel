@@ -66,7 +66,7 @@ def test_connectivity_matrix(building, K):
     Ce = [1e3,8e2]
     Rint = 0.1
 
-    k = building.make_connectivity_matrix()
+    k = building.make_thermal_conductivity_matrix()
 
     assert torch.equal(rounded(K), rounded(k))
 
