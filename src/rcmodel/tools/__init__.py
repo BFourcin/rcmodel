@@ -12,7 +12,7 @@ from .helper_functions import exponential_smoothing
 from .helper_functions import policy_image
 from .helper_functions import sort_data
 from .helper_functions import dataloader_creator
-from .helper_functions import get_iv_array
+# from .helper_functions import get_iv_array
 
 
 __all__ = [
@@ -30,5 +30,5 @@ __all__ = [
     "policy_image",
     "sort_data",
     "dataloader_creator",
-    "get_iv_array",
+    # "get_iv_array",
 ]
