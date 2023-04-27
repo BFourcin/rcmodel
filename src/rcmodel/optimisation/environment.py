@@ -13,6 +13,9 @@ import numpy as np
 from xitorch.interpolate import Interp1D
 from tqdm.auto import tqdm, trange
 import time
+import pickle
+import os
+from collections import deque
 
 
 # TODO: Remove POLICY NETWORK and all references to it.
@@ -123,7 +126,7 @@ class LSIEnv(gym.Env):
         self.config["update_state_dict"] = config.get("update_state_dict", None)
         self.RC = config["RC_model"]
         self.step_length = config["step_length"]
-        self.render_mode = config["render_mode"]
+        self.render_mode = config.get("render_mode", None)
         self._update_environment()  # Initialise dataloader and check for updates.
         # self.epochs_per_reset = env_config.get("epochs_per_reset", 1)
 
@@ -178,6 +181,13 @@ class LSIEnv(gym.Env):
                 self.render_mode is None
                 or self.render_mode in self.metadata["render_modes"]
         )
+        self.episode_info = {}  # for collecting render info.
+
+        if self.render_mode:
+            self.recording = True
+        else:
+            self.recording = False
+
         self.renderer = Renderer(self.render_mode, self._render)
 
     def step(self, action):
@@ -220,8 +230,8 @@ class LSIEnv(gym.Env):
             temperature_sample = self.temp_data[t_start:t_end, 0:self.n_rooms]
 
             # record both start and end, so we can plot actions later
-            self.info["actions"].extend([action, action])
-            self.info["t_actions"].extend([t_eval[0], t_eval[-1]])
+            # self.info["actions"].extend([action, action])
+            # self.info["t_actions"].extend([t_eval[0], t_eval[-1]])
 
             # set iv from last observation
             self.RC.iv = self.observation[-1, 1:].unsqueeze(0).T
@@ -242,11 +252,18 @@ class LSIEnv(gym.Env):
                     (t_eval[1:].unsqueeze(0).T, pred[1:, :].detach().clone()), dim=1
                 )
 
+            if self.render_mode is not None:
+                self.episode_info["true_temperature"].extend(temperature_sample.numpy())
+                self.episode_info["predicted_temperature"].extend(pred.detach().numpy())
+                self.episode_info["time"].extend(t_eval.unsqueeze(0).T.numpy())
+                self.episode_info["actions"].extend([action, action])
+                self.episode_info["t_actions"].extend([t_eval[0], t_eval[-1]])
+                self.episode_info["reward"].append(reward.detach().numpy())
+                self.episode_info["t_reward"].append(t_eval[-1])
+
             # Check for done condition:
             if t_eval[-1] == self.time_data[-1]:
-                done = True
-            else:
-                done = False
+                self.done = True
 
             self.t_index += self.step_size
 
@@ -255,7 +272,7 @@ class LSIEnv(gym.Env):
             if not self.collect_rc_grad:  # Don't need to save grads, keeps ray happy.
                 reward = reward.detach().numpy()
 
-            return self.observation.numpy(), reward, done, self.info
+            return self.observation.numpy(), reward, self.done, self.info
 
     def reset(
             self,
@@ -272,8 +289,15 @@ class LSIEnv(gym.Env):
         # Reset the state of the environment to an initial state
         self.t_index = 0
 
-        self.info["actions"] = []  # reset recorded actions
-        self.info["t_actions"] = []  # reset recorded action timeseries
+        self.episode_info["actions"] = deque()  # reset recorded actions
+        self.episode_info["t_actions"] = deque()  # reset recorded action timeseries
+        self.episode_info["true_temperature"] = deque()
+        self.episode_info["predicted_temperature"] = deque()
+        self.episode_info["time"] = deque()
+        self.episode_info["reward"] = deque()
+        self.episode_info["t_reward"] = deque()
+        self.episode_info["Q_watts"] =\
+            self.RC.building.proportional_heating(self.RC.cool_load)
 
         # get next batch from dataloader:
         self.time_data, self.temp_data = next(self.batch_generator)
@@ -287,6 +311,7 @@ class LSIEnv(gym.Env):
             self.RC.iv = self.RC.iv_array(self.time_data[0])
 
         self.observation = self._get_obs()
+        self.done = False
 
         self.need_init_render = True  # reset render logic
         self.renderer.reset()
@@ -296,7 +321,7 @@ class LSIEnv(gym.Env):
 
     def _get_obs(self):
         return torch.concat(
-            (self.time_data[0].unsqueeze(0), self.RC.iv.T.squeeze(0))
+            (self.time_data[0].unsqueeze(0), self.RC.iv.flatten())
         ).unsqueeze(0)
 
     def update_from_config(self, new_config=None):
@@ -319,6 +344,7 @@ class LSIEnv(gym.Env):
 
         # Pop state_dict from new_config, we'll use it to update the model later.
         new_state_dict = new_config.pop('update_state_dict', None)
+        env_parameters.pop('update_state_dict', None)  # Don't need anymore
 
         # Check if all keys in env_parameters are in new_config
         assert set(env_parameters.keys()).issubset(set(new_config.keys())), \
@@ -338,14 +364,22 @@ class LSIEnv(gym.Env):
             self._update_environment()
 
         if new_state_dict:
-            self._update_model(new_state_dict)
+            self.RC.load_state_dict(new_state_dict)
+            self.config["update_state_dict"] = None
 
     # TODO: Better render.
     def render(self, mode="human"):
-        if self.render_mode is not None:
-            return self.renderer.get_renders()
+        if self.recording:
+            if mode is not None:
+                image_list = self.renderer.get_renders()
+                if not isinstance(image_list, list):
+                    image_list = [image_list]
+                return image_list
+            else:
+                return [self._render(mode)]
         else:
-            return self._render(mode)
+            # if not recording, return empty list
+            return []
 
     def _render(self, mode="human"):
         # if self.render_mode:  # overwrite mode
@@ -355,44 +389,32 @@ class LSIEnv(gym.Env):
 
         with torch.no_grad():
             # set up render environment
-            if self.need_init_render:
-                self._init_render(mode)
-                self.need_init_render = False
-                # img = None
-                # if mode in {"rgb_array", "single_rgb_array"}:
-                #     self.fig.canvas.draw()
-                #     width, height = self.fig.get_size_inches() * self.fig.get_dpi()
-                #     img = np.frombuffer(self.fig.canvas.tostring_rgb(), dtype='uint8').reshape((int(height), int(width), 3))
-                #
-                # return img
+            # if self.need_init_render:
+            #     self._init_render(mode)
+            #     self.need_init_render = False
+            line1, heat_line, ax, ax2 = self._init_render(mode)
 
-            if (
-                    mode == "single_rgb_array"
-            ):  # only do plot if it's the last timestep in episode:
-                if (
-                        not self.time_data[self.t_index + self.step_size - 1]
-                            >= self.time_data[-1]
-                ):
+            # return empty list unless until episode is done.
+            if mode == "single_rgb_array":
+                if not self.done:
                     return []
 
             # line1.set_data(self.observation[:, 0].numpy(), self.observation[:, 3:].numpy())
-            ax.plot(
-                (self.observation[:, 0] - self.time_min).numpy() / self.day,
-                self.observation[:, 3:].numpy(),
-                "k-",
-            )
 
-            Q_watts = self.RC.building.proportional_heating(
-                self.RC.cool_load
-            )  # convert from W/m2 to W
-            Q = (
-                    self.info["actions"] * -Q_watts.detach().numpy()
-            )  # negative because cooling
+            # Plot the predicted temperature
+            y = np.array(self.episode_info["predicted_temperature"])
+            x = np.array(self.episode_info["time"])
+            ax.plot((x[:, 0] - self.time_min.numpy()) / self.day, y[:, 2:], "k-")
+
+            # convert from W/m2 to W
+            Q_watts = self.RC.building.proportional_heating(self.RC.cool_load)
+            # negative because cooling:
+            Q = np.array(self.episode_info["actions"]) * -Q_watts.detach().numpy()
 
             if len(Q) > 0:  # if not empty
-                heat_line.set_data(
-                    (torch.stack(self.info["t_actions"]) - self.time_min) / self.day, Q
-                )
+                # plot cooling line in Watts
+                t = np.array(self.episode_info["t_actions"]) - self.time_min.numpy()
+                heat_line.set_data(t / self.day, Q)
 
             # fig = plt.gcf()
             # ax = plt.gca()
@@ -419,7 +441,7 @@ class LSIEnv(gym.Env):
     def _init_render(self, mode):
         from matplotlib.lines import Line2D
 
-        global line1, heat_line, ax, ax2
+        # global line1, heat_line, ax, ax2
 
         if mode == "human":
             plt.ion()
@@ -433,9 +455,10 @@ class LSIEnv(gym.Env):
             if width < 10:
                 width = 10
 
-            if self.fig is None:
-                self.fig = plt.figure(figsize=(width, width * 0.75))
+            # if self.fig is None:
+            #     self.fig = plt.figure(figsize=(width, width * 0.75))
             # canvas = FigureCanvas(fig)
+            self.fig = plt.figure(figsize=(width, width * 0.75))
 
         if self.time_min is None:
             t, temp = self.dataloader.dataset.get_all_data()
@@ -494,7 +517,11 @@ class LSIEnv(gym.Env):
         if mode == "human":
             self.fig.show()
 
-        # return line1, heat_line, ax, ax2
+        return line1, heat_line, ax, ax2
+
+    def save_episode_info_to_file(self, file_path):
+        with open(file_path, 'wb') as f:
+            pickle.dump(self.episode_info, f)
 
     def _get_updatable_config(self):
         config = {
@@ -502,7 +529,7 @@ class LSIEnv(gym.Env):
             "dataloader": self.dataloader,
             # "step_length": self.step_length,
             # "render_mode": self.render_mode,
-            # "update_state_dict": None,
+            "update_state_dict": None,
         }
         return config
 
@@ -514,12 +541,6 @@ class LSIEnv(gym.Env):
         self.batch_generator = iter(self.dataloader)
         # self.step_length = self.config["step_length"]
         # self.render_mode = self.config["render_mode"]
-
-    def _update_model(self, state_dict):
-        self.RC.load_state_dict(state_dict)
-        # Parameters have changed, rebuild the RC model and get iv_array.
-        self.RC.setup(self.dataloader.dataset)
-        self.config["update_state_dict"] = None
 
 
 class PreprocessEnv(gym.Wrapper):
@@ -563,6 +584,9 @@ class PreprocessEnv(gym.Wrapper):
         self.observation = preprocess_observation(x, unix_time, self.mu, self.std_dev)
 
         return self.observation
+
+    def render(self, mode):
+        return self.env.render(mode=mode)
 
 
 def preprocess_observation(x, unix_time, mu, std_dev):
