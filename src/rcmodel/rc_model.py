@@ -58,13 +58,14 @@ class RCModel(nn.Module):
             - when changing the dataset i.e. for testing.
         """
 
-        # These might not have changed from each forward pass but they're cheap enough.
+        # Might not have changed from each forward pass but they're cheap enough.
         self._build_matrices()  # get A and B
         self._build_loads()  # get cool and gain load
 
         if dataset:
             self.iv_array = get_iv_array(self, dataset)
 
+    # TODO: Allow for batches of data.
     def forward(self, t_eval, action=0):
         """
         Integrates the ode forward in time.

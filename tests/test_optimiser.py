@@ -28,7 +28,7 @@ def tmp_dir():
 @pytest.fixture
 def get_datasets():
     csv_path = os.path.join(os.path.dirname(__file__), "data/6hrs_testing_data.csv")
-    dt = 30  #seconds
+    dt = 30  # seconds
     sample_size = 1 * 60**2 / dt  # ONE HOUR
     warmup_size = 0
     train_dataset = RandomSampleDataset(
@@ -99,10 +99,11 @@ def test_physical_optimiser(setup_test):
     """Test that we can train a physical optimiser."""
     train_dataset, test_dataset, env_config, policy_config, tmpdirname = setup_test
 
-    ppo_checkpoint_path, _ = make_first_checkpoint(policy_config, tmpdirname)
+    # ppo_checkpoint_path, _ = make_first_checkpoint(policy_config, tmpdirname)
+    rl_algorithm = policy_config.build()
 
     op = OptimiseRC(
-        env_config, ppo_checkpoint_path, train_dataset, test_dataset, lr=1e-3, opt_id=0
+        env_config, rl_algorithm, train_dataset, test_dataset, lr=1e-3, opt_id=0
     )
 
     op.train()
