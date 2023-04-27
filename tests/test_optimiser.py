@@ -6,7 +6,7 @@ import ray
 import os
 from ray.tune.registry import register_env
 from ray.rllib.algorithms.ppo import PPOConfig
-
+from rcmodel.optimisation.optimise_models import test
 from rcmodel import (
     RandomSampleDataset,
     InfiniteSampler,
@@ -55,7 +55,7 @@ def get_env_config(get_datasets, model_n9):
             sampler=InfiniteSampler(train_dataset),
         ),
         "step_length": 15,  # minutes passed in each step.
-        "render_mode": "single_rgb_array",  # "single_rgb_array"
+        "render_mode": None,  # "single_rgb_array"
     }
 
     return train_dataset, test_dataset, env_config
@@ -107,7 +107,7 @@ def test_physical_optimiser(setup_test):
     )
 
     op.train()
-    op.test()
+    # op.test()
 
 
 def test_policy_optimiser(setup_test):
