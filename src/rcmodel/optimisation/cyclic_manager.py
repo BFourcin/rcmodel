@@ -195,7 +195,7 @@ class OptimiseManager:
         RCModel
         """
         from ray.tune.registry import register_env
-        from rcmodel import env_create_and_setup
+        from rcmodel import env_creator
 
         register_env("LSIEnv", env_creator)
 
