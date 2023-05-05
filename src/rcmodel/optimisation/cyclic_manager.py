@@ -197,7 +197,7 @@ class OptimiseManager:
         from ray.tune.registry import register_env
         from rcmodel import env_create_and_setup
 
-        register_env("LSIEnv", env_create_and_setup)
+        register_env("LSIEnv", env_creator)
 
         with open(filename, "rb") as dill_file:
 
