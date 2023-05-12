@@ -3,51 +3,36 @@ import torch
 import tempfile
 import numpy as np
 
-from rcmodel import Building
 from rcmodel import RCModel
-from rcmodel import InputScaling
-from rcmodel import OptimiseRC
-
-
-# Function for constant outside temperature. try/except allows for broadcasting of value.
-def dummy_tout(t):
-    try:
-        return -5 * torch.ones(len(t))
-
-    except TypeError:
-        return torch.tensor(-5)
-
 
 @pytest.mark.parametrize(
-    'building',
+    'model',
     [
-        pytest.lazy_fixture('building_n2'),
-        pytest.lazy_fixture('building_n9'),
+        pytest.lazy_fixture('model_n2'),
+        pytest.lazy_fixture('model_n9'),
     ], )
-def test_run_model(building):
+def test_run_model(model):
+    """
+    Check if the model is physically valid by testing if it violates the laws of thermodynamics. Specifically, the function
+    ensures that the model does not gain temperature beyond its starting condition and that it does not lose temperature so
+    that it is colder than the outside temperature, which is physically impossible.
 
-    # Initialise scaling methods:
-    rm_CA = [200, 800]   # [min, max] Capacitance/m2
-    C1 = [1.5 * 10 ** 4, 10 ** 6]  # Capacitance
-    C2 = [1.5 * 10 ** 4, 10 ** 6]
-    R1 = [0.2, 1.2]  # Resistance ((K.m^2)/W)
-    R2 = [0.2, 1.2]
-    R3 = [0.2, 1.2]
-    Rin = [0.2, 1.2]
-    cool = [0, 0]  # Cooling limit in W/m2
-    gain = [0, 0]  # gain limit (W/m^2) no additional energy
+    Args:
+        model (torch.nn.Module): The PyTorch model to test.
 
-    scaling = InputScaling(rm_CA, C1, C2, R1, R2, R3, Rin, cool, gain)
-
-    # Initialise RCModel with the building and InputScaling
-    transform = torch.sigmoid
-    model = RCModel(building, scaling, dummy_tout, transform)
-
-    model.loads = torch.nn.Parameter(model.loads * 0)  # no heating
+    Raises:
+        AssertionError: If the model gains or loses energy from the system.
+    """
+    # Manually set loads to zero:
+    loads = torch.logit(torch.zeros(model.loads.shape))
+    model.loads = torch.nn.Parameter(loads)
     model._build_loads()
 
     # Set parameters for forward run:
     t_eval = torch.arange(0, 200000, 30, dtype=torch.float32)
+
+    model.iv = 26 * torch.ones(2 + len(model.building.rooms))
+    model.setup(dataset=None)
 
     output = model(t_eval)
 
@@ -57,31 +42,24 @@ def test_run_model(building):
         "Model has gained or lost energy from the system"
 
 
-def test_save_load(building_n9):
+def test_save_load(model_n9):
     """
-    tests if parameters are unchanged when saved and loaded with different scaling limits.
+    Test if model parameters are unchanged when saved and loaded with different scaling limits.
+
+    This test creates a new `RCModel` instance, sets its parameters and loads to some values, saves it to a temporary file,
+    loads the saved model into a new instance, and checks if the loaded parameters and loads match the original values.
+    If the loaded parameters or loads differ from the original values by more than 1e-3, the test fails.
+
+    Args:
+        model_n9 (RCModel): An instance of the `RCModel` class to be tested.
+
+    Raises:
+        AssertionError: If the loaded parameters or loads differ from the original values by more than 1e-3.
     """
-
-    # Initialise scaling methods:
-    rm_CA = [200, 800]  # [min, max] Capacitance/m2
-    C1 = [1e3, 1e6]  # Capacitance
-    C2 = [1e3, 1e6]
-    R1 = [0.1, 1.3]  # Resistance ((K.m^2)/W)
-    R2 = [0.1, 1.3]
-    R3 = [0.1, 1.3]
-    Rin = [0.1, 1.3]
-    cool = [0, 10000]  # Cooling limit in W/m2
-    gain = [0, 10000]  # gain limit (W/m^2) no additional energy
-
-    scaling = InputScaling(rm_CA, C1, C2, R1, R2, R3, Rin, cool, gain)
-    transform = torch.sigmoid
-
-    Tin_continuous = None  # not called during test so can get away with None.
-
-    model = RCModel(building_n9, scaling, dummy_tout, transform)
+    model = model_n9
 
     rm_cap = 500
-    ex_cap = [1e4, 2e4]
+    ex_cap = [1.6e4, 2e4]
     ex_r = [0.2, 0.5, 1.2]
     wl_r = 0.8
 
@@ -95,31 +73,19 @@ def test_save_load(building_n9):
     with tempfile.TemporaryDirectory() as tmpdirname:
         num = 0
         # save model values
-        model.save(model_id=num, dir_path=tmpdirname)
+        path = tmpdirname + '/test_save.pkl'
+        model.save(path)
 
         del model
 
-        # Initialise new model with different scaling:
-        rm_CA = [50, 901]  # [min, max] Capacitance/m2
-        C1 = [1e2, 1e5]  # Capacitance
-        C2 = [1e2, 1e5]
-        R1 = [0.2, 2]  # Resistance ((K.m^2)/W)
-        R2 = [0.2, 2]
-        R3 = [0.2, 2]
-        Rin = [0.2, 2]
-        cool = [-5200, 8100]  # Cooling limit in W/m2
-        gain = [-5200, 8100]  # gain limit (W/m^2) no additional energy
+        # Initialise new model and randomise parameters
+        # model2 = model_n9
+        # model2.init_physical()
 
-        scaling = InputScaling(rm_CA, C1, C2, R1, R2, R3, Rin, cool, gain)
-        transform = torch.sigmoid
+        model2 = RCModel.load(path)
 
-        model2 = RCModel(building_n9, scaling, dummy_tout, Tin_continuous, transform)
-
-        path = f"{tmpdirname}/rcmodel{num}.pt"
-        model2.load(path=path)
-
-        loaded_params = model2.scaling.physical_param_scaling(transform(model2.params))
-        loaded_loads = model2.scaling.physical_loads_scaling(transform(model2.loads))
+        loaded_params = model2.scaling.physical_param_scaling(model2.transform(model2.params))
+        loaded_loads = model2.scaling.physical_loads_scaling(model2.transform(model2.loads))
 
         diff_params = abs(loaded_params-original_params)
         diff_loads = abs(loaded_loads-original_loads)
@@ -129,5 +95,3 @@ def test_save_load(building_n9):
 
 if __name__ == '__main__':
     pytest.main()
-
-    print("__main__ reached")
