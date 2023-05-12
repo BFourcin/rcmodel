@@ -1,6 +1,6 @@
-from ..physical import Room, Building, InputScaling
-from ..rc_model import RCModel
-from ..optimisation import PolicyNetwork, LSIEnv, PreprocessEnv
+from rcmodel.physical import Room, Building, InputScaling
+from rcmodel.rc_model import RCModel
+import rcmodel.optimisation
 from .rcmodel_dataset import BuildingTemperatureDataset, RandomSampleDataset
 from xitorch.interpolate import Interp1D
 from torchdiffeq import odeint
@@ -14,6 +14,38 @@ import os
 
 
 def model_creator(model_config):
+    """
+    model_config = {
+        # Ranges:
+        "C_rm": [1e3, 1e5],  # [min, max] Capacitance/m2
+        "C1": [1e5, 1e8],  # Capacitance
+        "C2": [1e5, 1e8],
+        "R1": [0.1, 5],  # Resistance ((K.m^2)/W)
+        "R2": [0.1, 5],
+        "R3": [0.5, 6],
+        "Rin": [0.1, 5],
+        "cool": [0, 50],  # Cooling limit in W/m2
+        "gain": [0, 5],  # Gain limit in W/m2
+        "room_names": ["seminar_rm_a_t0106"],
+        "room_coordinates": [[[92.07, 125.94], [92.07, 231.74], [129.00, 231.74], [154.45, 231.74],
+                              [172.64, 231.74], [172.64, 125.94]]],
+        "weather_data_path": weather_data_path,
+        "cooling_policy": None,
+        "load_model_path_policy": None,  # './prior_policy.pt',  # or None
+        "load_model_path_physical": None,  # or None
+        "parameters": {
+            "C_rm": np.random.rand(1).item(),
+            "C1": np.random.rand(1).item(),
+            "C2": np.random.rand(1).item(),
+            "R1": np.random.rand(1).item(),
+            "R2": np.random.rand(1).item(),
+            "R3": np.random.rand(1).item(),
+            "Rin": np.random.rand(1).item(),
+            "cool": np.random.rand(1).item(),  # 0.09133423646610082
+            "gain": np.random.rand(1).item(),  # 0.9086668150306394
+        }
+    }
+    """
     def init_scaling():
         # Initialise scaling class
         C_rm = model_config['C_rm']  # [min, max] Capacitance/m2
@@ -29,25 +61,29 @@ def model_creator(model_config):
         scaling = InputScaling(C_rm, C1, C2, R1, R2, R3, Rin, cool, gain)
         return scaling
 
-    pi = PolicyNetwork(5, 2)
+    # pi = PolicyNetwork(5, 2)
+    pi = model_config["cooling_policy"]
     scaling = init_scaling()
 
     # Initialise RCModel with the building
-    model = initialise_model(pi, scaling, model_config['weather_data_path'], model_config['room_names'], model_config['room_coordinates'])
+    model = initialise_model(pi, scaling, model_config['weather_data_path'], model_config['room_names'],
+                             model_config['room_coordinates'])
 
     # load physical and/or policy models if available
     if model_config['load_model_path_policy']:
         model.load(model_config['load_model_path_policy'])  # load policy
-        model.init_physical()  # re-randomise physical params, as they were also copied from the loaded policy
+        model.initialise_parameters()  # re-randomise physical params, as they were also copied from the loaded policy
 
     if model_config['load_model_path_physical']:
         # Try loading a dummy model with no policy, if it fails load with a policy. (We don't know what file contains)
         try:
-            m = initialise_model(None, scaling, model_config['weather_data_path'], model_config['room_names'], model_config['room_coordinates'])
+            m = initialise_model(None, scaling, model_config['weather_data_path'], model_config['room_names'],
+                                 model_config['room_coordinates'])
             m.load(model_config['load_model_path_physical'])
 
         except RuntimeError:
-            m = initialise_model(pi, scaling, model_config['weather_data_path'], model_config['room_names'], model_config['room_coordinates'])
+            m = initialise_model(pi, scaling, model_config['weather_data_path'], model_config['room_names'],
+                                 model_config['room_coordinates'])
             m.load(model_config['load_model_path_physical'])
 
         model.params = m.params  # put loaded physical parameters onto model.
@@ -79,25 +115,93 @@ def model_creator(model_config):
 
 def env_creator(env_config):
     """
-    Needed for the ray register_env() function.
+    Creates a Reinforcement Learning environment for use with the Ray RLlib library.
+
+    If an existing RCModel object is provided in env_config, it will be used directly. If not, the function
+    will attempt to load an RCModel object from a pickled file path provided in env_config. If that fails,
+    it will create a new RCModel object using the model configuration specified in env_config. If an RCModel
+    object is successfully obtained or created, its state_dict can be optionally loaded from a dictionary
+    provided in env_config.
+
+    Args:
+        env_config (dict): A dictionary containing the configuration settings for the environment. It can have
+            the following keys:
+            - "RC_model": An optional RCModel object that will be used directly if provided.
+            - "model_pickle_path": An optional path to a pickled RCModel object.
+            - "model_config": Required if RC_model and model_pickle_path are not provided. A dictionary containing
+                the configuration settings for the RCModel object to be created. It should be in the same format
+                as the config dictionaries used to create RCModel objects.
+            - "update_state_dict": An optional dictionary containing the state_dict for the RCModel object. If provided,
+                it will be loaded into the RCModel object before it is used to create the environment.
+            - "dataloader": Required. A PyTorch DataLoader object that will be used to provide input data to the
+                RCModel object. It should be configured to return batches of data in the format expected by the
+                RCModel object.
+            - "step_length": Required. The number of minutes passed in each environment step.
+            - "render_mode": Optional. The render mode to use for the environment. Currently, only "single_rgb_array"
+                is supported.
+
+    Returns:
+        env (gym.Env): A Reinforcement Learning environment that is ready for use with RLlib.
     """
     with torch.no_grad():
-        model_config = env_config["model_config"]
-        model = model_creator(model_config)
-        # model.iv_array = model.get_iv_array(time_data)
 
-        if not env_config["iv_array"]:
-            model.iv_array = get_iv_array(model, env_config["dataloader"].dataset)
-        else:
-            model.iv_array = env_config["iv_array"]
+        # Try to get the model from env_config
+        model = env_config.get("RC_model", None)
 
+        # If model is not provided, try to load it from a pickle file
+        if model is None:
+            model_pickle_path = env_config.get("model_pickle_path", None)
+            if model_pickle_path:
+                model = RCModel.load(model_pickle_path)
+
+        # If model is still not available, create one from a provided model_config.
+        if model is None:
+            model = model_creator(env_config["model_config"])
+
+        # Finally, check if update_state_dict has been provided and load it if so.
+        update_state_dict = env_config.get("update_state_dict", None)
+        if update_state_dict:
+            model.load_state_dict(update_state_dict)
+        env_config["update_state_dict"] = None  # We've done the update.
+
+        # env_config now has a model and can be used to create an environment.
         env_config["RC_model"] = model
 
-        env = LSIEnv(env_config)
+        # Let's make a new config of just the items needed for the environment
+        env_keys = ["RC_model", "dataloader", "step_length", "render_mode",
+                    "update_state_dict"]
+        config = {}
+        for key in env_keys:
+            config[key] = env_config[key]
+
+        env = rcmodel.optimisation.LSIEnv(config)
 
         # wrap environment:
-        env = PreprocessEnv(env, mu=23.359, std_dev=1.41)
+        env = rcmodel.optimisation.PreprocessEnv(env, mu=23.359, std_dev=1.41)
 
+    return env
+
+
+def env_create_and_setup(env_config):
+    """
+    Call env_creator and then set up RC model with system matrix and get iv_array.
+    Usage with:
+        register_env("LSIEnv", env_create_and_setup)
+
+    Parameters
+    ----------
+    env_config: dict
+        Configuration for environment.
+
+    Returns
+    -------
+    env: gym.Env
+        LSIEnv environment with RC model set up.
+    """
+
+    env = env_creator(env_config)
+    # Rebuild matrices and get iv_array, needed after parameter change
+    env.RC.setup(env.dataloader.dataset)
     return env
 
 
@@ -334,17 +438,30 @@ def exponential_smoothing(y, alpha, y_hat=None, n=10):
     return y_hat
 
 
-def policy_image(policy, n=100, path=None):
+def policy_image(algo, n=100, path=None):
+    """
+
+    :param algo: ray RRLIB algo
+
+    """
     bounds = [15, 30]
     t0 = 4 * 24 * 60 ** 2  # buffer to go from thursday to monday
     time = torch.linspace(0 + t0, 24 * 60 ** 2 + t0, n)
     temp = torch.linspace(bounds[0], bounds[1], n)
     img = torch.zeros((n, n))
 
+    # hardcode mu and std_dev:
+    mu = 23.359
+    std_dev = 1.41
+
     with torch.no_grad():
-        for i, x in enumerate(temp):
-            for j, y in enumerate(time):
-                action, log_prob = policy.get_action(x.unsqueeze(0).unsqueeze(0), y)
+        for i, te in enumerate(temp):
+            for j, ti in enumerate(time):
+                unix_time = ti
+                x = te.unsqueeze(0)  # remove the latent nodes
+                observation = optimisation.preprocess_observation(x, unix_time, mu, std_dev)
+                action, _, info = algo.compute_action(observation, full_fetch=True)
+                log_prob = info['action_logp']
                 # Get prob of getting 1:
                 if action == 1:
                     pr = torch.e ** log_prob  # Convert log_prob to normal prob.
@@ -370,86 +487,3 @@ def policy_image(policy, n=100, path=None):
     else:
         plt.show()
 
-
-def get_iv_array(model, dataset):
-    """
-    Perform the integration but force outside and inside temperature to be from data.
-    Only the latent temperature nodes in the external walls are free to change meaning we can find out their true
-    values for a given model.
-    """
-    # Update building with current parameters, if needed.
-    if not torch.eq(model.params_old, model.params).all():
-        model._build_matrices()
-
-    with torch.no_grad():
-        t_eval, temp_data = dataset.get_all_data()
-        Tin_continuous = Interp1D(t_eval, temp_data[:, 0:len(model.building.rooms)].T, method='linear')
-
-        bl = model.building
-
-        # Recalculate the A & B matrices. We could chop and re jig from the full matrices, but it is not super
-        # simple so recalculating is less risky.
-        A = torch.zeros([2, 2])
-        A[0, 0] = bl.surf_area * (-1 / (bl.Re[0] * bl.Ce[0]) - 1 / (bl.Re[1] * bl.Ce[0]))
-        A[0, 1] = bl.surf_area / (bl.Re[1] * bl.Ce[0])
-        A[1, 0] = bl.surf_area / (bl.Re[1] * bl.Ce[1])
-        A[1, 1] = bl.surf_area * (-1 / (bl.Re[1] * bl.Ce[1]) - 1 / (bl.Re[2] * bl.Ce[1]))
-
-        B = torch.zeros([2, 2])
-        B[0, 0] = bl.surf_area / (bl.Re[0] * bl.Ce[0])
-        B[1, 1] = bl.surf_area / (bl.Re[2] * bl.Ce[1])
-
-        # check if t_eval is formatted correctly:
-        if t_eval.dim() > 1:
-            t_eval = t_eval.squeeze(0)
-
-        avg_tout = model.Tout_continuous(t_eval).mean()
-        avg_tin = Tin_continuous(t_eval).mean()
-
-        t0 = t_eval[0]
-        t_eval = t_eval - t0
-
-        model.iv = steady_state_iv(model, avg_tout, avg_tin)  # Use avg temp as a good starting guess for iv.
-
-        def latent_f_ode(t, x):
-            Tout = model.Tout_continuous(t.item() + t0)
-            Tin = Tin_continuous(t.item() + t0)
-
-            u = torch.tensor([[Tout],
-                              [Tin]])
-
-            return A @ x + B @ u.to(torch.float32)
-
-        integrate = odeint(latent_f_ode, model.iv[0:2], t_eval,
-                           method='rk4')  # https://github.com/rtqichen/torchdiffeq
-
-        integrate = integrate.squeeze()
-
-        # Add on inside temperature data to be used to initialise rooms at the correct temp.
-        iv_array = torch.empty(len(integrate), len(bl.rooms) + 2)
-        iv_array[:, 0:2] = integrate
-        iv_array[:, 2:] = Tin_continuous(t_eval + t0).T
-        iv_array = Interp1D(t_eval + t0, iv_array.T, method='linear')
-
-    return iv_array
-
-
-def steady_state_iv(model, temp_out, temp_in):
-    """
-    Calculate the initial conditions of the latent variables given a steady state indoor and outdoor temperature.
-    Initial values of room nodes are set to temp in.
-
-    temp_out: float
-        Steady state outside temperature.
-    temp_in: tensor
-        Steady state inside temperature. len(temp_in) = n_rooms
-    :return: tensor
-        Column tensor of initial values at each node.
-    """
-    I = (temp_out - temp_in) / sum(model.building.Re)  # I=V/R
-    v1 = temp_out - I * model.building.Re[0]
-    v2 = v1 - I * model.building.Re[1]
-
-    iv = torch.tensor([[v1], [v2], [temp_in]]).to(torch.float32)
-
-    return iv

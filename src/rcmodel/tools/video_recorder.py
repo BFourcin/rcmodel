@@ -86,7 +86,7 @@ class VideoRecorder(gym.Wrapper):
         if self.env.render_mode is None:
             frame = self.env.render(mode="rgb_array")
         else:
-            frame = self.env.render()
+            frame = self.env.render(self.env.render_mode)
 
         assert type(frame) is list, 'Ensure that the output of render() is a list of RGB images: [np.array()]'
 

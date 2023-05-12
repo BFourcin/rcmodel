@@ -5,30 +5,33 @@ from . import rc_model
 
 
 from .optimisation import OptimiseRC
-from .optimisation import DDPOptimiseRC
+from .optimisation import OptimisePolicy
+# from .optimisation import DDPOptimiseRC
 from .optimisation import PolicyNetwork
 from .optimisation import LSIEnv
-from .optimisation import PriorEnv
+# from .optimisation import PriorEnv
 from .optimisation import PriorCoolingPolicy
 from .optimisation import PreprocessEnv
 from .optimisation import preprocess_observation
+from .optimisation import OptimiseManager
 from .physical import Building
 from .physical import Room
 from .physical import InputScaling
 from .tools import pltsolution_1rm
 from .tools import BuildingTemperatureDataset
 from .tools import RandomSampleDataset
+from .tools import InfiniteSampler
 from .tools import initialise_model
 from .tools import model_creator
 from .tools import env_creator
+from .tools import env_create_and_setup
 from .tools import model_to_csv
 from .tools import convergence_criteria
 from .tools import exponential_smoothing
 from .tools import policy_image
 from .tools import sort_data
 from .tools import dataloader_creator
-from .tools import get_iv_array
-from .tools import RayActor
+# from .tools import get_iv_array
 from .rc_model import RCModel
 
 

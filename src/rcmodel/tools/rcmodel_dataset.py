@@ -1,4 +1,4 @@
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, Sampler
 from random import randint
 import torch
 import pandas as pd
@@ -136,8 +136,8 @@ class RandomSampleDataset(Dataset):
     model and is not returned by this class.
 
     Order of the data set goes: warm-up data, training data, testing data with no overlaps.
-    len(dataset_train) = (len(data_set)-warmup_size) * 0.8
-    len(dataset_test) = (len(data_set)-warmup_size) * 0.2
+    len(dataset_train) == (len(data_set)-warmup_size) * 0.8
+    len(dataset_test) == (len(data_set)-warmup_size) * 0.2
     """
 
     def __init__(self, csv_path, sample_size, warmup_size, transform=None, all=True, train=False, test=False):
@@ -258,3 +258,25 @@ class RandomSampleDataset(Dataset):
             temp_sample = self.transform(temp_sample)
 
         return t_sample, temp_sample
+
+
+class InfiniteSampler(Sampler):
+    """Works with RandomSampleDataset to allow for infinite samples of data to be drawn.
+    usage:
+    train_loader = DataLoader(dataset_train, batch_size=batch_size, sampler=InfiniteSampler(dataset_train))"""
+    def __init__(self, data_source):
+        super().__init__(data_source)
+        assert len(data_source) > 0
+        self.dataset = data_source
+
+    def __iter__(self):
+        order = list(range((len(self.dataset))))
+        idx = 0
+        while True:
+            yield order[idx]
+            idx += 1
+            if idx == len(order):
+                idx = 0
+
+    def __len__(self) -> int:
+        return len(self.dataset)
