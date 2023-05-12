@@ -1,20 +1,26 @@
-from .optimise_rc import OptimiseRC
-from .optimise_rc import DDPOptimiseRC
-# from .reinforce import Reinforce
-from .reinforce import PolicyNetwork
-from .reinforce import LSIEnv
-from .reinforce import PriorEnv
-from .reinforce import PreprocessEnv
+from .optimise_models import OptimiseRC
+from .optimise_models import OptimisePolicy
+from .optimise_models import test
+# from .optimise_models import DDPOptimiseRC
+from .environment import PolicyNetwork
+from .environment import LSIEnv
+# from .environment import PriorEnv
+from .environment import PreprocessEnv
+from .environment import preprocess_observation
 from .prior_cooling_policy import PriorCoolingPolicy
+from .cyclic_manager import OptimiseManager
 
 
 __all__ = [
     "OptimiseRC",
+    "OptimisePolicy",
     "DDPOptimiseRC",
-    # "Reinforce",
     "PolicyNetwork",
     "LSIEnv",
     "PriorEnv",
     "PriorCoolingPolicy",
     "PreprocessEnv",
+    "preprocess_observation",
+    "OptimiseManager",
+    "test",
 ]
