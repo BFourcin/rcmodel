@@ -19,6 +19,7 @@ class Building:
         self.Rint = 0    # internal wall resistance
 
         self.Walls = self.sort_walls()
+        self.connectivity_matrix = self.make_connection_matrix()
 
         # get total external area:
         surf_area = 0
@@ -29,63 +30,93 @@ class Building:
         self.surf_area = surf_area
         self.n_params = self.get_n_params()  # Number of parameters needed for model i.e len(theta)
 
-    def make_connectivity_matrix(self):
+    def make_connection_matrix(self):
         """
-        Creates connectivity matrix of the thermal conductivity (W/K) of rooms in building.
-        The first row/col is an external connection.
-        Thermal conductivity is calculated by K = area/resistance
-
+        Creates binary connection matrix between rooms in the building.
+        The first row/col represents external connections.
 
         Output matrix is in the form:
-            [External TA TB ... Tn]
+                [External R1 R2 ... Rn]
+            [External  0  0  ...  0 ]
+            [R1       1  0  ...  0 ]
+            [R2       0  0  ...  1 ]
+            .
+            .
+            [Rn       0  1  ...  0 ]
+
+        """
+        n = len(self.rooms)
+        connection_matrix = torch.zeros([n + 1, n + 1], dtype=torch.int)
+
+        # External connections
+        external_walls = set(
+            wall_idx for wall_idx, wall in enumerate(self.Walls) if wall.is_external)
+        for rm in range(n):
+            for wall_idx in self.rooms[rm].walls:
+                if wall_idx in external_walls:
+                    connection_matrix[rm + 1, 0] = 1
+                    connection_matrix[0, rm + 1] = 1  # Symmetric
+
+        # Indoor connections
+        for rm_x in range(0, n - 1):
+            for rm_y in range(rm_x + 1, n):
+                # Check if room shares any walls with other rooms
+                walls_x = set(self.rooms[rm_x].walls)
+                walls_y = set(self.rooms[rm_y].walls)
+                shared_walls = walls_x.intersection(walls_y)
+                if shared_walls:
+                    connection_matrix[rm_x + 1, rm_y + 1] = 1
+                    connection_matrix[rm_y + 1, rm_x + 1] = 1
+
+        return connection_matrix
+
+    def make_thermal_conductivity_matrix(self):
+        """
+        Creates thermal conductivity matrix of the rooms in building.
+        The first row/col is an external connection.
+
+        Output matrix is in the form:
+            [External R1 R2 ... Rn]
         [External]
-        [TA]
-        [TB]
+        [R1]
+        [R2]
         .
         .
-        [Tn]
+        [Rn]
 
         """
 
-        n = len(self.rooms)
+        C = self.connectivity_matrix
 
-        knect = torch.zeros([n, n])
+        k_matrix = torch.zeros_like(C, dtype=torch.float32)
 
-        # Iterate through each room and check if room shares any walls with other rooms
-        for rm_x in range(0, n - 1):
-            for rm_y in range(rm_x + 1, n):
+        # Iterate through each INTERNALLY connected room.
+        for rm_x, rm_y in zip(*torch.where(torch.triu(C[1:, 1:], diagonal=1) > 0)):
+            walls_x = set(self.rooms[rm_x].walls)
+            walls_y = set(self.rooms[rm_y].walls)
+            shared_walls = walls_x.intersection(walls_y)
+            for wall in shared_walls:
+                area = self.Walls[wall].area
+                resistance = self.Walls[wall].resistance
+                k_matrix[rm_x+1, rm_y+1] += area / resistance
+                k_matrix[rm_y+1, rm_x+1] = k_matrix[rm_x+1, rm_y+1]  # Symmetric
 
-                # compare first wall in rm_x with all walls in rm_y then move on to next wall
-                for wl_x in range(len(self.rooms[rm_x].walls)):
-                    for wl_y in range(len(self.rooms[rm_y].walls)):
+        # Create a set of external walls
+        external_walls = set(wall_idx for wall_idx, wall in enumerate(self.Walls)
+                             if wall.is_external)
 
-                        if self.rooms[rm_x].walls[wl_x] == self.rooms[rm_y].walls[wl_y]:
-                            area = self.Walls[self.rooms[rm_x].walls[wl_x]].area
-                            resistance = self.Walls[self.rooms[rm_x].walls[wl_x]].resistance
+        # Iterate over each room and sum the area/resistance of its external walls
+        for rm in range(len(self.rooms)):
+            if C[0, rm+1] > 0:
+                for wall_idx in self.rooms[rm].walls:
+                    if wall_idx in external_walls:
+                        wall = self.Walls[wall_idx]
+                        k_matrix[0, rm+1] += wall.area / wall.resistance
+                        k_matrix[rm+1, 0] = k_matrix[0, rm+1]
 
-                            # Sum the area to find total shared area to a room
-                            knect[rm_x, rm_y] = knect[rm_x, rm_y] + area / resistance
-                            knect[rm_y, rm_x] = knect[rm_x, rm_y]  # matrix is symmetric
+        return k_matrix
 
-        # Now rooms are checked if they are external and stored in a vector.
-        is_ex = torch.zeros(n)
-        for rm in range(n):
-            for wl in range(len(self.rooms[rm].walls)):
-                wl_class = self.Walls[self.rooms[rm].walls[wl]]
-
-                if wl_class.is_external:
-                    is_ex[rm] = is_ex[rm] + wl_class.area / wl_class.resistance
-
-        # The is_external vector is used as the first row/col for the connection matrix
-        knect = torch.vstack((is_ex, knect))
-        is_ex = torch.cat(
-            (torch.tensor([0]), is_ex))  # adds 0 to start of array (account for external to external connection)
-
-        is_ex = is_ex.unsqueeze(0)  # adds dimension
-        knect = torch.hstack((is_ex.T, knect))
-
-        return knect
-
+    # TODO: Do this better.
     def make_system_matrix(self):
         """
         Creates the system/state matrix (A) for the Building.
@@ -103,7 +134,7 @@ class Building:
              .]
         """
 
-        knect = self.make_connectivity_matrix()
+        knect = self.make_thermal_conductivity_matrix()
 
         n = len(knect[0])
 
