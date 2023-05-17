@@ -2,6 +2,7 @@ from rcmodel.physical import Room, Building, InputScaling
 from rcmodel.rc_model import RCModel
 import rcmodel.optimisation
 from .rcmodel_dataset import BuildingTemperatureDataset, RandomSampleDataset
+from gymnasium.wrappers import RenderCollection
 from xitorch.interpolate import Interp1D
 from torchdiffeq import odeint
 from filelock import FileLock
@@ -179,6 +180,9 @@ def env_creator(env_config):
         # wrap environment:
         env = rcmodel.optimisation.PreprocessEnv(env, mu=23.359, std_dev=1.41)
 
+        # Wrap with nice render list api if we want get renders.
+        if env_config["render_mode"] is not None:
+            env = RenderCollection(env)
     return env
 
 
@@ -444,6 +448,7 @@ def policy_image(algo, n=100, path=None):
     :param algo: ray RRLIB algo
 
     """
+    import rcmodel
     bounds = [15, 30]
     t0 = 4 * 24 * 60 ** 2  # buffer to go from thursday to monday
     time = torch.linspace(0 + t0, 24 * 60 ** 2 + t0, n)
@@ -459,7 +464,7 @@ def policy_image(algo, n=100, path=None):
             for j, ti in enumerate(time):
                 unix_time = ti
                 x = te.unsqueeze(0)  # remove the latent nodes
-                observation = optimisation.preprocess_observation(x, unix_time, mu, std_dev)
+                observation = rcmodel.optimisation.preprocess_observation(x, unix_time, mu, std_dev)
                 action, _, info = algo.compute_action(observation, full_fetch=True)
                 log_prob = info['action_logp']
                 # Get prob of getting 1:

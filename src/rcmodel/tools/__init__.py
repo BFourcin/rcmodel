@@ -12,7 +12,6 @@ from .helper_functions import exponential_smoothing
 from .helper_functions import policy_image
 from .helper_functions import sort_data
 from .helper_functions import dataloader_creator
-from .video_recorder import VideoRecorder
 # from .helper_functions import get_iv_array
 
 
