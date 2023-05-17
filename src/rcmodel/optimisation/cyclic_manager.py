@@ -158,9 +158,6 @@ class OptimiseManager:
 
         os.makedirs(directory_path, exist_ok=True)
 
-        # remove unpickleable batch generator
-        batch_generator = self.physical_optimiser.env.unwrapped.batch_generator
-        self.physical_optimiser.env.unwrapped.batch_generator = None
         checkpoint_path = self.policy_optimiser.rl_algorithm.save(directory_path)
         rl_algorithm = self.policy_optimiser.rl_algorithm
 
@@ -177,7 +174,6 @@ class OptimiseManager:
             dill.dump(save_dict, dill_file)
 
         # Put back
-        self.physical_optimiser.env.unwrapped.batch_generator = batch_generator
         self.physical_optimiser.rl_algorithm = rl_algorithm
         self.policy_optimiser.rl_algorithm = rl_algorithm
 
