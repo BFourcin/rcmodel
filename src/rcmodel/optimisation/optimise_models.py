@@ -122,7 +122,7 @@ def test(env, rl_algorithm, test_dataloader):
                 episode_reward += reward
 
             reward_list.append(episode_reward)
-            render_list += env.render()
+            render_list.append(env.render())
 
     # remove the None values when no render was returned.
     render_list = list(filter(lambda item: item is not None, render_list))
@@ -198,7 +198,7 @@ class OptimiseRC:
         for batch in trange(len(self.train_dataloader), desc='Physical Episodes'):
             reward = train(self.env, self.rl_algorithm, self.optimizer)
             reward_list.append(reward)
-            render_list += self.env.render()
+            render_list.append(self.env.render())
             self.environment_steps += self.env.step_count
 
         # remove the None values when no render was returned.
@@ -210,21 +210,7 @@ class OptimisePolicy:
     """
     Parameters
     ----------
-    model : object
-        RCModel class object.
-    csv_path : string
-        Path to .csv file containing room temperature data.
-        Data will be sorted if not done already and saved to a new file with the tag '_sorted'
-    sample_size : int
-        Length of indexes to sample from dataset per batch.
-    dt : int
-        Timestep data will be resampled to.
-    lr : float
-        Learning rate for optimiser.
-    model_id : int
-        Unique identifier used when optimising multiple models.
 
-    see https://docs.ray.io/en/latest/using-ray-with-pytorch.html
     """
 
     def __init__(self, ppo_config, policy_weights=None, opt_id=0):
@@ -247,6 +233,9 @@ class OptimisePolicy:
         return avg_reward
 
     def update_environment(self, config):
+        """Update the environment over all workers with a new config. Only certain
+        parameters can be updated, check the environment class. Also setups the RC
+        model and calculates latent vars."""
         self.rl_algorithm.workers.foreach_worker(make_update_env_fn(config))
 
     def get_weights(self):
