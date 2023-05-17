@@ -448,6 +448,7 @@ def policy_image(algo, n=100, path=None):
     :param algo: ray RRLIB algo
 
     """
+    import rcmodel
     bounds = [15, 30]
     t0 = 4 * 24 * 60 ** 2  # buffer to go from thursday to monday
     time = torch.linspace(0 + t0, 24 * 60 ** 2 + t0, n)
@@ -463,7 +464,7 @@ def policy_image(algo, n=100, path=None):
             for j, ti in enumerate(time):
                 unix_time = ti
                 x = te.unsqueeze(0)  # remove the latent nodes
-                observation = optimisation.preprocess_observation(x, unix_time, mu, std_dev)
+                observation = rcmodel.optimisation.preprocess_observation(x, unix_time, mu, std_dev)
                 action, _, info = algo.compute_action(observation, full_fetch=True)
                 log_prob = info['action_logp']
                 # Get prob of getting 1:
