@@ -180,9 +180,9 @@ def env_creator(env_config):
         # wrap environment:
         env = rcmodel.optimisation.PreprocessEnv(env, mu=23.359, std_dev=1.41)
 
-        # Double wrap for extra safety
-        env = RenderCollection(env)
-
+        # Wrap with nice render list api if we want get renders.
+        if env_config["render_mode"] is not None:
+            env = RenderCollection(env)
     return env
 
 
