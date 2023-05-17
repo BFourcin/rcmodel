@@ -2,6 +2,7 @@ from rcmodel.physical import Room, Building, InputScaling
 from rcmodel.rc_model import RCModel
 import rcmodel.optimisation
 from .rcmodel_dataset import BuildingTemperatureDataset, RandomSampleDataset
+from gymnasium.wrappers import RenderCollection
 from xitorch.interpolate import Interp1D
 from torchdiffeq import odeint
 from filelock import FileLock
@@ -178,6 +179,9 @@ def env_creator(env_config):
 
         # wrap environment:
         env = rcmodel.optimisation.PreprocessEnv(env, mu=23.359, std_dev=1.41)
+
+        # Double wrap for extra safety
+        env = RenderCollection(env)
 
     return env
 

@@ -1,6 +1,5 @@
-import gym
-from gym import spaces
-from gym.utils.renderer import Renderer
+import gymnasium as gym
+from gymnasium import spaces
 from typing import Optional
 
 import torch
@@ -169,9 +168,7 @@ class LSIEnv(gym.Env):
         # Define action and observation space
         # They must be gym.spaces objects
         # Example when using discrete actions:
-        self.action_space = spaces.Discrete(
-            2,
-        )
+        self.action_space = spaces.Discrete(2,)
 
         # Observation is temperature of each room.
         self.observation_space = spaces.Box(low, high, dtype=np.float64)
@@ -187,8 +184,6 @@ class LSIEnv(gym.Env):
             self.recording = True
         else:
             self.recording = False
-
-        self.renderer = Renderer(self.render_mode, self._render)
 
     def step(self, action):
         """
@@ -206,6 +201,24 @@ class LSIEnv(gym.Env):
 
         Returns
         -------
+        Returns:
+            observation (ObsType): An element of the environment's :attr:`observation_space` as the next observation due to the agent actions.
+                An example is a numpy array containing the positions and velocities of the pole in CartPole.
+            reward (float): The reward as a result of taking the action.
+            terminated (bool): Whether the agent reaches the terminal state (as defined under the MDP of the task)
+                which can be positive or negative. An example is reaching the goal state or moving into the lava from
+                the Sutton and Barton, Gridworld. If true, the user needs to call :meth:`reset`.
+            truncated (bool): Whether the truncation condition outside the scope of the MDP is satisfied.
+                Typically, this is a timelimit, but could also be used to indicate an agent physically going out of bounds.
+                Can be used to end the episode prematurely before a terminal state is reached.
+                If true, the user needs to call :meth:`reset`.
+            info (dict): Contains auxiliary diagnostic information (helpful for debugging, learning, and logging).
+                This might, for instance, contain: metrics that describe the agent's performance state, variables that are
+                hidden from observations, or individual reward terms that are combined to produce the total reward.
+                In OpenAI Gym <v26, it contains "TimeLimit.truncated" to distinguish truncation and termination,
+                however this is deprecated in favour of returning terminated and truncated variables.
+
+
         observation: np.array
             The observation at the end of the step.
         reward: float
@@ -263,16 +276,17 @@ class LSIEnv(gym.Env):
 
             # Check for done condition:
             if t_eval[-1] == self.time_data[-1]:
-                self.done = True
+                self.terminated = True
 
             self.t_index += self.step_size
-
-            self.renderer.render_step()
+            self.step_count += 1  # Keep track of the number of steps taken.
 
             if not self.collect_rc_grad:  # Don't need to save grads, keeps ray happy.
                 reward = reward.detach().numpy()
 
-            return self.observation.numpy(), reward, self.done, self.info
+            truncated = False  # Not used in this environment.
+
+            return self.observation.numpy(), reward, self.terminated, truncated, self.info
 
     def reset(
             self,
@@ -288,6 +302,7 @@ class LSIEnv(gym.Env):
 
         # Reset the state of the environment to an initial state
         self.t_index = 0
+        self.step_count = 0
 
         self.episode_info["actions"] = deque()  # reset recorded actions
         self.episode_info["t_actions"] = deque()  # reset recorded action timeseries
@@ -300,7 +315,7 @@ class LSIEnv(gym.Env):
             self.RC.building.proportional_heating(self.RC.cool_load)
 
         # get next batch from dataloader:
-        self.time_data, self.temp_data = next(self.batch_generator)
+        self.time_data, self.temp_data = next(iter(self.dataloader))
 
         self.time_data = self.time_data.squeeze(0)
         self.temp_data = self.temp_data.squeeze(0)
@@ -311,13 +326,11 @@ class LSIEnv(gym.Env):
             self.RC.iv = self.RC.iv_array(self.time_data[0])
 
         self.observation = self._get_obs()
-        self.done = False
+        self.terminated = False
 
         self.need_init_render = True  # reset render logic
-        self.renderer.reset()
-        self.renderer.render_step()
 
-        return self.observation.numpy()
+        return self.observation.numpy(), self.episode_info
 
     def _get_obs(self):
         return torch.concat(
@@ -368,36 +381,32 @@ class LSIEnv(gym.Env):
             self.config["update_state_dict"] = None
 
     # TODO: Better render.
-    def render(self, mode="human"):
+    def render(self):
         if self.recording:
-            if mode is not None:
-                image_list = self.renderer.get_renders()
-                if not isinstance(image_list, list):
-                    image_list = [image_list]
-                return image_list
-            else:
-                return [self._render(mode)]
+            if self.render_mode is not None:
+                return self._render()
         else:
             # if not recording, return empty list
-            return []
+            return None
 
-    def _render(self, mode="human"):
+    def _render(self):
         # if self.render_mode:  # overwrite mode
         #     mode = self.render_mode
 
-        assert mode in self.metadata["render_modes"]
+        assert self.render_mode in self.metadata["render_modes"]
 
         with torch.no_grad():
             # set up render environment
             # if self.need_init_render:
             #     self._init_render(mode)
             #     self.need_init_render = False
-            line1, heat_line, ax, ax2 = self._init_render(mode)
 
             # return empty list unless until episode is done.
-            if mode == "single_rgb_array":
-                if not self.done:
-                    return []
+            if self.render_mode == "single_rgb_array":
+                if not self.terminated:
+                    return None
+
+            line1, heat_line, ax, ax2 = self._init_render()
 
             # line1.set_data(self.observation[:, 0].numpy(), self.observation[:, 3:].numpy())
 
@@ -426,10 +435,10 @@ class LSIEnv(gym.Env):
             # fig.canvas.flush_events()
             # plt.draw()
 
-            if mode == "human":
+            if self.render_mode == "human":
                 plt.pause(0.0001)
                 return self.fig
-            elif mode in {"rgb_array", "single_rgb_array"}:
+            elif self.render_mode in {"rgb_array", "single_rgb_array"}:
                 # Return a numpy RGB array of the figure
                 width, height = self.fig.get_size_inches() * self.fig.get_dpi()
                 img = np.frombuffer(
@@ -438,12 +447,12 @@ class LSIEnv(gym.Env):
 
                 return img
 
-    def _init_render(self, mode):
+    def _init_render(self):
         from matplotlib.lines import Line2D
 
         # global line1, heat_line, ax, ax2
 
-        if mode == "human":
+        if self.render_mode == "human":
             plt.ion()
             self.fig = plt.gcf()
         else:
@@ -514,7 +523,7 @@ class LSIEnv(gym.Env):
         labs = [l.get_label() for l in lns]
         ax.legend(lns, labs, loc="upper right")
 
-        if mode == "human":
+        if self.render_mode == "human":
             self.fig.show()
 
         return line1, heat_line, ax, ax2
@@ -538,30 +547,44 @@ class LSIEnv(gym.Env):
 
         # self.RC = self.config["RC_model"]
         self.dataloader = self.config["dataloader"]
-        self.batch_generator = iter(self.dataloader)
+        # self.batch_generator = iter(self.dataloader) # this was causing pickle issues
+        # just remove it.
         # self.step_length = self.config["step_length"]
         # self.render_mode = self.config["render_mode"]
 
 
-class PreprocessEnv(gym.Wrapper):
+class PreprocessEnv(gym.ObservationWrapper):
     """
-    Class used to preprocess the outputs from the environment before being seen by the policy.
-    """
+    A gym observation wrapper that preprocesses the observations.
 
+    This wrapper applies a normalization transformation to the observations by
+    subtracting the mean and dividing by the standard deviation.
+
+    Also sin(time) and cos(time) are added to the observations.
+
+       Args:
+           env (gym.Env): The environment to wrap and preprocess observations for.
+           mu (float): Mean of the data used for normalization.
+           std_dev (float): Standard deviation of the data used for normalization.
+
+       Attributes:
+           mu (float): Mean of the data used for normalization.
+           std_dev (float): Standard deviation of the data used for normalization.
+           observation_space (gym.spaces.Box): The modified observation space after
+           preprocessing.
+    """
     def __init__(self, env, mu, std_dev):
         super().__init__(env)
-        self.env = env
-        self.config = env.config
+
         self.mu = mu
         self.std_dev = std_dev
 
         time_high = [1.0] * 4
         time_low = [-1.0] * 4
 
-        temp_high = [
-                        np.float32(np.inf)
-                    ] * self.env.n_rooms  # This is normalised temperature so the limits are a guess.
-        temp_low = [-np.float32(np.inf)] * self.env.n_rooms
+        # This is normalised temperature so the limits are a guess.
+        temp_high = [np.float32(np.inf)] * env.n_rooms
+        temp_low = [-np.float32(np.inf)] * env.n_rooms
 
         self.observation_space = spaces.Box(
             np.array(temp_low + time_low),
@@ -569,24 +592,19 @@ class PreprocessEnv(gym.Wrapper):
             dtype=np.float64,
         )
 
-    def step(self, action):
-        observation, reward, done, info = self.env.step(action)
+    def observation(self, observation):
+        """Returns a modified observation.
+
+        Args:
+            observation: The :attr:`env` observation
+
+        Returns:
+            The modified observation
+        """
         unix_time = observation[-1, 0]
         x = observation[-1, 3:]  # remove the latent nodes
-        self.observation = preprocess_observation(x, unix_time, self.mu, self.std_dev)
 
-        return self.observation, reward, done, info
-
-    def reset(self):
-        observation = self.env.reset()
-        unix_time = observation[-1, 0]
-        x = observation[-1, 3:]  # remove the latent nodes
-        self.observation = preprocess_observation(x, unix_time, self.mu, self.std_dev)
-
-        return self.observation
-
-    def render(self, mode):
-        return self.env.render(mode=mode)
+        return preprocess_observation(x, unix_time, self.mu, self.std_dev)
 
 
 def preprocess_observation(x, unix_time, mu, std_dev):
@@ -623,171 +641,3 @@ def preprocess_observation(x, unix_time, mu, std_dev):
     ]
 
     return np.array(state)
-
-
-# class PriorEnv(gym.Env):
-#     """Custom Environment that follows gym interface"""
-#
-#     metadata = {"render.modes": ["human"]}
-#
-#     def __init__(self, RC, time_data, temp_data, prior):
-#         super().__init__()
-#
-#         self.RC = RC  # RCModel Class
-#         self.time_data = time_data  # timeseries
-#         self.temp_data = temp_data  # temp at timeseries
-#         self.prior = prior
-#         self.t_index = 0  # used to keep track of index through timeseries
-#         self.loss_fn = torch.nn.MSELoss(reduction="none")
-#
-#         print("Getting actions from prior policy.")
-#         prior_data = []
-#         for i in range(len(temp_data)):
-#             action, _ = prior.get_action(temp_data[i], time_data[i])
-#             prior_data.append(action)
-#
-#         self.prior_data = (
-#             torch.tensor(prior_data).unsqueeze(0).T
-#         )  # Data can be reused each epoch.
-#
-#         # ----- GYM Stuff -----
-#         self.n_rooms = len(self.RC.building.rooms)
-#         self.low_state = -10
-#         self.high_state = 50
-#         # Define action and observation space
-#         # They must be gym.spaces objects
-#         # Example when using discrete actions:
-#         self.action_space = spaces.Discrete(
-#             2,
-#         )
-#
-#         # Observation is temperature of each room.
-#         self.observation_space = spaces.Box(
-#             low=self.low_state,
-#             high=self.high_state,
-#             shape=(self.n_rooms,),
-#             dtype=np.float32,
-#         )
-#
-#     #                  action
-#     def step(self, step_size):
-#         # Execute a chunk of timeseries
-#         t_eval = self.time_data[self.t_index: int(self.t_index + step_size)]
-#         dummy_temp = self.temp_data[self.t_index: int(self.t_index + step_size)]
-#
-#         policy_action, log_prob = self.RC.cooling_policy.get_action(
-#             dummy_temp, t_eval
-#         )  # Do them all with broadcasting
-#
-#         if self.RC.cooling_policy.training:  # if in training mode store log_prob
-#             self.RC.cooling_policy.log_probs.append(log_prob)
-#
-#         prior_actions = self.prior_data[
-#                         self.t_index: int(self.t_index + step_size), 0: self.n_rooms
-#                         ]  # read in
-#         policy_actions = policy_action.unsqueeze(0).T
-#
-#         # negative so reward can be maximised
-#         reward = -self.loss_fn(policy_actions, prior_actions)  # Squared Error
-#
-#         pred = torch.zeros((1, 5))  # Fake pred to be compatible with Reinforce
-#         return pred, reward  # No need for grad on pred
-#
-#     #          (observation, reward, done, info)
-#     # self.state, reward, done, {}
-#
-#     def reset(self):
-#         # Reset the state of the environment to an initial state
-#         self.t_index = 0
-#         self.RC.reset_iv()
-#
-#         self.RC.cooling_policy.on_policy_reset()
-#
-#     def render(self, mode="human"):
-#         # Render the environment to the screen
-#
-#         return
-
-# class Reinforce:
-#     def __init__(self, env, gamma=0.99, alpha=1e-3):
-#
-#         self.env = env
-#         # self.pi = pi
-#         self.gamma = gamma
-#         self.alpha = alpha
-#
-#         self.optimiser = torch.optim.Adam(self.env.RC.cooling_policy.parameters(), lr=self.alpha)
-#
-#     def update_policy(self, rewards, log_probs):
-#         log_probs = torch.stack(log_probs).squeeze()  # get into right format regardless of whether single or multiple states have been used
-#
-#         # downsample rewards by averaging each window.
-#         rewards = torch.tensor([window.mean() for window in torch.tensor_split(rewards, len(log_probs))])
-#
-#         # Calculate Discounted Reward:
-#         discounted_rewards = torch.zeros(len(rewards))
-#
-#         R = 0
-#         indx = len(rewards) - 1
-#         for r in reversed(rewards):  # Future/Later rewards are discounted
-#             R = r + self.gamma * R  # Discounted Reward is calculated from last reward to first.
-#
-#             discounted_rewards[indx] = R  # Fill array back to front to un-reverse the order
-#             indx -= 1
-#
-#         # Normalise rewards
-#         discounted_rewards = (discounted_rewards - discounted_rewards.mean()) / (
-#                 discounted_rewards.std() + 1e-9)
-#
-#         # discounted_rewards = torch.tensor(np.array(discounted_rewards.detach().numpy()))
-#
-#         expected_reward = -log_probs * discounted_rewards  # negative for maximising
-#         expected_reward = torch.sum(expected_reward)
-#         # print(f'ER {expected_reward}')
-#
-#         # Update parameters in pi
-#         self.optimiser.zero_grad()
-#         expected_reward.backward()
-#         self.optimiser.step()
-#
-#         # print(list(self.pi.parameters())[0].grad)  # check on grads if needed
-#
-#         return expected_reward
-#
-#     def train(self, num_episodes):
-#         self.env.RC.cooling_policy.train()  # Put in training mode
-#         total_ER = []
-#         total_rewards = []
-#
-#         # with tqdm(total=len(self.env.time_data) * num_episodes, position=0, leave=False) as pbar:  # progress bar
-#         for episode in range(num_episodes):
-#             self.env.reset()
-#
-#             episode_rewards = []
-#             episode_ER = []
-#
-#             # Time is increased in steps, with the policy updating after every step.
-#             while self.env.t_index < len(self.env.time_data) - 1:
-#
-#                 # takes a step_size forward in time
-#                 pred, reward = self.env.step(action)  # state and action produced in step
-#
-#                 # Do gradient decent on sample
-#                 ER = self.update_policy(reward, self.env.RC.cooling_policy.log_probs)
-#
-#                 self.env.RC.cooling_policy.on_policy_reset()  # empty buffer
-#
-#                 # get last output and use for next initial value
-#                 # self.env.RC.iv = pred[-1, :].unsqueeze(1).detach()  # MUST DETACH GRAD
-#
-#                 episode_rewards.append(sum(reward))
-#                 episode_ER.append(ER)
-#
-#                 self.env.t_index += int(step_size)  # increase environment time
-#
-#             # print(f'Episode {episode+1}, Expected Reward: {sum(episode_ER).item():.2f}, total_reward: {sum(episode_rewards).item():.2f}')
-#
-#             total_ER.append(sum(episode_ER).detach())
-#             total_rewards.append(sum(episode_rewards).detach())
-#
-#         return total_rewards, total_ER
