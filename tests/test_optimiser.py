@@ -6,17 +6,18 @@ import ray
 import os
 from ray.tune.registry import register_env
 from ray.rllib.algorithms.ppo import PPOConfig
-from rcmodel.optimisation.optimise_models import test
+from rcmodel.optimisation.optimise_models import test as not_a_te_st
 from rcmodel import (
     RandomSampleDataset,
     InfiniteSampler,
-    env_create_and_setup,
+    env_creator,
     OptimiseRC,
     OptimisePolicy,
     model_creator,
 )
 
 torch.set_num_threads(1)
+register_env("LSIEnv", env_creator)
 
 
 @pytest.fixture(scope="function")
@@ -65,7 +66,6 @@ def get_env_config(get_datasets, model_n9):
 def get_policy_config(get_env_config):
     train_dataset, test_dataset, env_config = get_env_config
     n_workers = 1
-    register_env("LSIEnv", env_create_and_setup)
 
     policy_config = (
         PPOConfig()
@@ -106,8 +106,12 @@ def test_physical_optimiser(setup_test):
         env_config, rl_algorithm, train_dataset, test_dataset, lr=1e-3, opt_id=0
     )
 
+    # unwrap the render wrapper because it breakes the test as render not set up for
+    # more than 1 room.
+    # op.env = op.env.env
+
     op.train()
-    # op.test()
+    not_a_te_st(op.env, rl_algorithm, op.test_dataloader)
 
 
 def test_policy_optimiser(setup_test):
@@ -116,6 +120,9 @@ def test_policy_optimiser(setup_test):
     _, weights = make_first_checkpoint(policy_config, tmpdirname)
 
     op_pol = OptimisePolicy(policy_config, weights, opt_id=0)
+
+    # A bit of a hacky way to call rcmodel.setup()
+    op_pol.update_environment({})
 
     op_pol.train()
 
@@ -183,6 +190,14 @@ def test_policy_env_update(setup_test):
     for key in original_state_dict:
         assert torch.equal(original_state_dict[key], new_state_dict[key])
 
+
+# add test for saving and loading.
+
+# add test for cycle.
+
+# add test to make sure images are being saved and the different options work.
+
+# test that model parameters are changed when a cycle occurs.
 
 if __name__ == "__main__":
     pytest.main()
