@@ -124,9 +124,28 @@ def test(env, rl_algorithm, test_dataloader):
             reward_list.append(episode_reward)
             render_list.append(env.render())
 
-    # remove the None values when no render was returned.
-    render_list = list(filter(lambda item: item is not None, render_list))
-    return reward_list, render_list
+    return reward_list, remove_none(render_list)
+
+
+def remove_none(nested_list):
+    """
+    Flatten a nested list and remove all occurrences of None values.
+
+    Args:
+        nested_list (list): The nested list to flatten and remove None values from.
+
+    Returns:
+        list: A flattened list with all None values removed.
+    """
+    flattened = []
+    if isinstance(nested_list, list):
+        for item in nested_list:
+            if isinstance(item, list):
+                flattened.extend(remove_none(item))
+            elif item is not None:
+                flattened.append(item)
+    return flattened
+
 
 
 # TODO: Add torch lightning support
@@ -201,9 +220,7 @@ class OptimiseRC:
             render_list.append(self.env.render())
             self.environment_steps += self.env.step_count
 
-        # remove the None values when no render was returned.
-        render_list = list(filter(lambda item: item is not None, render_list))
-        return reward_list, render_list
+        return reward_list, remove_none(render_list)
 
 
 class OptimisePolicy:
