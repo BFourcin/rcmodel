@@ -1,6 +1,7 @@
-import os
 import dill
+import csv
 import numpy as np
+from pathlib import Path
 from PIL import Image
 from ray.rllib.algorithms.algorithm import Algorithm
 from rcmodel.optimisation.optimise_models import test
@@ -18,7 +19,8 @@ def capped_cubic_test_schedule(episode_id: int) -> bool:
 class OptimiseManager:
     def __init__(self, physical_optimiser, policy_optimiser, physical_loops=100,
                  policy_loops=100, render_phase=None, render_trigger=None,
-                 physical_test_trigger=None, policy_test_trigger=None):
+                 physical_test_trigger=None, policy_test_trigger=None, logging=True,
+                 log_filename='log.csv', verbose=True):
 
         self.physical_optimiser = physical_optimiser
         self.policy_optimiser = policy_optimiser
@@ -53,16 +55,25 @@ class OptimiseManager:
         now = datetime.now()
         self.directory_path = "./outputs/" + now.strftime("%y%m%d_%H%M")
 
+        # Logging
+        self.logging = logging
+        self.log_filename = self.directory_path + log_filename
+
+        self.verbose = verbose
+
+        print(f'Run outputs saved to: {Path(self.directory_path).resolve()}')
+
     def cycle(self):
+
         # ------ PHYSICAL ------
         for epoch in trange(self.physical_loops, desc='Physical Training'):
+            self.running_physical = True  # Just some flags.
+            self.running_policy = False
 
             # ------ Train ------
             # Run the physical optimiser.
             reward_list, render_list = self.train_physical()
             self.physical_epochs += 1
-
-            print(f"Physical Train: {self.physical_epochs:<4} | Average Reward: {np.mean(reward_list):6.2f}")
 
             # If images have been rendered, save them.
             if render_list:
@@ -72,12 +83,25 @@ class OptimiseManager:
             # ------ Test ------
             # Run test if required:
             if self.physical_test_trigger(self.physical_epochs):
-                reward_list, render_list = self.test()
-                print(
-                    f"Physical Test: {self.physical_epochs:<4} | Average Reward: {np.mean(reward_list):6.2f}")
+                reward_list_test, render_list = self.test()
+
                 if render_list:
                     directory_path = self.directory_path + "/images/test"
                     self.save_image_list(render_list, directory_path)
+
+            info = {
+                'cycle': self.cycle_count,
+                'epoch': self.physical_epochs + self.policy_epochs,
+                'average train reward': np.mean(reward_list),
+                'average test reward': np.mean(reward_list_test),
+                'physical_epoch': self.running_physical,
+                'policy_epoch': self.running_policy}
+
+            if self.verbose:
+                print_training_info(info)
+
+            if self.logging:
+                self.log_data_to_csv(info)
 
         # ------ Save ------
         self.save()
@@ -87,22 +111,35 @@ class OptimiseManager:
 
         # ------ POLICY ------
         for epoch in trange(self.policy_loops, desc='Policy Training'):
+            self.running_physical = False  # Just some flags.
+            self.running_policy = True
+
             # ------ Train ------
             # Run the policy optimiser.
             avg_reward = self.train_policy()
             self.policy_epochs += 1
 
-            print(f"Policy Train: {self.policy_epochs:<4} | Average Reward: {avg_reward:6.2f}")
-
             # ------ Test ------
             if self.policy_test_trigger(self.policy_epochs):
-                reward_list, render_list = self.test()
-                print(
-                    f"Policy Test: {self.policy_epochs:<4} | Average Reward: {np.mean(reward_list):6.2f}")
+                reward_list_test, render_list = self.test()
 
                 if render_list:
                     directory_path = self.directory_path + "/images/test"
                     self.save_image_list(render_list, directory_path)
+
+            info = {
+                'cycle': self.cycle_count,
+                'epoch': self.physical_epochs + self.policy_epochs,
+                'average train reward': avg_reward,
+                'average test reward': np.mean(reward_list_test),
+                'physical_epoch': self.running_physical,
+                'policy_epoch': self.running_policy}
+
+            if self.verbose:
+                print_training_info(info)
+
+            if self.logging:
+                self.log_data_to_csv(info)
 
         # ------ Save ------
         self.save()
@@ -112,6 +149,8 @@ class OptimiseManager:
 
         # ------ Sanity Checks ------
         self.sanity_checks()
+
+        self.cycle_count += 1
 
     def train_physical(self):
         # See if we should render:
@@ -156,7 +195,8 @@ class OptimiseManager:
         if filename is None:
             filename = f"model_{self.physical_epochs}_{self.policy_epochs}.pkl"
 
-        os.makedirs(directory_path, exist_ok=True)
+        directory_path = Path(directory_path)
+        directory_path.mkdir(parents=True, exist_ok=True)
 
         checkpoint_path = self.policy_optimiser.rl_algorithm.save(directory_path)
         rl_algorithm = self.policy_optimiser.rl_algorithm
@@ -169,7 +209,7 @@ class OptimiseManager:
             "manager": self,
         }
 
-        filepath = os.path.join(directory_path, filename)
+        filepath = directory_path / filename
         with open(filepath, "wb") as dill_file:
             dill.dump(save_dict, dill_file)
 
@@ -233,7 +273,7 @@ class OptimiseManager:
         if not isinstance(image_list, list):
             image_list = [image_list]
 
-        os.makedirs(directory_path, exist_ok=True)
+        Path(directory_path).mkdir(parents=True, exist_ok=True)
         for i, image in enumerate(image_list):
             # Convert the numpy array to a PIL Image object
             pil_image = Image.fromarray(image)
@@ -241,3 +281,43 @@ class OptimiseManager:
             # Save the image to disk using the specified filename and format
             filename = f"{directory_path}/img{self.physical_epochs}_{self.policy_epochs}_{i+1}.png"
             pil_image.save(filename)
+
+    def log_data_to_csv(self, data):
+        # Extract directory path from the filename
+        directory = Path(self.log_filename).parent
+
+        # Create the directory if it doesn't exist
+        directory.mkdir(parents=True, exist_ok=True)
+
+        # Check if the CSV file already exists
+        file_exists = Path(self.log_filename).is_file()
+
+        with open(self.log_filename, 'a', newline='') as csvfile:
+            writer = csv.DictWriter(csvfile, fieldnames=data.keys())
+
+            # Write header row if the file doesn't exist
+            if not file_exists:
+                writer.writeheader()
+
+            # Write data row
+            writer.writerow(data)
+
+
+def print_training_info(info):
+    cycle = f"{info['cycle']:>5}"
+    epoch = f"{info['epoch']:>5}"
+    avg_train_reward = f"{info['average train reward']:.2f}"
+    avg_test_reward = f"{info['average test reward']:.2f}"
+    physical_epoch = 'Y' if info['physical_epoch'] else 'N'
+    policy_epoch = 'Y' if info['policy_epoch'] else 'N'
+
+    if (info['epoch'] - 1) % 20 == 0:
+        separator = "+-------+-------+----------------+----------------+----------+---------+"
+        headers =   "| Cycle | Epoch |    Avg Train   |    Avg Test    | Physical | Policy  |"
+
+        print(separator)
+        print(headers)
+        print(separator)
+
+    output = f"| {cycle} | {epoch} | {avg_train_reward:>14} | {avg_test_reward:>14} | {physical_epoch:^8} | {policy_epoch:^7} |"
+    print(output)
