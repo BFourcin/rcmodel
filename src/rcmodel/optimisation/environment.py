@@ -329,6 +329,7 @@ class LSIEnv(gym.Env):
         self.terminated = False
 
         self.need_init_render = True  # reset render logic
+        plt.close("all")  # close any open figures
 
         return self.observation.numpy(), self.episode_info
 
@@ -444,6 +445,7 @@ class LSIEnv(gym.Env):
                 img = np.frombuffer(
                     self.fig.canvas.tostring_rgb(), dtype="uint8"
                 ).reshape((int(height), int(width), 3))
+                plt.close(self.fig)
 
                 return img
 
