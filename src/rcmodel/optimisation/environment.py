@@ -114,7 +114,10 @@ class LSIEnv(gym.Env):
     """
 
     metadata = {
-        "render_modes": ["human", "rgb_array", "single_rgb_array"],
+        "render_modes": ["human",
+                         "rgb_array",
+                         "single_rgb_array",
+                         "single_epoch_rgb_array"],
         "render_fps": 25,
     }
 
@@ -403,7 +406,7 @@ class LSIEnv(gym.Env):
             #     self.need_init_render = False
 
             # return empty list unless until episode is done.
-            if self.render_mode == "single_rgb_array":
+            if self.render_mode in ["single_rgb_array", "single_epoch_rgb_array"]:
                 if not self.terminated:
                     return None
 
@@ -439,7 +442,9 @@ class LSIEnv(gym.Env):
             if self.render_mode == "human":
                 plt.pause(0.0001)
                 return self.fig
-            elif self.render_mode in {"rgb_array", "single_rgb_array"}:
+            elif self.render_mode in {"rgb_array",
+                                      "single_rgb_array",
+                                      "single_epoch_rgb_array"}:
                 # Return a numpy RGB array of the figure
                 width, height = self.fig.get_size_inches() * self.fig.get_dpi()
                 img = np.frombuffer(
