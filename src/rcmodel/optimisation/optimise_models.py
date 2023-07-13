@@ -113,6 +113,9 @@ def test(env, rl_algorithm, test_dataloader):
     render_list = []
     with torch.no_grad():
         for i in range(len(test_dataloader)):
+            if base_env.render_mode == 'single_epoch_rgb_array':
+                # Only render on the last episode.
+                base_env.recording = (i + 1) % len(test_dataloader) == 0
             terminated = False
             episode_reward = 0
             obs, _ = env.reset()
@@ -147,7 +150,6 @@ def remove_none(nested_list):
     return flattened
 
 
-
 # TODO: Add torch lightning support
 class OptimiseRC:
     """
@@ -178,7 +180,8 @@ class OptimiseRC:
             test_dataset,
             lr=1e-3,
             opt_id=0,
-    ):
+            ):
+
         self.env = rcmodel.tools.env_creator(env_config)
         self.rl_algorithm = rl_algorithm
         self.lr = lr
@@ -215,6 +218,10 @@ class OptimiseRC:
         reward_list = []
         render_list = []
         for batch in trange(len(self.train_dataloader), desc='Physical Episodes'):
+            if base_env.render_mode == 'single_epoch_rgb_array':
+                # Just render the last episode.
+                base_env.recording = ((batch + 1) % len(self.train_dataloader) == 0)
+
             reward = train(self.env, self.rl_algorithm, self.optimizer)
             reward_list.append(reward)
             render_list.append(self.env.render())

@@ -57,7 +57,7 @@ class OptimiseManager:
 
         # Logging
         self.logging = logging
-        self.log_filename = self.directory_path + log_filename
+        self.log_filename = self.directory_path + '/' + log_filename
 
         self.verbose = verbose
 
