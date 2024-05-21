@@ -14,10 +14,10 @@ from .cyclic_manager import OptimiseManager
 __all__ = [
     "OptimiseRC",
     "OptimisePolicy",
-    "DDPOptimiseRC",
+    # "DDPOptimiseRC",
     "PolicyNetwork",
     "LSIEnv",
-    "PriorEnv",
+    # "PriorEnv",
     "PriorCoolingPolicy",
     "PreprocessEnv",
     "preprocess_observation",
