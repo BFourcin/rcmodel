@@ -69,6 +69,7 @@ class OptimiseManager:
         for epoch in trange(self.physical_loops, desc='Physical Training'):
             self.running_physical = True  # Just some flags.
             self.running_policy = False
+            reward_list_test = np.nan  # Incase we dont test.
 
             # ------ Train ------
             # Run the physical optimiser.
@@ -113,6 +114,7 @@ class OptimiseManager:
         for epoch in trange(self.policy_loops, desc='Policy Training'):
             self.running_physical = False  # Just some flags.
             self.running_policy = True
+            reward_list_test = np.nan  # Incase we dont test.
 
             # ------ Train ------
             # Run the policy optimiser.
