@@ -229,8 +229,9 @@ def get_iv_array(model, dataset):
     Only the latent temperature nodes in the external walls are free to change meaning we can find out their true
     values for a given model.
 
-    Tout --R--|--R--|--R-- Tin
-              C     C
+    Tout --R--T1--R--T2--R-- Tin
+              |      |
+              C      C
     """
 
     with torch.no_grad():
