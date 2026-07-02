@@ -98,7 +98,7 @@ def test(env, rl_algorithm, test_dataloader):
     """
 
     base_env = env.unwrapped  # Env is likely wrapped.
-    # Use config to update environment, changes are checked. It's weird.
+    # Use config to update environment, changes will be applied.
     base_env.config.update(dataloader=test_dataloader)
     base_env.RC.setup(test_dataloader.dataset)  # Get iv array
 
