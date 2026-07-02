@@ -16,6 +16,7 @@ def capped_cubic_test_schedule(episode_id: int) -> bool:
         return episode_id % 1000 == 0
 
 
+# TODO: Add in comments and docstrings.
 class OptimiseManager:
     def __init__(self, physical_optimiser, policy_optimiser, physical_loops=100,
                  policy_loops=100, render_phase=None, render_trigger=None,
@@ -26,7 +27,7 @@ class OptimiseManager:
         self.policy_optimiser = policy_optimiser
 
         if render_phase:
-            assert render_phase in {'train', 'test', 'both'}
+            assert render_phase in {'train', 'test', 'both', None}
 
         self.render_phase = render_phase
 
@@ -149,10 +150,11 @@ class OptimiseManager:
         # ------ Handover ------
         self.handover_policy_to_physical()
 
-        # ------ Sanity Checks ------
+        # ------ Finish Cycle ------
         self.sanity_checks()
-
         self.cycle_count += 1
+
+        return avg_reward
 
     def train_physical(self):
         # See if we should render:
