@@ -24,32 +24,34 @@ def test_rounded():
 
 
 @pytest.mark.parametrize(
-    'building, num_walls',
+    'building_name, num_walls',
     [
-        (pytest.lazy_fixture('building_n2'), 7),
-        (pytest.lazy_fixture('building_n9'), 27)
+        ('building_n2', 7),
+        ('building_n9', 27),
     ])
-def test_unique_walls(building, num_walls):
+def test_unique_walls(request, building_name, num_walls):
+    building = request.getfixturevalue(building_name)
     assert len(building.Walls) == num_walls, "Num walls counted incorrectly"
 
 
 @pytest.mark.parametrize(
-    'building, external_area',
+    'building_name, external_area',
     [
-        (pytest.lazy_fixture('building_n2'), 30),
-        (pytest.lazy_fixture('building_n9'), 44.180)
+        ('building_n2', 30),
+        ('building_n9', 44.180),
     ])
-def test_surf_area(building, external_area):
+def test_surf_area(request, building_name, external_area):
+    building = request.getfixturevalue(building_name)
     assert round(building.surf_area.item(), 3) == external_area
 
 
 @pytest.mark.parametrize(
-    'building, K',
+    'building_name, K',
     [
-        (pytest.lazy_fixture('building_n2'), torch.tensor([[0., 30., 30.],
-                                                           [30., 0., 50.],
-                                                           [30., 50., 0.]])),
-        (pytest.lazy_fixture('building_n9'),
+        ('building_n2', torch.tensor([[0., 30., 30.],
+                                       [30., 0., 50.],
+                                       [30., 50., 0.]])),
+        ('building_n9',
          torch.tensor([[0.0000, 20.0000, 10.0000, 22.3607, 4.0000, 0.0000, 0.0000, 0.0000, 4.0000, 28.0000],
                        [20.0000, 0.0000, 50.0000, 50.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000],
                        [10.0000, 50.0000, 0.0000, 50.0000, 0.0000, 0.0000, 10.0000, 20.0000, 20.0000, 0.0000],
@@ -61,9 +63,11 @@ def test_surf_area(building, external_area):
                        [4.0000, 0.0000, 20.0000, 0.0000, 0.0000, 0.0000, 0.0000, 20.0000, 0.0000, 20.0000],
                        [28.0000, 0.0000, 0.0000, 0.0000, 20.0000, 20.0000, 20.0000, 20.0000, 20.0000, 0.0000]])),
     ])
-def test_connectivity_matrix(building, K):
+def test_connectivity_matrix(request, building_name, K):
+    building = request.getfixturevalue(building_name)
+
     Re = [5, 1, 0.5]
-    Ce = [1e3,8e2]
+    Ce = [1e3, 8e2]
     Rint = 0.1
 
     k = building.make_thermal_conductivity_matrix()
@@ -127,14 +131,9 @@ def test_make_system_matrix_rooms_n9(building_n9):
     assert torch.equal(rounded(A), rounded(building_n9.make_system_matrix()))
 
 
-@pytest.mark.parametrize(
-    'building',
-    [
-        pytest.lazy_fixture('building_n2'),
-        pytest.lazy_fixture('building_n9'),
-    ], )
-def test_matrix_multiplication(building):
-    bld = building
+@pytest.mark.parametrize('building_name', ['building_n2', 'building_n9'])
+def test_matrix_multiplication(request, building_name):
+    bld = request.getfixturevalue(building_name)
 
     B = bld.input_matrix()
     Tout = torch.tensor(15)
@@ -147,13 +146,9 @@ def test_matrix_multiplication(building):
     assert torch.Size([2 + len(bld.rooms), 1]) == (A @ x + B @ u).shape, "Should be a column vector"
 
 
-@pytest.mark.parametrize(
-    'building',
-    [
-        pytest.lazy_fixture('building_n2'),
-        pytest.lazy_fixture('building_n9'),
-    ], )
-def test_input_matrix_shape(building):
+@pytest.mark.parametrize('building_name', ['building_n2', 'building_n9'])
+def test_input_matrix_shape(request, building_name):
+    building = request.getfixturevalue(building_name)
     B = building.input_matrix()
 
     assert B.shape == torch.Size([2 + len(building.rooms), 1 + len(building.rooms)])
