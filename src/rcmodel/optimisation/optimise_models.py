@@ -201,7 +201,7 @@ class OptimiseRC:
             shuffle=False,
         )
         self.optimizer = torch.optim.Adam(
-            [self.env.RC.params, self.env.RC.loads], lr=lr, maximize=True
+            [self.env.unwrapped.RC.params, self.env.unwrapped.RC.loads], lr=lr, maximize=True
         )
 
         # Check that we don't need preprocessing.
