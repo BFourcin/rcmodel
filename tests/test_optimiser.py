@@ -69,18 +69,10 @@ def get_policy_config(get_env_config):
 
     policy_config = (
         PPOConfig()
-        .environment(
-            env="LSIEnv",
-            env_config=env_config,
-            disable_env_checking=True,
-        )
-        .env_runners(
-            num_env_runners=n_workers,
-            rollout_fragment_length=12,
-        )
-        .training(
-            # train_batch_size_per_learner=12 * n_workers,
-        )
+        .training(train_batch_size=12 * n_workers, sgd_minibatch_size=12 * n_workers)
+        .environment(env="LSIEnv", env_config=env_config, disable_env_checking=True)
+        .rollouts(num_rollout_workers=n_workers, rollout_fragment_length=12 * n_workers)
+        .framework(framework="torch")
     )
     return train_dataset, test_dataset, env_config, policy_config
 
