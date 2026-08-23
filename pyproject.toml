@@ -5,17 +5,17 @@ description = "3R2C Resistor Capacitor Model for simplified building thermal sim
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    "dill>=0.4.1",
-    "filelock>=3.29.4",
-    "gymnasium>=1.1.1",
-    "matplotlib>=3.10.9",
-    "numpy>=1.26,<2",
-    "pandas>=2.3.3",
-    "ray[rllib]>=2.49.2",
-    "torch>=2.2.2",
-    "torchdiffeq>=0.2.5",
-    "tqdm>=4.68.3",
-    "xitorch>=0.5.1",
+    "dill>=0.3.6,<0.4",
+    "filelock>=3.8.0,<4",
+    "gymnasium>=0.26.3,<1",
+    "matplotlib>=3.6.1,<4",
+    "numpy==1.23.3",
+    "pandas>=1.5.1,<2",
+    "ray[rllib]==2.4.0",
+    "torch>=1.12.0,<2",
+    "torchdiffeq>=0.2.3,<0.3",
+    "tqdm>=4.64.1,<5",
+    "xitorch>=0.3.0,<0.4",
 ]
 
 [build-system]
@@ -27,6 +27,7 @@ version_scheme = "guess-next-dev"
 local_scheme = "no-local-version"
 
 [tool.pytest.ini_options]
+
 minversion = "6.0"
 addopts = "-ra -q"
 testpaths = [
@@ -41,6 +42,7 @@ required-environments = [
 [dependency-groups]
 dev = [
     "flake8>=7.3.0",
-    "pytest>=9.1.1",
-    "setuptools>=81.0.0",
+    "pytest<8",
+    "pytest-lazy-fixture>=0.6.3",
+    "setuptools<81",
 ]
