@@ -46,7 +46,7 @@ class OptimiseManager:
         if policy_test_trigger is True:
             def policy_test_trigger(x): return True
         elif policy_test_trigger is False:
-            def physical_test_trigger(x): return False
+            def policy_test_trigger(x): return False
 
         self.physical_test_trigger = physical_test_trigger
         self.policy_test_trigger = policy_test_trigger
