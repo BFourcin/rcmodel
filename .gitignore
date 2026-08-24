@@ -16,3 +16,4 @@ src/tuned_trial
 
 **/*cache*
 poetry.lock
+uv.lock
