@@ -20,7 +20,7 @@ def capped_cubic_test_schedule(episode_id: int) -> bool:
 class OptimiseManager:
     def __init__(self, physical_optimiser, policy_optimiser, physical_loops=100,
                  policy_loops=100, render_phase=None, render_trigger=None,
-                 physical_test_trigger=None, policy_test_trigger=None, logging=True,
+                 physical_test_trigger=True, policy_test_trigger=True, logging=True,
                  log_filename='log.csv', verbose=True):
 
         self.physical_optimiser = physical_optimiser
@@ -38,11 +38,15 @@ class OptimiseManager:
         self.physical_loops = physical_loops
         self.policy_loops = policy_loops
 
-        if physical_test_trigger is None:
+        if physical_test_trigger is True:
             def physical_test_trigger(x): return True
+        elif physical_test_trigger is False:
+            def physical_test_trigger(x): return False
 
-        if policy_test_trigger is None:
+        if policy_test_trigger is True:
             def policy_test_trigger(x): return True
+        elif policy_test_trigger is False:
+            def physical_test_trigger(x): return False
 
         self.physical_test_trigger = physical_test_trigger
         self.policy_test_trigger = policy_test_trigger
