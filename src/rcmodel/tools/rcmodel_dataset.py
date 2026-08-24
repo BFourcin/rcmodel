@@ -140,7 +140,8 @@ class RandomSampleDataset(Dataset):
     len(dataset_test) == (len(data_set)-warmup_size) * 0.2
     """
 
-    def __init__(self, csv_path, sample_size, warmup_size, transform=None, all=True, train=False, test=False):
+    def __init__(self, csv_path, sample_size, warmup_size, transform=None, all=True, train=False, test=False,
+                 epoch_length=None):
         self.csv_path = csv_path
         self.transform = transform
         self.sample_size = int(sample_size)  # this is the number of rows of data from the csv per sample.
@@ -149,6 +150,10 @@ class RandomSampleDataset(Dataset):
         self.all = all
         self.train = train
         self.test = test
+
+        # Force the size of each epoch e.g. epoch_length=1 means 1 batch (sample_size) of data for the whole epoch.
+        # Useful to force quick cycles for testing and parameter searching.
+        self.epoch_length = epoch_length
 
         # auto splits data by train and test
         # entry count is total number of rows in the csv which belong in this dataset.
@@ -160,13 +165,17 @@ class RandomSampleDataset(Dataset):
         """
         Get number of batches in the dataset. Returns int
         Minimum of 1 batch will be returned.
+
+        if epoch_length is set, the length is forced to this value.
         """
+        if self.epoch_length:
+            num_samples = self.epoch_length
+        else:
+            num_samples = self.entry_count // self.sample_size
 
-        num_samples = self.entry_count // self.sample_size
-
-        # Insufficient data for 1 whole sample size. Remainder of data used instead.
-        if num_samples == 0:
-            raise ValueError('Insufficient amount of data')
+            # Insufficient data for 1 whole sample size. Remainder of data used instead.
+            if num_samples == 0:
+                raise ValueError('Insufficient amount of data')
 
         return num_samples
 
