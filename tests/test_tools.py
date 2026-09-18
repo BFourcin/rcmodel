@@ -52,6 +52,7 @@ def test_model_loads_scaling(scaling):
 
 
 def test_model_setup():
+    np.random.seed(42)
     n = 24*60**2
     fake_time = np.arange(0, n, 30)
     fake_weather = 10 + 5 * np.sin(2 * np.pi * fake_time / n)
