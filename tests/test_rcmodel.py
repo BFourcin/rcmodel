@@ -92,7 +92,8 @@ def test_save_load(model_n9):
         diff_params = abs(loaded_params - original_params)
         diff_loads = abs(loaded_loads - original_loads)
 
-    assert (diff_params < 1e-3).all() and (diff_loads < 1e-3).all(), "model parameters are changing during a save and load"
+    assert (diff_params < 1e-3).all() and (diff_loads < 1e-3).all(),\
+        'model parameters are changing during a save and load'
 
 
 if __name__ == "__main__":
