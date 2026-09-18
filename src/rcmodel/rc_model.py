@@ -128,13 +128,9 @@ class RCModel(nn.Module):
     def _build_matrices(self):
         """
         Build/re-build the A and B matrices with the current set of parameters.
-        Keep track of parameters used so we can check when to update.
+        Keep track of parameters used, so we can check when to update.
         """
-        # Transform parameters
-        theta = self.transform(self.params) if self.transform else self.params
-
-        # Scale inputs up to their physical values
-        theta = self.scaling.physical_param_scaling(theta)
+        theta, _ = self.get_physical_paramaters()
 
         # Produce matrix A and B from current parameters
         self.A = self.building.update_inputs(theta)
@@ -145,9 +141,8 @@ class RCModel(nn.Module):
         Transform and scale loads.
         Keep track of loads used so we can only update when there is a difference.
         """
-        loads = self.transform(self.loads) if self.transform else self.loads  # Watts/m2 for cooling and gain.
+        _, loads = self.get_physical_paramaters()
 
-        loads = self.scaling.physical_loads_scaling(loads)
         self.cool_load = loads[0, :]
         self.gain_load = loads[1, :]
 
@@ -161,7 +156,7 @@ class RCModel(nn.Module):
         params = torch.rand(self.building.n_params, dtype=torch.float32, requires_grad=True)
         loads = torch.rand((2, len(self.building.rooms)), dtype=torch.float32, requires_grad=True)
 
-        # enables spread of initial parameters. Otherwise sigmoid(rand) tends towards 0.5.
+        # enables spread of initial parameters. Otherwise, sigmoid(rand) tends towards 0.5.
         if self.transform == torch.sigmoid:
             params = torch.logit(params)  # inverse sigmoid
             loads = torch.logit(loads)
@@ -201,6 +196,23 @@ class RCModel(nn.Module):
         """
         with open(filename, "rb") as dill_file:
             return dill.load(dill_file)
+
+    def get_physical_paramaters(self):
+        """
+        Go from params (most likely in the form: logit(rand(0,1)) to the true physical values.
+        """
+        # Transform parameters
+        theta = self.transform(self.params) if self.transform else self.params
+
+        # Scale inputs up to their physical values
+        physically_scaled_params = self.scaling.physical_param_scaling(theta)
+
+        # Transform loads
+        loads = self.transform(self.loads) if self.transform else self.loads  # Watts/m2 for cooling and gain.
+
+        physically_scaled_loads = self.scaling.physical_loads_scaling(loads)
+
+        return physically_scaled_params, physically_scaled_loads
 
 
 def get_iv_array(model, dataset):
