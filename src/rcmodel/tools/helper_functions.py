@@ -30,7 +30,8 @@ def model_creator(model_config):
         "room_names": ["seminar_rm_a_t0106"],
         "room_coordinates": [[[92.07, 125.94], [92.07, 231.74], [129.00, 231.74], [154.45, 231.74],
                               [172.64, 231.74], [172.64, 125.94]]],
-        "weather_data_path": weather_data_path,
+        "weather_data_outdoor_temperature": DataFrame or Array like,
+        "weather_data_UTC_time": DataFrame or Array like,
         "cooling_policy": None,
         "load_model_path_policy": None,  # './prior_policy.pt',  # or None
         "load_model_path_physical": None,  # or None
@@ -42,11 +43,12 @@ def model_creator(model_config):
             "R2": np.random.rand(1).item(),
             "R3": np.random.rand(1).item(),
             "Rin": np.random.rand(1).item(),
-            "cool": np.random.rand(1).item(),  # 0.09133423646610082
-            "gain": np.random.rand(1).item(),  # 0.9086668150306394
+            "cool": np.random.rand(1).item(),
+            "gain": np.random.rand(1).item(),
         }
     }
     """
+
     def init_scaling():
         # Initialise scaling class
         C_rm = model_config['C_rm']  # [min, max] Capacitance/m2
@@ -62,13 +64,26 @@ def model_creator(model_config):
         scaling = InputScaling(C_rm, C1, C2, R1, R2, R3, Rin, cool, gain)
         return scaling
 
-    # pi = PolicyNetwork(5, 2)
+    def model_sanity_checks():
+
+        assert len(model_config['weather_data_outdoor_temperature']) == len(model_config['weather_data_UTC_time']), \
+            "Length of 'weather_data_outdoor_temperature' and 'weather_data_UTC_time' should match."
+
+        return
+
+    model_sanity_checks()
+
     pi = model_config["cooling_policy"]
     scaling = init_scaling()
 
     # Initialise RCModel with the building
-    model = initialise_model(pi, scaling, model_config['weather_data_path'], model_config['room_names'],
-                             model_config['room_coordinates'])
+    model = initialise_model(pi,
+                             scaling,
+                             model_config['weather_data_outdoor_temperature'],
+                             model_config['weather_data_UTC_time'],
+                             model_config['room_names'],
+                             model_config['room_coordinates']
+                             )
 
     # load physical and/or policy models if available
     if model_config['load_model_path_policy']:
@@ -78,13 +93,23 @@ def model_creator(model_config):
     if model_config['load_model_path_physical']:
         # Try loading a dummy model with no policy, if it fails load with a policy. (We don't know what file contains)
         try:
-            m = initialise_model(None, scaling, model_config['weather_data_path'], model_config['room_names'],
-                                 model_config['room_coordinates'])
+            m = initialise_model(None,
+                                 scaling,
+                                 model_config['weather_data_outdoor_temperature'],
+                                 model_config['weather_data_UTC_time'],
+                                 model_config['room_names'],
+                                 model_config['room_coordinates']
+                                 )
             m.load(model_config['load_model_path_physical'])
 
         except RuntimeError:
-            m = initialise_model(pi, scaling, model_config['weather_data_path'], model_config['room_names'],
-                                 model_config['room_coordinates'])
+            m = initialise_model(pi,
+                                 scaling,
+                                 model_config['weather_data_outdoor_temperature'],
+                                 model_config['weather_data_UTC_time'],
+                                 model_config['room_names'],
+                                 model_config['room_coordinates']
+                                 )
             m.load(model_config['load_model_path_physical'])
 
         model.params = m.params  # put loaded physical parameters onto model.
@@ -209,32 +234,36 @@ def env_create_and_setup(env_config):
     return env
 
 
-def initialise_model(pi, scaling, weather_data_path, room_names, room_coordinates):
-    def change_origin(coords):
-        """This function changes the origin of the coordinate system, so [0,0] is on the building.
-        Function exists because floor plan was offset."""
-        x0 = 92.07
-        y0 = 125.94
+def change_origin(room_coordinates):
+    """Shifts a list of room coordinate polygons so [0,0] sits at the
+    minimum x/y corner across all rooms combined, preserving each room's
+    position relative to the others."""
+    all_points = [point for room in room_coordinates for point in room]
+    x0 = min(point[0] for point in all_points)
+    y0 = min(point[1] for point in all_points)
 
-        new_coords = []
-        for i in range(len(coords)):
-            l = [round((coords[i][0] - x0) / 10, 2), round((coords[i][1] - y0) / 10, 2)]
-            new_coords.append(l)
+    shifted_rooms = []
+    for room in room_coordinates:
+        shifted_rooms.append(
+            [[round((x - x0) / 10, 2), round((y - y0) / 10, 2)] for x, y in room]
+        )
 
-        return new_coords
+    return shifted_rooms
+
+
+def initialise_model(pi, scaling, weather_data_outdoor_temperature, weather_data_UTC_time, room_names,
+                     room_coordinates):
+    room_coordinates = change_origin(room_coordinates)
 
     rooms = []
     for i in range(len(room_names)):
-        name = room_names[i]
-        coords = change_origin(room_coordinates[i])
-        rooms.append(Room(name, coords))
+        rooms.append(Room(room_names[i], room_coordinates[i]))
 
     # Initialise Building
     bld = Building(rooms)
 
-    df = pd.read_csv(weather_data_path)
-    Tout = torch.tensor(df['Hourly Temperature (°C)'])
-    t = torch.tensor(df['time'])
+    Tout = torch.tensor(weather_data_outdoor_temperature)
+    t = torch.tensor(weather_data_UTC_time)
     Tout_continuous = Interp1D(t, Tout, method='linear')  # Interp1D object
 
     # Initialise RCModel with the building
@@ -491,4 +520,3 @@ def policy_image(algo, n=100, path=None):
         fig.savefig(path)
     else:
         plt.show()
-
