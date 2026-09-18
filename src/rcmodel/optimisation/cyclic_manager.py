@@ -1,33 +1,45 @@
-import dill
 import csv
-import numpy as np
+from datetime import datetime
 from pathlib import Path
+
+import dill
+import numpy as np
 from PIL import Image
 from ray.rllib.algorithms.algorithm import Algorithm
+from tqdm import trange
+
 from rcmodel.optimisation.optimise_models import test
-from tqdm import tqdm, trange
-from datetime import datetime
 
 
 def capped_cubic_test_schedule(episode_id: int) -> bool:
     if episode_id < 1000:
-        return int(round(episode_id ** (1.0 / 3))) ** 3 == episode_id
+        return round(episode_id ** (1.0 / 3)) ** 3 == episode_id
     else:
         return episode_id % 1000 == 0
 
 
 # TODO: Add in comments and docstrings.
 class OptimiseManager:
-    def __init__(self, physical_optimiser, policy_optimiser, physical_loops=100,
-                 policy_loops=100, render_phase=None, render_trigger=None,
-                 physical_test_trigger=True, policy_test_trigger=True, logging=True,
-                 log_filename='log.csv', verbose=True):
+    def __init__(
+        self,
+        physical_optimiser,
+        policy_optimiser,
+        physical_loops=100,
+        policy_loops=100,
+        render_phase=None,
+        render_trigger=None,
+        physical_test_trigger=True,
+        policy_test_trigger=True,
+        logging=True,
+        log_filename="log.csv",
+        verbose=True,
+    ):
 
         self.physical_optimiser = physical_optimiser
         self.policy_optimiser = policy_optimiser
 
         if render_phase:
-            assert render_phase in {'train', 'test', 'both', None}
+            assert render_phase in {"train", "test", "both", None}
 
         self.render_phase = render_phase
 
@@ -39,20 +51,30 @@ class OptimiseManager:
         self.policy_loops = policy_loops
 
         if physical_test_trigger is True:
-            def physical_test_trigger(x): return True
+
+            def physical_test_trigger(x):
+                return True
         elif physical_test_trigger is False:
-            def physical_test_trigger(x): return False
+
+            def physical_test_trigger(x):
+                return False
 
         if policy_test_trigger is True:
-            def policy_test_trigger(x): return True
+
+            def policy_test_trigger(x):
+                return True
         elif policy_test_trigger is False:
-            def policy_test_trigger(x): return False
+
+            def policy_test_trigger(x):
+                return False
 
         self.physical_test_trigger = physical_test_trigger
         self.policy_test_trigger = policy_test_trigger
 
         if render_trigger is None:
-            def render_trigger(x): return True
+
+            def render_trigger(x):
+                return True
 
         self.render_trigger = render_trigger
 
@@ -62,16 +84,16 @@ class OptimiseManager:
 
         # Logging
         self.logging = logging
-        self.log_filename = self.directory_path + '/' + log_filename
+        self.log_filename = self.directory_path + "/" + log_filename
 
         self.verbose = verbose
 
-        print(f'Run outputs saved to: {Path(self.directory_path).resolve()}')
+        print(f"Run outputs saved to: {Path(self.directory_path).resolve()}")
 
     def cycle(self):
 
         # ------ PHYSICAL ------
-        for epoch in trange(self.physical_loops, desc='Physical Training'):
+        for _epoch in trange(self.physical_loops, desc="Physical Training"):
             self.running_physical = True  # Just some flags.
             self.running_policy = False
             reward_list_test = np.nan  # Incase we dont test.
@@ -96,12 +118,13 @@ class OptimiseManager:
                     self.save_image_list(render_list, directory_path)
 
             info = {
-                'cycle': self.cycle_count,
-                'epoch': self.physical_epochs + self.policy_epochs,
-                'average train reward': np.mean(reward_list),
-                'average test reward': np.mean(reward_list_test),
-                'physical_epoch': self.running_physical,
-                'policy_epoch': self.running_policy}
+                "cycle": self.cycle_count,
+                "epoch": self.physical_epochs + self.policy_epochs,
+                "average train reward": np.mean(reward_list),
+                "average test reward": np.mean(reward_list_test),
+                "physical_epoch": self.running_physical,
+                "policy_epoch": self.running_policy,
+            }
 
             if self.verbose:
                 print_training_info(info)
@@ -116,7 +139,7 @@ class OptimiseManager:
         self.handover_physical_to_policy()
 
         # ------ POLICY ------
-        for epoch in trange(self.policy_loops, desc='Policy Training'):
+        for _epoch in trange(self.policy_loops, desc="Policy Training"):
             self.running_physical = False  # Just some flags.
             self.running_policy = True
             reward_list_test = np.nan  # Incase we dont test.
@@ -135,12 +158,13 @@ class OptimiseManager:
                     self.save_image_list(render_list, directory_path)
 
             info = {
-                'cycle': self.cycle_count,
-                'epoch': self.physical_epochs + self.policy_epochs,
-                'average train reward': avg_reward,
-                'average test reward': np.mean(reward_list_test),
-                'physical_epoch': self.running_physical,
-                'policy_epoch': self.running_policy}
+                "cycle": self.cycle_count,
+                "epoch": self.physical_epochs + self.policy_epochs,
+                "average train reward": avg_reward,
+                "average test reward": np.mean(reward_list_test),
+                "physical_epoch": self.running_physical,
+                "policy_epoch": self.running_policy,
+            }
 
             if self.verbose:
                 print_training_info(info)
@@ -162,7 +186,7 @@ class OptimiseManager:
 
     def train_physical(self):
         # See if we should render:
-        if self.render_phase == 'train' or self.render_phase == 'both':
+        if self.render_phase == "train" or self.render_phase == "both":
             start_render = self.render_trigger(self.physical_epochs)
         else:
             start_render = False
@@ -180,8 +204,7 @@ class OptimiseManager:
 
     def test(self):
         # See if we should render:
-        if self.render_phase == 'test' or self.render_phase == 'both':
-
+        if self.render_phase == "test" or self.render_phase == "both":
             start_render = self.render_trigger(self.physical_epochs)
         else:
             start_render = False
@@ -239,18 +262,19 @@ class OptimiseManager:
         RCModel
         """
         from ray.tune.registry import register_env
+
         from rcmodel import env_creator
 
         register_env("LSIEnv", env_creator)
 
         with open(filename, "rb") as dill_file:
-
             save_dict = dill.load(dill_file)
 
             manager = save_dict["manager"]
             # Put back the batch generator
-            manager.physical_optimiser.env.unwrapped.batch_generator =\
-                iter(manager.physical_optimiser.env.unwrapped.dataloader)
+            manager.physical_optimiser.env.unwrapped.batch_generator = iter(
+                manager.physical_optimiser.env.unwrapped.dataloader
+            )
 
             # Get the RL algorithm from the checkpoint and put back.
             checkpoint_path = save_dict["checkpoint_path"]
@@ -274,7 +298,9 @@ class OptimiseManager:
         pass
 
     def sanity_checks(self):
-        assert self.policy_optimiser.rl_algorithm is self.physical_optimiser.rl_algorithm, "We're not using the same RL algorithm!"
+        assert self.policy_optimiser.rl_algorithm is self.physical_optimiser.rl_algorithm, (
+            "We're not using the same RL algorithm!"
+        )
 
     def save_image_list(self, image_list, directory_path):
 
@@ -287,7 +313,7 @@ class OptimiseManager:
             pil_image = Image.fromarray(image)
 
             # Save the image to disk using the specified filename and format
-            filename = f"{directory_path}/img{self.physical_epochs}_{self.policy_epochs}_{i+1}.png"
+            filename = f"{directory_path}/img{self.physical_epochs}_{self.policy_epochs}_{i + 1}.png"
             pil_image.save(filename)
 
     def log_data_to_csv(self, data):
@@ -300,7 +326,7 @@ class OptimiseManager:
         # Check if the CSV file already exists
         file_exists = Path(self.log_filename).is_file()
 
-        with open(self.log_filename, 'a', newline='') as csvfile:
+        with open(self.log_filename, "a", newline="") as csvfile:
             writer = csv.DictWriter(csvfile, fieldnames=data.keys())
 
             # Write header row if the file doesn't exist
@@ -316,16 +342,18 @@ def print_training_info(info):
     epoch = f"{info['epoch']:>5}"
     avg_train_reward = f"{info['average train reward']:.2f}"
     avg_test_reward = f"{info['average test reward']:.2f}"
-    physical_epoch = 'Y' if info['physical_epoch'] else 'N'
-    policy_epoch = 'Y' if info['policy_epoch'] else 'N'
+    physical_epoch = "Y" if info["physical_epoch"] else "N"
+    policy_epoch = "Y" if info["policy_epoch"] else "N"
 
-    if (info['epoch'] - 1) % 20 == 0:
+    if (info["epoch"] - 1) % 20 == 0:
         separator = "+-------+-------+----------------+----------------+----------+---------+"
-        headers =   "| Cycle | Epoch |    Avg Train   |    Avg Test    | Physical | Policy  |"
+        headers = "| Cycle | Epoch |    Avg Train   |    Avg Test    | Physical | Policy  |"
 
         print(separator)
         print(headers)
         print(separator)
 
-    output = f"| {cycle} | {epoch} | {avg_train_reward:>14} | {avg_test_reward:>14} | {physical_epoch:^8} | {policy_epoch:^7} |"
+    output = (
+        f"| {cycle} | {epoch} | {avg_train_reward:>14} | {avg_test_reward:>14} | {physical_epoch:^8} | {policy_epoch:^7} |"
+    )
     print(output)

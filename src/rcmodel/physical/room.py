@@ -1,8 +1,8 @@
-import numpy as np
-import matplotlib.pyplot as plt
 import matplotlib.path as mpltPath
-from scipy.spatial import ConvexHull
+import matplotlib.pyplot as plt
+import numpy as np
 import torch
+from scipy.spatial import ConvexHull
 
 
 class Room:
@@ -43,7 +43,7 @@ class Room:
         return line
 
     def points_in_room(self, P):
-        """ Boolean answering if point is inside the polygon.
+        """Boolean answering if point is inside the polygon.
 
         P is in form:
                 P = [[x1,y1],[x2,y2]...]

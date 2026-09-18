@@ -14,9 +14,9 @@ class Building:
         self.height = height  # height of all Rooms in the building
 
         #  Parameters to be properly initialised later in self.update_inputs()
-        self.Re = [0, 0, 0]      # external resistance
-        self.Ce = [0, 0]      # external capacitance
-        self.Rint = 0    # internal wall resistance
+        self.Re = [0, 0, 0]  # external resistance
+        self.Ce = [0, 0]  # external capacitance
+        self.Rint = 0  # internal wall resistance
 
         self.Walls = self.sort_walls()
         self.connectivity_matrix = self.make_connection_matrix()
@@ -49,8 +49,7 @@ class Building:
         connection_matrix = torch.zeros([n + 1, n + 1], dtype=torch.int)
 
         # External connections
-        external_walls = set(
-            wall_idx for wall_idx, wall in enumerate(self.Walls) if wall.is_external)
+        external_walls = set(wall_idx for wall_idx, wall in enumerate(self.Walls) if wall.is_external)
         for rm in range(n):
             for wall_idx in self.rooms[rm].walls:
                 if wall_idx in external_walls:
@@ -91,28 +90,27 @@ class Building:
         k_matrix = torch.zeros_like(C, dtype=torch.float32)
 
         # Iterate through each INTERNALLY connected room.
-        for rm_x, rm_y in zip(*torch.where(torch.triu(C[1:, 1:], diagonal=1) > 0)):
+        for rm_x, rm_y in zip(*torch.where(torch.triu(C[1:, 1:], diagonal=1) > 0), strict=True):
             walls_x = set(self.rooms[rm_x].walls)
             walls_y = set(self.rooms[rm_y].walls)
             shared_walls = walls_x.intersection(walls_y)
             for wall in shared_walls:
                 area = self.Walls[wall].area
                 resistance = self.Walls[wall].resistance
-                k_matrix[rm_x+1, rm_y+1] += area / resistance
-                k_matrix[rm_y+1, rm_x+1] = k_matrix[rm_x+1, rm_y+1]  # Symmetric
+                k_matrix[rm_x + 1, rm_y + 1] += area / resistance
+                k_matrix[rm_y + 1, rm_x + 1] = k_matrix[rm_x + 1, rm_y + 1]  # Symmetric
 
         # Create a set of external walls
-        external_walls = set(wall_idx for wall_idx, wall in enumerate(self.Walls)
-                             if wall.is_external)
+        external_walls = set(wall_idx for wall_idx, wall in enumerate(self.Walls) if wall.is_external)
 
         # Iterate over each room and sum the area/resistance of its external walls
         for rm in range(len(self.rooms)):
-            if C[0, rm+1] > 0:
+            if C[0, rm + 1] > 0:
                 for wall_idx in self.rooms[rm].walls:
                     if wall_idx in external_walls:
                         wall = self.Walls[wall_idx]
-                        k_matrix[0, rm+1] += wall.area / wall.resistance
-                        k_matrix[rm+1, 0] = k_matrix[0, rm+1]
+                        k_matrix[0, rm + 1] += wall.area / wall.resistance
+                        k_matrix[rm + 1, 0] = k_matrix[0, rm + 1]
 
         return k_matrix
 
@@ -150,10 +148,7 @@ class Building:
         A[1, 1] = -self.surf_area / (self.Re[1] * self.Ce[1])
 
         for row in range(n):
-            if row == 0:
-                c = self.Ce[-1]
-            else:
-                c = self.rooms[row - 1].capacitance  # Heat Capacity (J/K)
+            c = self.Ce[-1] if row == 0 else self.rooms[row - 1].capacitance  # Heat Capacity (J/K)
 
             for col in range(n):
                 K = knect[row, col]  # Thermal Conductance (W/K) K = A(m^2)/R(K.m^2/W)
@@ -208,13 +203,13 @@ class Building:
 
     def update_rooms(self, Walls):
         """
-        Update the Room.walls variable to be an index matching the list Walls which contains the class instances of each unique wall.
+        Update the Room.walls variable to be an index matching the list Walls which contains the class instances of
+        each unique wall.
         """
         # We can now use this list, Walls, as an index for the Room classes.
         for rm in range(len(self.rooms)):
             for wl in range(len(self.rooms[rm].walls)):
                 for Walls_indx in range(len(Walls)):
-
                     # For each wall in the room class replace with an index to the matching wall in the list Walls
                     if set(self.rooms[rm].walls[wl]) == set(Walls[Walls_indx].coordinates):
                         self.rooms[rm].walls[wl] = Walls_indx
@@ -233,8 +228,7 @@ class Building:
         rm_wls = []
         for rm in range(len(self.rooms)):
             for wl in range(len(self.rooms[rm].walls)):
-                rm_wls.append(
-                    self.rooms[rm].walls[wl])  # Creates list of walls in each room. Can now check for multiples.
+                rm_wls.append(self.rooms[rm].walls[wl])  # Creates list of walls in each room. Can now check for multiples.
 
         for i in rm_wls:
             occurrences = torch.count_nonzero(torch.tensor(rm_wls) == i)
@@ -310,7 +304,6 @@ class Building:
 
         if is_coord:
             for wl in range(len(self.Walls)):
-
                 if set(self.Walls[wl].coordinates) == set(tuple(wall_ID)):
                     wl_indx = wl
                     break
@@ -318,7 +311,7 @@ class Building:
             if resistance != -1:
                 self.Walls[wl_indx].resistance = resistance
 
-        except:
+        except Exception:
             print("Could not find the wall")
 
         return wl_indx
@@ -327,17 +320,17 @@ class Building:
         """
         Plots all walls and highlights in red the external walls. Used to check if model has correctly identified
         """
-        from matplotlib import pyplot as plt
         import numpy as np
+        from matplotlib import pyplot as plt
 
         for wl in range(len(self.Walls)):
             c = np.array(self.Walls[wl].coordinates)
             if self.Walls[wl].is_external:
-                ex, = plt.plot(c[:, 0], c[:, 1], 'r', label='External Walls')
+                (ex,) = plt.plot(c[:, 0], c[:, 1], "r", label="External Walls")
             else:
-                int, = plt.plot(c[:, 0], c[:, 1], 'k', label='Internal Walls')
+                (int_line,) = plt.plot(c[:, 0], c[:, 1], "k", label="Internal Walls")
 
-        plt.legend([ex, int], ['External Walls', 'Internal Walls'])
+        plt.legend([ex, int_line], ["External Walls", "Internal Walls"])
 
         return plt.show()
 
@@ -352,9 +345,9 @@ class Building:
         indx = 1
         rm_cap = theta[0:indx]
         indx += 2
-        ex_cap = theta[indx - 2:indx]
+        ex_cap = theta[indx - 2 : indx]
         indx += 3
-        ex_r = theta[indx - 3:indx]
+        ex_r = theta[indx - 3 : indx]
         indx += 1
         wl_r = theta[indx - 1]
 
@@ -404,7 +397,7 @@ class Building:
             params = torch.ones(n_params)
             try:
                 self.categorise_theta(params)
-            except:
+            except Exception:
                 n_params += 1
 
             else:
@@ -466,10 +459,11 @@ class Building:
 
         """
 
-        s_per_day = 24 * 60 ** 2
+        s_per_day = 24 * 60**2
 
         # function which bounds value between 0:360
-        bound = lambda x: 360 * torch.sigmoid(x)
+        def bound(x):
+            return 360 * torch.sigmoid(x)
 
         # scale theta between 0:360 degrees
         theta_A = bound(bound_A)
@@ -484,14 +478,15 @@ class Building:
         # Do this for each room. num rooms = len(theta_A)
 
         Q_on_off = torch.zeros((len(theta_A), len(t)))
-        stretch = 2e1  # the larger this number the steeper the step function is. But you lose the ability to autograd the gradient.
+        stretch = (
+            2e1  # the larger this number the steeper the step function is. But you lose the ability to autograd the gradient.
+        )
         # 2e1 means the step goes from 0-1 in roughly two minutes and grad is calculated fine.
         for i in range(len(theta_A)):
             if theta_A[i] < theta_B[i]:
                 condition1 = torch.sigmoid((time_degree - theta_A[i]) * stretch)  # True if time>A
                 condition2 = torch.sigmoid((theta_B[i] - time_degree) * stretch)  # True if time<B
-                Q_on_off[i] = torch.sigmoid(
-                    (condition1 + condition2 - 1.9) * stretch)  # True if con1 & con2 on between A-B
+                Q_on_off[i] = torch.sigmoid((condition1 + condition2 - 1.9) * stretch)  # True if con1 & con2 on between A-B
             else:
                 condition1 = torch.sigmoid((time_degree - theta_A[i]) * stretch)
                 condition2 = torch.sigmoid((theta_B[i] - time_degree) * stretch)
@@ -507,7 +502,7 @@ class Building:
 
         Q = Q_on_off * Q_avg.unsqueeze(1)  # multiply by Q_avg for each room
 
-        Q_cont = Interp1D(t, Q, method='linear')
+        Q_cont = Interp1D(t, Q, method="linear")
 
         return Q_cont
 
@@ -524,7 +519,7 @@ class Building:
             self.area = self.get_area()
 
         def get_area(self):
-            wl = torch.tensor(self.coordinates, dtype=torch.float32)   # put wall in array for easy calc of area
+            wl = torch.tensor(self.coordinates, dtype=torch.float32)  # put wall in array for easy calc of area
             length = torch.linalg.norm(wl[0] - wl[1], dtype=torch.float)
 
             return length * self.height

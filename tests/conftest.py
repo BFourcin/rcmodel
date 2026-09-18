@@ -1,6 +1,7 @@
 import pytest
 import torch
-from rcmodel import Room, Building, InputScaling, RCModel
+
+from rcmodel import Building, InputScaling, RCModel, Room
 
 
 @pytest.fixture

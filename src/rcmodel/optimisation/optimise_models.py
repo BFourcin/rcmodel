@@ -1,19 +1,12 @@
-import torch
-import pandas as pd
-import os
-import datetime
-import torch.distributed as dist
-import torch.multiprocessing as mp
-from tqdm import tqdm, trange
-from torch.nn.parallel import DistributedDataParallel as DDP
 import ray
-from ray.rllib.models.preprocessors import NoPreprocessor, get_preprocessor
-from ray.rllib.algorithms import Algorithm
+import torch
+from ray.rllib.models.preprocessors import get_preprocessor
+from tqdm import trange
 
 import rcmodel.tools
 
 """
-Note: The environment is likely to be wrapped. 
+Note: The environment is likely to be wrapped.
 We can still set environment variables using: env.unwrapped.variable = value
 Then env.variable will still return value from the base environment.
 
@@ -60,9 +53,10 @@ def train(env, rl_algorithm, optimizer):
     episode_reward = 0
     env.unwrapped.collect_rc_grad = True
     obs, _ = env.reset()
-    while not terminated:
+    truncated = False
+    while not (terminated or truncated):
         action = rl_algorithm.compute_single_action(obs)
-        obs, reward, terminated, truncated, info = env.step(action)
+        obs, reward, terminated, truncated, _info = env.step(action)
         episode_reward += reward
 
     # Backpropagation
@@ -113,15 +107,16 @@ def test(env, rl_algorithm, test_dataloader):
     render_list = []
     with torch.no_grad():
         for i in range(len(test_dataloader)):
-            if base_env.render_mode == 'single_epoch_rgb_array':
+            if base_env.render_mode == "single_epoch_rgb_array":
                 # Only render on the last episode.
                 base_env.recording = (i + 1) % len(test_dataloader) == 0
             terminated = False
+            truncated = False
             episode_reward = 0
             obs, _ = env.reset()
-            while not terminated:
+            while not (terminated or truncated):
                 action = rl_algorithm.compute_single_action(obs)
-                obs, reward, terminated, truncated, info = env.step(action)
+                obs, reward, terminated, truncated, _info = env.step(action)
                 episode_reward += reward
 
             reward_list.append(episode_reward)
@@ -173,14 +168,14 @@ class OptimiseRC:
     """
 
     def __init__(
-            self,
-            env_config,
-            rl_algorithm,
-            train_dataset,
-            test_dataset,
-            lr=1e-3,
-            opt_id=0,
-            ):
+        self,
+        env_config,
+        rl_algorithm,
+        train_dataset,
+        test_dataset,
+        lr=1e-3,
+        opt_id=0,
+    ):
 
         self.env = rcmodel.tools.env_creator(env_config)
         self.rl_algorithm = rl_algorithm
@@ -200,9 +195,7 @@ class OptimiseRC:
             batch_size=1,
             shuffle=False,
         )
-        self.optimizer = torch.optim.Adam(
-            [self.env.unwrapped.RC.params, self.env.unwrapped.RC.loads], lr=lr, maximize=True
-        )
+        self.optimizer = torch.optim.Adam([self.env.unwrapped.RC.params, self.env.unwrapped.RC.loads], lr=lr, maximize=True)
 
         # Check that we don't need preprocessing.
         prep = get_preprocessor(self.env.observation_space)
@@ -217,10 +210,10 @@ class OptimiseRC:
 
         reward_list = []
         render_list = []
-        for batch in trange(len(self.train_dataloader), desc='Physical Episodes'):
-            if base_env.render_mode == 'single_epoch_rgb_array':
+        for batch in trange(len(self.train_dataloader), desc="Physical Episodes"):
+            if base_env.render_mode == "single_epoch_rgb_array":
                 # Just render the last episode.
-                base_env.recording = ((batch + 1) % len(self.train_dataloader) == 0)
+                base_env.recording = (batch + 1) % len(self.train_dataloader) == 0
 
             reward = train(self.env, self.rl_algorithm, self.optimizer)
             reward_list.append(reward)
@@ -252,7 +245,7 @@ class OptimisePolicy:
 
     def train(self):
         results = self.rl_algorithm.train()
-        self.environment_steps += results['num_steps_trained_this_iter']
+        self.environment_steps += results["num_steps_trained_this_iter"]
         avg_reward = results["episode_reward_mean"]
         return avg_reward
 

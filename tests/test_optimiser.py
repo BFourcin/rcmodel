@@ -1,20 +1,20 @@
-import pytest
-import numpy as np
-import tempfile
-import torch
-import ray
 import os
-from ray.tune.registry import register_env
+import tempfile
+
+import pytest
+import ray
+import torch
 from ray.rllib.algorithms.ppo import PPOConfig
-from rcmodel.optimisation.optimise_models import test as not_a_te_st
+from ray.tune.registry import register_env
+
 from rcmodel import (
-    RandomSampleDataset,
     InfiniteSampler,
-    env_creator,
-    OptimiseRC,
     OptimisePolicy,
-    model_creator,
+    OptimiseRC,
+    RandomSampleDataset,
+    env_creator,
 )
+from rcmodel.optimisation.optimise_models import test as not_a_te_st
 
 torch.set_num_threads(1)
 register_env("LSIEnv", env_creator)
@@ -32,12 +32,8 @@ def get_datasets():
     dt = 30  # seconds
     sample_size = 1 * 60**2 / dt  # ONE HOUR
     warmup_size = 0
-    train_dataset = RandomSampleDataset(
-        csv_path, sample_size, warmup_size, train=True, test=False
-    )
-    test_dataset = RandomSampleDataset(
-        csv_path, sample_size, warmup_size, train=False, test=True
-    )
+    train_dataset = RandomSampleDataset(csv_path, sample_size, warmup_size, train=True, test=False)
+    test_dataset = RandomSampleDataset(csv_path, sample_size, warmup_size, train=False, test=True)
     return train_dataset, test_dataset
 
 
@@ -97,14 +93,12 @@ def make_first_checkpoint(policy_config, tmpdirname):
 
 def test_physical_optimiser(setup_test):
     """Test that we can train a physical optimiser."""
-    train_dataset, test_dataset, env_config, policy_config, tmpdirname = setup_test
+    train_dataset, test_dataset, env_config, policy_config, _tmpdirname = setup_test
 
     # ppo_checkpoint_path, _ = make_first_checkpoint(policy_config, tmpdirname)
     rl_algorithm = policy_config.build()
 
-    op = OptimiseRC(
-        env_config, rl_algorithm, train_dataset, test_dataset, lr=1e-3, opt_id=0
-    )
+    op = OptimiseRC(env_config, rl_algorithm, train_dataset, test_dataset, lr=1e-3, opt_id=0)
 
     # unwrap the render wrapper because it breakes the test as render not set up for
     # more than 1 room.
@@ -161,9 +155,7 @@ def test_policy_env_update(setup_test):
 
                 return look_env_fn
 
-            return self.policy_optimiser.rl_algorithm.workers.foreach_worker(
-                make_info_env_fn()
-            )
+            return self.policy_optimiser.rl_algorithm.workers.foreach_worker(make_info_env_fn())
 
     # Initialise workers
     workers = [Worker.remote(policy_config, weights) for _ in range(1)]

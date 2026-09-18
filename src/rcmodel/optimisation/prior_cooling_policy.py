@@ -1,5 +1,6 @@
-import torch
 import time
+
+import torch
 
 
 class PriorCoolingPolicy:
@@ -59,32 +60,27 @@ class PriorCoolingPolicy:
         action = torch.zeros(len(x))
 
         for i, rm_temp in enumerate(x):
-
             if self.time_on > 24 or self.time_off > 24:
-                raise ValueError('Ensure time_on and time_off are valid.')
+                raise ValueError("Ensure time_on and time_off are valid.")
 
             if self.time_off < self.time_on:
-                raise ValueError('time_off should be later than time_on')
+                raise ValueError("time_off should be later than time_on")
 
             # First see if time is within the valid period when cooling can be on:
             day, num_time = get_time(unix_time)
 
-            # if not weekend
-            if day != 'Saturday' and day != 'Sunday':
+            # if not weekend and time is between set points
+            if day != "Saturday" and day != "Sunday" and self.time_on < num_time < self.time_off:
+                # if room is hot turn cooling on
+                if rm_temp > self.temp_on:
+                    self.cooling_on = True
+                    action[i] = 1
+                    continue
 
-                # if time is between set points
-                if self.time_on < num_time < self.time_off:
-
-                    # if room is hot turn cooling on
-                    if rm_temp > self.temp_on:
-                        self.cooling_on = True
-                        action[i] = 1
-                        continue
-
-                    # if cooling has already been turned on keep it on until temp is below temp_off
-                    elif rm_temp > self.temp_off and self.cooling_on:
-                        action[i] = 1
-                        continue
+                # if cooling has already been turned on keep it on until temp is below temp_off
+                elif rm_temp > self.temp_off and self.cooling_on:
+                    action[i] = 1
+                    continue
 
             # Only reached if criteria above not met.
             self.cooling_on = False
@@ -115,16 +111,16 @@ def get_time(t):
     if torch.is_tensor(t):
         t = t.item()
 
-    day = time.strftime('%A', time.localtime(t))
-    hr = time.strftime('%H', time.localtime(t))
-    minute = time.strftime('%M', time.localtime(t))
+    day = time.strftime("%A", time.localtime(t))
+    hr = time.strftime("%H", time.localtime(t))
+    minute = time.strftime("%M", time.localtime(t))
 
-    num_time = int(hr) + int(minute)/60
+    num_time = int(hr) + int(minute) / 60
 
     return day, num_time
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     import matplotlib.pyplot as plt
 
     # Plots two weeks of actions w

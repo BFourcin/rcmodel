@@ -1,16 +1,15 @@
+import numpy as np
 import pytest
 import torch
-import numpy as np
 
-from rcmodel import InputScaling
-from rcmodel import model_creator
+from rcmodel import InputScaling, model_creator
 
 
 @pytest.fixture
 def scaling():
     rm_CA = [200, 800]  # [min, max] Capacitance/area
-    C1 = [1.5 * 10 ** 4, 10 ** 6]
-    C2 = [2.1 * 10 ** 4, 10 ** 5]
+    C1 = [1.5 * 10**4, 10**6]
+    C2 = [2.1 * 10**4, 10**5]
     R1 = [0.2, 1.2]
     R2 = [0.3, 0.9]
     R3 = [0.02, 1]
@@ -26,13 +25,15 @@ def test_physical_param_scaling(scaling):
     theta = 0.5 * torch.ones(scaling.get_n_params())
     theta_physical = scaling.physical_param_scaling(theta)
 
-    assert (theta_physical - torch.tensor(
-        [5.0000e+02, 5.0750e+05, 6.0500e+04, 7.0000e-01, 6.0000e-01, 5.1000e-01, 6.0000e-01])).sum() < 1e-6
+    assert (
+        theta_physical - torch.tensor([5.0000e02, 5.0750e05, 6.0500e04, 7.0000e-01, 6.0000e-01, 5.1000e-01, 6.0000e-01])
+    ).sum() < 1e-6
 
 
 def test_model_param_scaling(scaling):
     model_scaled = scaling.model_param_scaling(
-        torch.tensor([5.0000e+02, 5.0750e+05, 6.0500e+04, 7.0000e-01, 6.0000e-01, 5.1000e-01, 6.0000e-01]))
+        torch.tensor([5.0000e02, 5.0750e05, 6.0500e04, 7.0000e-01, 6.0000e-01, 5.1000e-01, 6.0000e-01])
+    )
 
     assert (model_scaled - (0.5 * torch.ones(scaling.get_n_params()))).sum() < 1e-6
 
@@ -41,11 +42,11 @@ def test_physical_loads_scaling(scaling):
     loads = torch.tensor([[0.3, 0.8], [0.1, 0.25]])
     cool_physical = scaling.physical_loads_scaling(loads)
 
-    assert torch.equal(cool_physical,  torch.tensor([[150., 400.], [10., 25.]]))
+    assert torch.equal(cool_physical, torch.tensor([[150.0, 400.0], [10.0, 25.0]]))
 
 
 def test_model_loads_scaling(scaling):
-    loads = torch.tensor([[150., 400.], [10., 25.]])
+    loads = torch.tensor([[150.0, 400.0], [10.0, 25.0]])
     cool_scaled = scaling.model_loads_scaling(loads)
 
     assert torch.equal(cool_scaled, torch.tensor([[0.3, 0.8], [0.1, 0.25]]))
@@ -53,7 +54,7 @@ def test_model_loads_scaling(scaling):
 
 def test_model_setup():
     np.random.seed(42)
-    n = 24*60**2
+    n = 24 * 60**2
     fake_time = np.arange(0, n, 30)
     fake_weather = 10 + 5 * np.sin(2 * np.pi * fake_time / n)
 
@@ -95,8 +96,7 @@ def test_model_setup():
             "Rin": np.random.rand(1).item(),
             "cool": np.random.rand(1).item(),  # 0.09133423646610082
             "gain": np.random.rand(1).item(),  # 0.9086668150306394
-        }
-
+        },
     }
 
     model = model_creator(model_config)
@@ -105,17 +105,18 @@ def test_model_setup():
     scaled_parameters_from_model = torch.cat((params, loads.flatten()))
 
     parameters_from_config = []
-    for p in model_config['parameters']:
-        parameters_from_config.append(model_config['parameters'][p])
+    for p in model_config["parameters"]:
+        parameters_from_config.append(model_config["parameters"][p])
 
     config_params = model.scaling.physical_param_scaling(parameters_from_config[0:-2])
     config_loads = model.scaling.physical_loads_scaling(torch.tensor(parameters_from_config[-2:]).reshape(2, 1))
 
     scaled_parameters_from_config = torch.cat((config_params, config_loads.flatten()))
 
-    assert (abs(scaled_parameters_from_config - scaled_parameters_from_model) < 1e-2).all(),\
+    assert (abs(scaled_parameters_from_config - scaled_parameters_from_model) < 1e-2).all(), (
         "Parameters from the model are not matching with parameters provided in the config."
+    )
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     pytest.main()
