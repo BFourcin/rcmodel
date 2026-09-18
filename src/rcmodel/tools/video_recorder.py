@@ -1,33 +1,35 @@
-import os
 import atexit
-from typing import Callable
+import os
+from collections.abc import Callable
 
 import gym
 from gym import logger
-
 from moviepy.editor import ImageSequenceClip, VideoClip
 from moviepy.video.compositing.CompositeVideoClip import CompositeVideoClip
 
 
 class VideoRecorder(gym.Wrapper):
     def __init__(
-            self,
-            env: gym.Env,
-            fps: int = 25,
-            video_folder: str = './outputs/Videos',
-            episode_trigger: Callable[[int], bool] = lambda x: True,
-            name_prefix: str = "env_recording",
-            max_stored_frames: int = 100,
+        self,
+        env: gym.Env,
+        fps: int = 25,
+        video_folder: str = "./outputs/Videos",
+        episode_trigger: Callable[[int], bool] = lambda x: True,
+        name_prefix: str = "env_recording",
+        max_stored_frames: int = 100,
     ):
-        """Wrapper is based off 'RecordVideo' wrapper from gym, see for more details: https://github.com/openai/gym/blob/master/gym/wrappers/record_video.py
+        """Wrapper is based off 'RecordVideo' wrapper from gym, see for more details:
+        https://github.com/openai/gym/blob/master/gym/wrappers/record_video.py
 
-        Wrapper collects RGB image arrays in a list at every step, once the list is full (len > max) or the process ends collected frames are converted to video using Moviepy.
+        Wrapper collects RGB image arrays in a list at every step, once the list is full (len > max) or the process
+        ends collected frames are converted to video using Moviepy.
 
         Args:
             env: The environment that will be wrapped
             fps (int): The frames per second the video will played back in.
             video_folder (str): The folder where the recordings will be stored
-            episode_trigger: Function that accepts an integer and returns ``True`` iff a recording should be started at this episode
+            episode_trigger: Function that accepts an integer and returns ``True`` iff a recording should be started
+            at this episode.
             name_prefix (str): Will be prepended to the filename of the recordings
         """
 
@@ -63,7 +65,7 @@ class VideoRecorder(gym.Wrapper):
             self.capture_frame()
 
         if len(self.video_frames) > self.max_stored_frames:
-            print('Storage buffer full, making clip')
+            print("Storage buffer full, making clip")
             self.make_clip()
 
         if done:
@@ -83,12 +85,9 @@ class VideoRecorder(gym.Wrapper):
 
     def capture_frame(self):
         """pull frames from env and store in our video_frames list"""
-        if self.env.render_mode is None:
-            frame = self.env.render(mode="rgb_array")
-        else:
-            frame = self.env.render()
+        frame = self.env.render(mode="rgb_array") if self.env.render_mode is None else self.env.render()
 
-        assert type(frame) is list, 'Ensure that the output of render() is a list of RGB images: [np.array()]'
+        assert type(frame) is list, "Ensure that the output of render() is a list of RGB images: [np.array()]"
 
         self.video_frames = self.video_frames + frame
 
@@ -105,7 +104,7 @@ class VideoRecorder(gym.Wrapper):
             self.make_clip()
 
         video = CompositeVideoClip(self.stored_clips)
-        video.write_videofile(self.video_folder + '/' + self.name_prefix + str(self.file_created_id) + '.mp4')
+        video.write_videofile(self.video_folder + "/" + self.name_prefix + str(self.file_created_id) + ".mp4")
         self._refresh_buffer()  # probably not necessary
 
         self.file_created_id += 1
@@ -139,7 +138,7 @@ class VideoRecorder(gym.Wrapper):
                 if self.done:
                     self.observation = outer_self.reset()
                 action = self.agent.compute_single_action(self.observation)
-                self.observation, reward, self.done, _ = outer_self.step(action)
+                self.observation, _reward, self.done, _ = outer_self.step(action)
 
             def make_frame(self, t):
                 if not outer_self.video_frames:
@@ -152,5 +151,4 @@ class VideoRecorder(gym.Wrapper):
         vid = VideoRun(agent)
         func_to_provide_single_frame = vid.make_frame
         clip = VideoClip(func_to_provide_single_frame, duration=duration)
-        clip.write_videofile(self.video_folder + '/' + self.name_prefix + str(self.file_created_id) + '.mp4', self.fps)
-
+        clip.write_videofile(self.video_folder + "/" + self.name_prefix + str(self.file_created_id) + ".mp4", self.fps)

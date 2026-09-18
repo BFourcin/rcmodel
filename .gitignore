@@ -13,7 +13,5 @@ src/tuned_trial
 .DS_Store
 .idea
 
-
 **/*cache*
 poetry.lock
-uv.lock

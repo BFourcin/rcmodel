@@ -1,10 +1,9 @@
 from .building import Building
-from .room import Room
 from .input_scaling import InputScaling
-
+from .room import Room
 
 __all__ = [
     "Building",
-    "Room",
     "InputScaling",
+    "Room",
 ]

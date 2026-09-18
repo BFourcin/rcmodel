@@ -1,20 +1,12 @@
-import gymnasium as gym
-from gymnasium import spaces
-from typing import Optional
+import pickle
+from collections import deque
 
+import gymnasium as gym
+import numpy as np
 import torch
 import torch.nn as nn
+from gymnasium import spaces
 from matplotlib import pyplot as plt
-from matplotlib.figure import Figure
-from matplotlib.backends.backend_agg import FigureCanvasAgg as FigureCanvas
-import pandas as pd
-import numpy as np
-from xitorch.interpolate import Interp1D
-from tqdm.auto import tqdm, trange
-import time
-import pickle
-import os
-from collections import deque
 
 
 # TODO: Remove POLICY NETWORK and all references to it.
@@ -63,17 +55,11 @@ class PolicyNetwork(nn.Module):
             return action
         # ----------------------------------------------------------
 
-        prob_dist = torch.distributions.categorical.Categorical(
-            logits=logits
-        )  # make a probability distribution
+        prob_dist = torch.distributions.categorical.Categorical(logits=logits)  # make a probability distribution
 
-        action = (
-            prob_dist.sample()
-        )  # sample from distribution pi(a|s) (action given state)
+        action = prob_dist.sample()  # sample from distribution pi(a|s) (action given state)
 
-        self.log_probs.append(
-            prob_dist.log_prob(action)
-        )  # store log probability of action
+        self.log_probs.append(prob_dist.log_prob(action))  # store log probability of action
 
         return action
 
@@ -114,10 +100,7 @@ class LSIEnv(gym.Env):
     """
 
     metadata = {
-        "render_modes": ["human",
-                         "rgb_array",
-                         "single_rgb_array",
-                         "single_epoch_rgb_array"],
+        "render_modes": ["human", "rgb_array", "single_rgb_array", "single_epoch_rgb_array"],
         "render_fps": 25,
     }
 
@@ -125,10 +108,10 @@ class LSIEnv(gym.Env):
         super().__init__()
 
         self.config = config
-        self.config["update_state_dict"] = config.get("update_state_dict", None)
+        self.config["update_state_dict"] = config.get("update_state_dict")
         self.RC = config["RC_model"]
         self.step_length = config["step_length"]
-        self.render_mode = config.get("render_mode", None)
+        self.render_mode = config.get("render_mode")
         self._update_environment()  # Initialise dataloader and check for updates.
         # self.epochs_per_reset = env_config.get("epochs_per_reset", 1)
 
@@ -144,12 +127,10 @@ class LSIEnv(gym.Env):
         t = self.dataloader.dataset[0][0]
         self.dt = int((t[1] - t[0]).item())
 
-        self.day = 24 * 60 ** 2
+        self.day = 24 * 60**2
 
         self.step_length = config["step_length"]  # Minutes
-        self.step_size = int(
-            (self.step_length * 60) / self.dt
-        )  # num rows of data needed for step_length minutes.
+        self.step_size = int((self.step_length * 60) / self.dt)  # num rows of data needed for step_length minutes.
         self.loss_fn = torch.nn.MSELoss()
 
         # ----- GYM Stuff -----
@@ -158,29 +139,24 @@ class LSIEnv(gym.Env):
         time_low = [0]
         time_high = [np.float32(np.inf)]
 
-        temp_low = [-np.float32(np.inf)] * (
-                self.n_rooms + 2
-        )  # +2 accounts for the latent nodes
+        temp_low = [-np.float32(np.inf)] * (self.n_rooms + 2)  # +2 accounts for the latent nodes
         temp_high = [np.float32(np.inf)] * (self.n_rooms + 2)
 
-        low = np.array(
-            [time_low + temp_low] * self.step_size
-        )  # extend the vector by the number of timesteps
+        low = np.array([time_low + temp_low] * self.step_size)  # extend the vector by the number of timesteps
         high = np.array([time_high + temp_high] * self.step_size)
 
         # Define action and observation space
         # They must be gym.spaces objects
         # Example when using discrete actions:
-        self.action_space = spaces.Discrete(2,)
+        self.action_space = spaces.Discrete(
+            2,
+        )
 
         # Observation is temperature of each room.
         self.observation_space = spaces.Box(low, high, dtype=np.float64)
 
         self.render_mode = config["render_mode"]
-        assert (
-                self.render_mode is None
-                or self.render_mode in self.metadata["render_modes"]
-        )
+        assert self.render_mode is None or self.render_mode in self.metadata["render_modes"]
         self.episode_info = {}  # for collecting render info.
 
         if self.render_mode:
@@ -205,8 +181,9 @@ class LSIEnv(gym.Env):
         Returns
         -------
         Returns:
-            observation (ObsType): An element of the environment's :attr:`observation_space` as the next observation due to the agent actions.
-                An example is a numpy array containing the positions and velocities of the pole in CartPole.
+            observation (ObsType): An element of the environment's :attr:`observation_space` as the next observation due
+                to the agent actions. An example is a numpy array containing the positions and velocities of the pole in
+                CartPole.
             reward (float): The reward as a result of taking the action.
             terminated (bool): Whether the agent reaches the terminal state (as defined under the MDP of the task)
                 which can be positive or negative. An example is reaching the goal state or moving into the lava from
@@ -234,16 +211,13 @@ class LSIEnv(gym.Env):
         with torch.set_grad_enabled(self.collect_rc_grad):
             # solves an off by one issue caused by the iv technically being t0.
             # TODO: must be a more elegant way to do this.
-            if self.t_index > 0:
-                t_start = self.t_index - 1
-            else:
-                t_start = self.t_index
+            t_start = self.t_index - 1 if self.t_index > 0 else self.t_index
 
             t_end = int(self.t_index + self.step_size)
 
             # Take a sample of the time and temperature data
             t_eval = self.time_data[t_start:t_end]
-            temperature_sample = self.temp_data[t_start:t_end, 0:self.n_rooms]
+            temperature_sample = self.temp_data[t_start:t_end, 0 : self.n_rooms]
 
             # record both start and end, so we can plot actions later
             # self.info["actions"].extend([action, action])
@@ -260,13 +234,9 @@ class LSIEnv(gym.Env):
             # remove first observation as this was the iv from the previous step
             # TODO: Tidy this up, there must be a better way.
             if self.t_index == 0:
-                self.observation = torch.concat(
-                    (t_eval.unsqueeze(0).T, pred.detach().clone()), dim=1
-                )
+                self.observation = torch.concat((t_eval.unsqueeze(0).T, pred.detach().clone()), dim=1)
             else:
-                self.observation = torch.concat(
-                    (t_eval[1:].unsqueeze(0).T, pred[1:, :].detach().clone()), dim=1
-                )
+                self.observation = torch.concat((t_eval[1:].unsqueeze(0).T, pred[1:, :].detach().clone()), dim=1)
 
             if self.render_mode is not None:
                 self.episode_info["true_temperature"].extend(temperature_sample.numpy())
@@ -292,10 +262,10 @@ class LSIEnv(gym.Env):
             return self.observation.numpy(), reward, self.terminated, truncated, self.info
 
     def reset(
-            self,
-            seed: Optional[int] = None,
-            return_info: bool = False,
-            options: Optional[dict] = None,
+        self,
+        seed: int | None = None,
+        return_info: bool = False,
+        options: dict | None = None,
     ):
         super().reset(seed=seed)
 
@@ -314,8 +284,7 @@ class LSIEnv(gym.Env):
         self.episode_info["time"] = deque()
         self.episode_info["reward"] = deque()
         self.episode_info["t_reward"] = deque()
-        self.episode_info["Q_watts"] =\
-            self.RC.building.proportional_heating(self.RC.cool_load)
+        self.episode_info["Q_watts"] = self.RC.building.proportional_heating(self.RC.cool_load)
 
         # get next batch from dataloader:
         self.time_data, self.temp_data = next(iter(self.dataloader))
@@ -337,9 +306,7 @@ class LSIEnv(gym.Env):
         return self.observation.numpy(), self.episode_info
 
     def _get_obs(self):
-        return torch.concat(
-            (self.time_data[0].unsqueeze(0), self.RC.iv.flatten())
-        ).unsqueeze(0)
+        return torch.concat((self.time_data[0].unsqueeze(0), self.RC.iv.flatten())).unsqueeze(0)
 
     def update_from_config(self, new_config=None):
         """
@@ -352,7 +319,7 @@ class LSIEnv(gym.Env):
 
         Only matching keys in the provided new_config are checked, everything else is
         ignored.
-       """
+        """
 
         if new_config is None:
             new_config = self.config
@@ -360,20 +327,20 @@ class LSIEnv(gym.Env):
         env_parameters = self._get_updatable_config()
 
         # Pop state_dict from new_config, we'll use it to update the model later.
-        new_state_dict = new_config.pop('update_state_dict', None)
-        env_parameters.pop('update_state_dict', None)  # Don't need anymore
+        new_state_dict = new_config.pop("update_state_dict", None)
+        env_parameters.pop("update_state_dict", None)  # Don't need anymore
 
         # Check if all keys in env_parameters are in new_config
-        assert set(env_parameters.keys()).issubset(set(new_config.keys())), \
-            'New config does not contain all keys of env_parameters.'
+        assert set(env_parameters.keys()).issubset(set(new_config.keys())), (
+            "New config does not contain all keys of env_parameters."
+        )
 
         # For all keys in env_parameters get differences between env_parameters and
         # new_config
         changed = set(env_parameters.items()).difference(set(new_config.items()))
 
         for key, _ in iter(changed):
-            assert key not in ("step_length", "render_mode"), \
-                "Cannot change step_length or render_mode on the fly."
+            assert key not in ("step_length", "render_mode"), "Cannot change step_length or render_mode on the fly."
 
             self.config[key] = new_config[key]
 
@@ -406,11 +373,10 @@ class LSIEnv(gym.Env):
             #     self.need_init_render = False
 
             # return empty list unless until episode is done.
-            if self.render_mode in ["single_rgb_array", "single_epoch_rgb_array"]:
-                if not self.terminated:
-                    return None
+            if self.render_mode in ["single_rgb_array", "single_epoch_rgb_array"] and not self.terminated:
+                return None
 
-            line1, heat_line, ax, ax2 = self._init_render()
+            _line1, heat_line, ax, ax2 = self._init_render()
 
             # line1.set_data(self.observation[:, 0].numpy(), self.observation[:, 3:].numpy())
 
@@ -442,20 +408,15 @@ class LSIEnv(gym.Env):
             if self.render_mode == "human":
                 plt.pause(0.0001)
                 return self.fig
-            elif self.render_mode in {"rgb_array",
-                                      "single_rgb_array",
-                                      "single_epoch_rgb_array"}:
+            elif self.render_mode in {"rgb_array", "single_rgb_array", "single_epoch_rgb_array"}:
                 # Return a numpy RGB array of the figure
                 width, height = self.fig.get_size_inches() * self.fig.get_dpi()
-                img = np.frombuffer(
-                    self.fig.canvas.tostring_rgb(), dtype="uint8"
-                ).reshape((int(height), int(width), 3))
+                img = np.frombuffer(self.fig.canvas.tostring_rgb(), dtype="uint8").reshape((int(height), int(width), 3))
                 plt.close(self.fig)
 
                 return img
 
     def _init_render(self):
-        from matplotlib.lines import Line2D
 
         # global line1, heat_line, ax, ax2
 
@@ -481,7 +442,7 @@ class LSIEnv(gym.Env):
             self.time_min = t[0]
             self.time_max = t[-1]
             self.time_all = t
-            self.temp_data_all = temp[:, 0: self.n_rooms]
+            self.temp_data_all = temp[:, 0 : self.n_rooms]
 
         x = torch.arange(0, self.time_max - self.time_min, self.dt) / self.day
         y = torch.empty(len(x)) * torch.nan
@@ -506,9 +467,7 @@ class LSIEnv(gym.Env):
         #               color='darkorange', label=r'outside ($^\circ$C)')
 
         if self.RC.transform:
-            gain = self.RC.scaling.physical_loads_scaling(
-                self.RC.transform(self.RC.loads)
-            )[1, :]
+            gain = self.RC.scaling.physical_loads_scaling(self.RC.transform(self.RC.loads))[1, :]
         else:
             gain = self.RC.scaling.physical_loads_scaling(self.RC.loads)[1, :]
 
@@ -522,12 +481,10 @@ class LSIEnv(gym.Env):
         )
 
         # fake line so we can get a legend now. Real line is created in render()
-        (heat_line,) = ax2.plot(
-            [0], [0], color="k", linestyle="--", alpha=0.5, label="heat ($W$)"
-        )
+        (heat_line,) = ax2.plot([0], [0], color="k", linestyle="--", alpha=0.5, label="heat ($W$)")
 
-        lns = [line1, heat_line, gain_line] + ln2  # + ln3
-        labs = [l.get_label() for l in lns]
+        lns = [line1, heat_line, gain_line, *ln2]  # + ln3
+        labs = [line.get_label() for line in lns]
         ax.legend(lns, labs, loc="upper right")
 
         if self.render_mode == "human":
@@ -536,7 +493,7 @@ class LSIEnv(gym.Env):
         return line1, heat_line, ax, ax2
 
     def save_episode_info_to_file(self, file_path):
-        with open(file_path, 'wb') as f:
+        with open(file_path, "wb") as f:
             pickle.dump(self.episode_info, f)
 
     def _get_updatable_config(self):
@@ -580,6 +537,7 @@ class PreprocessEnv(gym.ObservationWrapper):
            observation_space (gym.spaces.Box): The modified observation space after
            preprocessing.
     """
+
     def __init__(self, env, mu, std_dev):
         super().__init__(env)
 
@@ -636,11 +594,12 @@ def preprocess_observation(x, unix_time, mu, std_dev):
     # normalise x using info obtained from data.
     x_norm = (x - mu) / std_dev
 
-    day = 24 * 60 ** 2
+    day = 24 * 60**2
     week = 7 * day
     # year = (365.2425) * day
 
-    state = x_norm.tolist() + [
+    state = [
+        *x_norm.tolist(),
         np.sin(unix_time * (2 * np.pi / day)),
         np.cos(unix_time * (2 * np.pi / day)),
         np.sin(unix_time * (2 * np.pi / week)),

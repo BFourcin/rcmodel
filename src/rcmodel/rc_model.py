@@ -1,10 +1,7 @@
-import torch
-import numpy as np
-import pandas as pd
 import dill
+import torch
 from torch import nn
 from torchdiffeq import odeint
-from datetime import datetime
 from xitorch.interpolate import Interp1D
 
 
@@ -17,13 +14,11 @@ class RCModel(nn.Module):
     scaling - Class containing methods to scale inputs from 0-1 back to their usual values and back again.
     transform - function to transform parameters e.g. sigmoid
 
-    Runs using forward method should be sequential as the output is used as the initial condition for the next run, unless manually reset using self.iv
+    Runs using forward method should be sequential as the output is used as the initial condition for the next run,
+    unless manually reset using self.iv
     """
 
-    def __init__(
-            self, building, scaling, Tout_continuous, transform=None,
-            cooling_policy=None
-    ):
+    def __init__(self, building, scaling, Tout_continuous, transform=None, cooling_policy=None):
 
         super().__init__()
         self.building = building
@@ -70,10 +65,9 @@ class RCModel(nn.Module):
         """
         Integrates the ode forward in time.
 
-        building - Initialised RCModel Class
-        Tout_continuous - A scipy interp1d function covering the whole of t_eval. Tout_continuous(t) = Outside temperature at time t
-        iv - Initial value. Starting temperatures of all nodes
-        t_eval - times function should return a solution. e.g. torch.arange(0, 10000, 30). ensure dtype=float32
+        building - Initialised RCModel Class Tout_continuous - A scipy interp1d function covering the whole of
+        t_eval. Tout_continuous(t) = Outside temperature at time t iv - Initial value. Starting temperatures of all
+        nodes t_eval - times function should return a solution. e.g. torch.arange(0, 10000, 30). ensure dtype=float32
         t0 - starting time if not 0
         """
         self.action = action
@@ -96,9 +90,7 @@ class RCModel(nn.Module):
         self.iv = self.iv.reshape((2 + len(self.building.rooms), 1)).to(torch.float32)
 
         # integrate using fixed step (rk4) see torchdiffeq docs for more options.
-        integrate = odeint(
-            self.f_ode, self.iv, t_eval, method="rk4"
-        )  # https://github.com/rtqichen/torchdiffeq
+        integrate = odeint(self.f_ode, self.iv, t_eval, method="rk4")  # https://github.com/rtqichen/torchdiffeq
 
         self.iv = None  # Causes error if iv is not reset before next forward pass.
 
@@ -120,9 +112,7 @@ class RCModel(nn.Module):
 
         if self.cooling_policy:  # policy exists
             # record every time-step
-            self.record_action.append(
-                [t, self.action]
-            )  # This is just used for plotting the cooling after.
+            self.record_action.append([t, self.action])  # This is just used for plotting the cooling after.
 
         # Get energy input at timestep:
         Q_area = -self.cool_load * self.action  # W/m2
@@ -141,10 +131,7 @@ class RCModel(nn.Module):
         Keep track of parameters used so we can check when to update.
         """
         # Transform parameters
-        if self.transform:
-            theta = self.transform(self.params)
-        else:
-            theta = self.params
+        theta = self.transform(self.params) if self.transform else self.params
 
         # Scale inputs up to their physical values
         theta = self.scaling.physical_param_scaling(theta)
@@ -158,10 +145,7 @@ class RCModel(nn.Module):
         Transform and scale loads.
         Keep track of loads used so we can only update when there is a difference.
         """
-        if self.transform:
-            loads = self.transform(self.loads)  # Watts/m2 for cooling and gain.
-        else:
-            loads = self.loads
+        loads = self.transform(self.loads) if self.transform else self.loads  # Watts/m2 for cooling and gain.
 
         loads = self.scaling.physical_loads_scaling(loads)
         self.cool_load = loads[0, :]
@@ -174,12 +158,8 @@ class RCModel(nn.Module):
         self.iv = self.iv.unsqueeze(1)
 
     def initialise_parameters(self):
-        params = torch.rand(
-            self.building.n_params, dtype=torch.float32, requires_grad=True
-        )
-        loads = torch.rand(
-            (2, len(self.building.rooms)), dtype=torch.float32, requires_grad=True
-        )
+        params = torch.rand(self.building.n_params, dtype=torch.float32, requires_grad=True)
+        loads = torch.rand((2, len(self.building.rooms)), dtype=torch.float32, requires_grad=True)
 
         # enables spread of initial parameters. Otherwise sigmoid(rand) tends towards 0.5.
         if self.transform == torch.sigmoid:
@@ -236,20 +216,17 @@ def get_iv_array(model, dataset):
 
     with torch.no_grad():
         t_eval, temp_data = dataset.get_all_data()
-        Tin_continuous = Interp1D(t_eval, temp_data[:, 0:len(model.building.rooms)].T,
-                                  method='linear')
+        Tin_continuous = Interp1D(t_eval, temp_data[:, 0 : len(model.building.rooms)].T, method="linear")
 
         bl = model.building
 
         # Recalculate the A & B matrices. We could chop and re jig from the full matrices, but it is not super
         # simple so recalculating is less risky.
         A = torch.zeros([2, 2])
-        A[0, 0] = bl.surf_area * (
-                    -1 / (bl.Re[0] * bl.Ce[0]) - 1 / (bl.Re[1] * bl.Ce[0]))
+        A[0, 0] = bl.surf_area * (-1 / (bl.Re[0] * bl.Ce[0]) - 1 / (bl.Re[1] * bl.Ce[0]))
         A[0, 1] = bl.surf_area / (bl.Re[1] * bl.Ce[0])
         A[1, 0] = bl.surf_area / (bl.Re[1] * bl.Ce[1])
-        A[1, 1] = bl.surf_area * (
-                    -1 / (bl.Re[1] * bl.Ce[1]) - 1 / (bl.Re[2] * bl.Ce[1]))
+        A[1, 1] = bl.surf_area * (-1 / (bl.Re[1] * bl.Ce[1]) - 1 / (bl.Re[2] * bl.Ce[1]))
 
         B = torch.zeros([2, 2])
         B[0, 0] = bl.surf_area / (bl.Re[0] * bl.Ce[0])
@@ -265,8 +242,7 @@ def get_iv_array(model, dataset):
         t0 = t_eval[0]
         t_eval = t_eval - t0
 
-        model.iv = steady_state_iv(model, avg_tout,
-                                   avg_tin)  # Use avg temp as a good starting guess for iv.
+        model.iv = steady_state_iv(model, avg_tout, avg_tin)  # Use avg temp as a good starting guess for iv.
 
         def latent_f_ode(t, x):
             Tout = model.Tout_continuous(t.item() + t0)
@@ -274,13 +250,11 @@ def get_iv_array(model, dataset):
             external_rooms = bl.connectivity_matrix[0, 1:]
             Tin = (Tin_continuous(t.item() + t0) * external_rooms).mean()
 
-            u = torch.tensor([[Tout],
-                              [Tin]])
+            u = torch.tensor([[Tout], [Tin]])
 
             return A @ x + B @ u.to(torch.float32)
 
-        integrate = odeint(latent_f_ode, model.iv[0:2], t_eval,
-                           method='rk4')  # https://github.com/rtqichen/torchdiffeq
+        integrate = odeint(latent_f_ode, model.iv[0:2], t_eval, method="rk4")  # https://github.com/rtqichen/torchdiffeq
 
         integrate = integrate.squeeze()
 
@@ -288,7 +262,7 @@ def get_iv_array(model, dataset):
         iv_array = torch.empty(len(integrate), len(bl.rooms) + 2)
         iv_array[:, 0:2] = integrate
         iv_array[:, 2:] = Tin_continuous(t_eval + t0).T
-        iv_array = Interp1D(t_eval + t0, iv_array.T, method='linear')
+        iv_array = Interp1D(t_eval + t0, iv_array.T, method="linear")
 
     return iv_array
 
@@ -306,7 +280,7 @@ def steady_state_iv(model, temp_out, temp_in):
         Column tensor of initial values at each node.
     """
 
-    I = (temp_out - temp_in) / sum(model.building.Re)  # I=V/R
+    I = (temp_out - temp_in) / sum(model.building.Re)  # I=V/R  # noqa: E741
     v1 = temp_out - I * model.building.Re[0]
     v2 = v1 - I * model.building.Re[1]
 

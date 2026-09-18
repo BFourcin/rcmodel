@@ -41,8 +41,24 @@ required-environments = [
 
 [dependency-groups]
 dev = [
-    "flake8>=7.3.0",
+    "pre-commit>=4.0.0",
     "pytest<8",
     "pytest-lazy-fixture>=0.6.3",
+    "ruff>=0.16.8",
     "setuptools<81",
 ]
+
+[tool.ruff]
+line-length = 127
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "UP", "B", "SIM", "RUF"]
+
+[tool.ruff.lint.per-file-ignores]
+# __init__.py re-exports build __all__ dynamically from submodules, which ruff
+# can't statically follow, so the re-imports look unused.
+"__init__.py" = ["F401"]
+# `metadata` is the standard Gymnasium Env class attribute; it's never mutated
+# in place, just the expected shared dict per the gymnasium API.
+"src/rcmodel/optimisation/environment.py" = ["RUF012"]

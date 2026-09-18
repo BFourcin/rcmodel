@@ -1,17 +1,18 @@
-from rcmodel.physical import Room, Building, InputScaling
-from rcmodel.rc_model import RCModel
-import rcmodel.optimisation
-from .rcmodel_dataset import BuildingTemperatureDataset, RandomSampleDataset
+import os
+
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import torch
+from filelock import FileLock
 from gymnasium.wrappers import RenderCollection
 from xitorch.interpolate import Interp1D
-from torchdiffeq import odeint
-from filelock import FileLock
-import matplotlib.pyplot as plt
 
-import pandas as pd
-import numpy as np
-import torch
-import os
+import rcmodel.optimisation
+from rcmodel.physical import Building, InputScaling, Room
+from rcmodel.rc_model import RCModel
+
+from .rcmodel_dataset import RandomSampleDataset
 
 
 def model_creator(model_config):
@@ -47,17 +48,18 @@ def model_creator(model_config):
         }
     }
     """
+
     def init_scaling():
         # Initialise scaling class
-        C_rm = model_config['C_rm']  # [min, max] Capacitance/m2
-        C1 = model_config['C1']  # Capacitance
-        C2 = model_config['C2']
-        R1 = model_config['R1']  # Resistance ((K.m^2)/W)
-        R2 = model_config['R2']
-        R3 = model_config['R3']
-        Rin = model_config['Rin']
-        cool = model_config['cool']  # Cooling limit in W/m2
-        gain = model_config['gain']  # Gain limit in W/m2
+        C_rm = model_config["C_rm"]  # [min, max] Capacitance/m2
+        C1 = model_config["C1"]  # Capacitance
+        C2 = model_config["C2"]
+        R1 = model_config["R1"]  # Resistance ((K.m^2)/W)
+        R2 = model_config["R2"]
+        R3 = model_config["R3"]
+        Rin = model_config["Rin"]
+        cool = model_config["cool"]  # Cooling limit in W/m2
+        gain = model_config["gain"]  # Gain limit in W/m2
 
         scaling = InputScaling(C_rm, C1, C2, R1, R2, R3, Rin, cool, gain)
         return scaling
@@ -67,25 +69,28 @@ def model_creator(model_config):
     scaling = init_scaling()
 
     # Initialise RCModel with the building
-    model = initialise_model(pi, scaling, model_config['weather_data_path'], model_config['room_names'],
-                             model_config['room_coordinates'])
+    model = initialise_model(
+        pi, scaling, model_config["weather_data_path"], model_config["room_names"], model_config["room_coordinates"]
+    )
 
     # load physical and/or policy models if available
-    if model_config['load_model_path_policy']:
-        model.load(model_config['load_model_path_policy'])  # load policy
+    if model_config["load_model_path_policy"]:
+        model.load(model_config["load_model_path_policy"])  # load policy
         model.initialise_parameters()  # re-randomise physical params, as they were also copied from the loaded policy
 
-    if model_config['load_model_path_physical']:
+    if model_config["load_model_path_physical"]:
         # Try loading a dummy model with no policy, if it fails load with a policy. (We don't know what file contains)
         try:
-            m = initialise_model(None, scaling, model_config['weather_data_path'], model_config['room_names'],
-                                 model_config['room_coordinates'])
-            m.load(model_config['load_model_path_physical'])
+            m = initialise_model(
+                None, scaling, model_config["weather_data_path"], model_config["room_names"], model_config["room_coordinates"]
+            )
+            m.load(model_config["load_model_path_physical"])
 
         except RuntimeError:
-            m = initialise_model(pi, scaling, model_config['weather_data_path'], model_config['room_names'],
-                                 model_config['room_coordinates'])
-            m.load(model_config['load_model_path_physical'])
+            m = initialise_model(
+                pi, scaling, model_config["weather_data_path"], model_config["room_names"], model_config["room_coordinates"]
+            )
+            m.load(model_config["load_model_path_physical"])
 
         model.params = m.params  # put loaded physical parameters onto model.
         model.loads = m.loads
@@ -94,13 +99,12 @@ def model_creator(model_config):
     # check if any parameters have been chosen by the user:
     try:
         loads = model.loads.detach()
-        if model_config['parameters'] is not None:
-
+        if model_config["parameters"] is not None:
             parameters = []
-            for param in model_config['parameters']:
-                parameters.append(model_config['parameters'][param])
+            for param in model_config["parameters"]:
+                parameters.append(model_config["parameters"][param])
 
-            assert len(parameters) == 9, 'Include all parameters'
+            assert len(parameters) == 9, "Include all parameters"
 
             params = torch.logit(torch.tensor(parameters[0:7]))
             loads = torch.logit(torch.tensor(parameters[7:]).unsqueeze(0).T)
@@ -109,7 +113,7 @@ def model_creator(model_config):
         model.loads = torch.nn.Parameter(loads)
 
     except KeyError as exception:  # input not found
-        print(f'Exception during RCmodel creation, missing var in model config: {exception}')
+        print(f"Exception during RCmodel creation, missing var in model config: {exception}")
 
     return model
 
@@ -145,7 +149,6 @@ def env_creator(env_config):
         env (gym.Env): A Reinforcement Learning environment that is ready for use with RLlib.
     """
     with torch.no_grad():
-
         # Try to get the model from env_config
         model = env_config.get("RC_model", None)
 
@@ -169,8 +172,7 @@ def env_creator(env_config):
         env_config["RC_model"] = model
 
         # Let's make a new config of just the items needed for the environment
-        env_keys = ["RC_model", "dataloader", "step_length", "render_mode",
-                    "update_state_dict"]
+        env_keys = ["RC_model", "dataloader", "step_length", "render_mode", "update_state_dict"]
         config = {}
         for key in env_keys:
             config[key] = env_config[key]
@@ -218,8 +220,8 @@ def initialise_model(pi, scaling, weather_data_path, room_names, room_coordinate
 
         new_coords = []
         for i in range(len(coords)):
-            l = [round((coords[i][0] - x0) / 10, 2), round((coords[i][1] - y0) / 10, 2)]
-            new_coords.append(l)
+            coord = [round((coords[i][0] - x0) / 10, 2), round((coords[i][1] - y0) / 10, 2)]
+            new_coords.append(coord)
 
         return new_coords
 
@@ -233,9 +235,9 @@ def initialise_model(pi, scaling, weather_data_path, room_names, room_coordinate
     bld = Building(rooms)
 
     df = pd.read_csv(weather_data_path)
-    Tout = torch.tensor(df['Hourly Temperature (°C)'])
-    t = torch.tensor(df['time'])
-    Tout_continuous = Interp1D(t, Tout, method='linear')  # Interp1D object
+    Tout = torch.tensor(df["Hourly Temperature (°C)"])
+    t = torch.tensor(df["time"])
+    Tout_continuous = Interp1D(t, Tout, method="linear")  # Interp1D object
 
     # Initialise RCModel with the building
     transform = torch.sigmoid
@@ -274,32 +276,32 @@ def sort_data(path, dt):
     def sort(path, dt):
         df = pd.read_csv(path)
 
-        if path[-11:] == '_sorted.csv':
-            path_sorted = path
-        else:
-            path_sorted = path[:-4] + '_sorted.csv'
+        path_sorted = path if path[-11:] == "_sorted.csv" else path[:-4] + "_sorted.csv"
 
         # Sort df by time (raw data not always in order)
         df = df.sort_values(by=["time"], ascending=True)
 
         # insert date-time value at start of df
         try:
-            df.insert(loc=0, column='date-time', value=pd.to_datetime(df['time'], unit='ms'))
-        except ValueError:
+            df.insert(loc=0, column="date-time", value=pd.to_datetime(df["time"], unit="ms"))
+        except ValueError as err:
             raise ValueError(
-                'Data appears to have already been sorted. Check if still appropriate and add _sorted.csv tag to avoid this error.')
+                "Data appears to have already been sorted. Check if still appropriate and add _sorted.csv tag to avoid"
+                "this error."
+            ) from err
 
         # downscale data to a frequency of dt (seconds) use the mean value and round to 2dp.
-        df = df.set_index('date-time').resample(str(dt) + 's').mean().round(2)
+        df = df.set_index("date-time").resample(str(dt) + "s").mean().round(2)
 
         # time column is converted to unix epoch seconds to match the date-time
         df["time"] = (df.index - pd.Timestamp("1970-01-01")) // pd.Timedelta("1s")
 
         # change date-time from UTC to Local time
-        infer_dst = np.array([False] * df.shape[
-            0])  # all False -> every row considered DT, alternative is True to indicate DST. The array must correspond to the iloc of df.index
-        df = df.tz_localize('Europe/London', ambiguous=infer_dst,
-                            nonexistent='shift_forward')  # causes error so commented out
+        infer_dst = np.array(
+            [False] * df.shape[0]
+        )  # all False -> every row considered DT, alternative is True to indicate DST.
+        #    The array must correspond to the iloc of df.index
+        df = df.tz_localize("Europe/London", ambiguous=infer_dst, nonexistent="shift_forward")  # causes error so commented out
 
         df = df.interpolate().round(2)  # interpolate missing values NaN
 
@@ -308,33 +310,23 @@ def sort_data(path, dt):
     def need_to_sort(path, dt):
 
         def get_dt(path):
-            df_dt = pd.read_csv(path)['time'][0:2].values
+            df_dt = pd.read_csv(path)["time"][0:2].values
             return df_dt[1] - df_dt[0]
 
         # Does path already have sorted tag?
-        if path[-11:] == '_sorted.csv':
-
-            # if so, is dt correct?
-            if get_dt(path) == dt:
-
-                return False  # path and file is correct dont sort
-
-            else:
-                return True  # dt is wrong, re-sort
+        if path[-11:] == "_sorted.csv":
+            # if so, is dt correct? if not, re-sort
+            return get_dt(path) != dt
 
         # path does not contain _sorted.csv
         else:
-
             # Does path_sorted exist?
-            path_sorted = path[:-4] + '_sorted.csv'
+            path_sorted = path[:-4] + "_sorted.csv"
             import os.path
-            if os.path.isfile(path_sorted):  # check if file already exists
 
-                # if file exists check if dt is correct
-                if get_dt(path_sorted) == dt:
-                    return False  # correct file already exists don't sort
-                else:
-                    return True  # file exists but dt wrong, re-sort
+            if os.path.isfile(path_sorted):  # check if file already exists
+                # if file exists check if dt is correct; if not, re-sort
+                return get_dt(path_sorted) != dt
 
             else:  # File doesn't exist
                 return True
@@ -343,10 +335,7 @@ def sort_data(path, dt):
         sort(path, dt)
 
     # return the path_sorted
-    if path[-11:] == '_sorted.csv':
-        path_sorted = path
-    else:
-        path_sorted = path[:-4] + '_sorted.csv'
+    path_sorted = path if path[-11:] == "_sorted.csv" else path[:-4] + "_sorted.csv"
 
     return path_sorted
 
@@ -356,12 +345,11 @@ def model_to_csv(observations, output_path):
     Produces a .csv of the output. To then be used in return_to_sender.py
     """
     # Produce a .csv in the same format as current data, retains compatibility with dataloader
-    titles = [['date-time', 'time'], [f'Rm{i}' for i in range(observations[:, 3:].shape[1])]]
+    titles = [["date-time", "time"], [f"Rm{i}" for i in range(observations[:, 3:].shape[1])]]
     titles = [item for sublist in titles for item in sublist]
 
     # sort into date-time, unix time and temp data columns. (date-time exists just to keep format consistent)
-    df = torch.hstack(
-        (torch.zeros(len(observations), 1) * torch.nan, observations[:, 0].unsqueeze(1), observations[:, 3:]))
+    df = torch.hstack((torch.zeros(len(observations), 1) * torch.nan, observations[:, 0].unsqueeze(1), observations[:, 3:]))
     df = pd.DataFrame(df.detach().numpy())
     df.to_csv(output_path, index=False, header=titles)
 
@@ -376,10 +364,10 @@ def convergence_criteria(y, n=10):
     """
 
     if n % 2 != 0:
-        raise TypeError('n must be even.')
+        raise TypeError("n must be even.")
 
-    y_a = y[-n:-n // 2]
-    y_b = y[-n // 2:]
+    y_a = y[-n : -n // 2]
+    y_b = y[-n // 2 :]
 
     # formula doesn't work if there's insufficient data or with None
     # output will be 1 until y >= n
@@ -387,7 +375,6 @@ def convergence_criteria(y, n=10):
         c = None
 
     elif len(y_a) == len(y_b):
-
         c = abs(sum(y_a) - sum(y_b)) / abs(sum(y_b))
     else:
         c = None
@@ -402,7 +389,7 @@ def exponential_smoothing(y, alpha, y_hat=None, n=10):
         if len(y) > 1:
             # y is an array meaning we want to calc y_hat for all values in array
             if y_hat:
-                raise ValueError('Trying to smooth entire array, don\'t include y_hat')
+                raise ValueError("Trying to smooth entire array, don't include y_hat")
 
             y_hat = []
             cycle = []
@@ -419,14 +406,13 @@ def exponential_smoothing(y, alpha, y_hat=None, n=10):
                     if len(cycle) >= n:
                         y_hat.append(np.array(cycle[0:n]).mean())
                         index = i + 1
-                        for yi in y[i + 1:]:
+                        for yi in y[i + 1 :]:
                             index += 1
                             if yi is None:
                                 y_hat.append(None)
                                 cycle = []  # reset
                                 break
                             else:
-
                                 y_hat.append(y_hat[-1] + alpha * (yi - y_hat[-1]))
                     else:
                         y_hat.append(None)
@@ -449,9 +435,10 @@ def policy_image(algo, n=100, path=None):
 
     """
     import rcmodel
+
     bounds = [15, 30]
-    t0 = 4 * 24 * 60 ** 2  # buffer to go from thursday to monday
-    time = torch.linspace(0 + t0, 24 * 60 ** 2 + t0, n)
+    t0 = 4 * 24 * 60**2  # buffer to go from thursday to monday
+    time = torch.linspace(0 + t0, 24 * 60**2 + t0, n)
     temp = torch.linspace(bounds[0], bounds[1], n)
     img = torch.zeros((n, n))
 
@@ -466,29 +453,31 @@ def policy_image(algo, n=100, path=None):
                 x = te.unsqueeze(0)  # remove the latent nodes
                 observation = rcmodel.optimisation.preprocess_observation(x, unix_time, mu, std_dev)
                 action, _, info = algo.compute_action(observation, full_fetch=True)
-                log_prob = info['action_logp']
+                log_prob = info["action_logp"]
                 # Get prob of getting 1:
                 if action == 1:
-                    pr = torch.e ** log_prob  # Convert log_prob to normal prob.
+                    pr = torch.e**log_prob  # Convert log_prob to normal prob.
                 elif action == 0:
-                    pr = 1 - torch.e ** log_prob  # pr(a=1) = 1 - pr(a=0)
+                    pr = 1 - torch.e**log_prob  # pr(a=1) = 1 - pr(a=0)
                 else:
-                    raise ValueError(f'action={action}, must be exactly 1 or 0.')
+                    raise ValueError(f"action={action}, must be exactly 1 or 0.")
 
                 img[i, j] = pr
 
     fig = plt.figure()
-    plt.imshow(img, origin='lower', aspect='auto', cmap='viridis', extent=(0, 24, bounds[0], bounds[1]), vmin=0, vmax=1)
+    plt.imshow(img, origin="lower", aspect="auto", cmap="viridis", extent=(0, 24, bounds[0], bounds[1]), vmin=0, vmax=1)
     plt.colorbar()
-    plt.xlabel('Time of Day [hours]')
-    plt.ylabel(r'Indoor Temperature [$^\circ$C]')
-    plt.title('Policy Plot')
+    plt.xlabel("Time of Day [hours]")
+    plt.ylabel(r"Indoor Temperature [$^\circ$C]")
+    plt.title("Policy Plot")
     plt.xticks(np.linspace(0, 24, 13))
     plt.yticks(np.linspace(bounds[0], bounds[1], 7))
-    plt.grid(color='k', linestyle='--', )
+    plt.grid(
+        color="k",
+        linestyle="--",
+    )
 
     if path:
         fig.savefig(path)
     else:
         plt.show()
-

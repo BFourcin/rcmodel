@@ -1,5 +1,6 @@
-from . import Building
 import torch
+
+from . import Building
 
 
 class InputScaling(Building):
@@ -24,7 +25,7 @@ class InputScaling(Building):
         # check if the ranges are in the correct format. i.e. [lb, ub]
         for ranges in [self.phys_param_range, self.energy_param_range]:
             for bounds in ranges:
-                assert bounds[0] <= bounds[1], f'Range for each parameter should be in the form [lb, ub], got: {bounds}'
+                assert bounds[0] <= bounds[1], f"Range for each parameter should be in the form [lb, ub], got: {bounds}"
 
     def physical_param_scaling(self, theta_scaled):
         """
@@ -101,11 +102,13 @@ class InputScaling(Building):
             x_range = x_range.unsqueeze(0)
 
         # check if x too small (~ inverses)
-        assert ~(x < x_range[:, 0]).any(), f'From model inputs: {x}, input ' \
-                                           f'{x[(x < x_range[:, 0])]} is outside defined range: \n{x_range} '
+        assert ~(x < x_range[:, 0]).any(), (
+            f"From model inputs: {x}, input {x[(x < x_range[:, 0])]} is outside defined range: \n{x_range} "
+        )
         # check if x too big
-        assert ~(x > x_range[:, 1]).any(), f'From model inputs: {x}, input ' \
-                                           f'{x[(x > x_range[:, 1])]} is outside defined range: \n{x_range} '
+        assert ~(x > x_range[:, 1]).any(), (
+            f"From model inputs: {x}, input {x[(x > x_range[:, 1])]} is outside defined range: \n{x_range} "
+        )
 
         x_scaled = (x - x_range[:, 0]) / (x_range[:, 1] - x_range[:, 0])
 

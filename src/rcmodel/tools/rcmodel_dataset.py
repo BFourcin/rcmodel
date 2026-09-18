@@ -1,13 +1,15 @@
-from torch.utils.data import Dataset, Sampler
 from random import randint
-import torch
+
 import pandas as pd
+import torch
+from torch.utils.data import Dataset, Sampler
 
 
 class BuildingTemperatureDataset(Dataset):
     """
     Splits dataset up into batches of len(dataset) // sample_size. Note remainder of data is thrown away.
-    train and test tags can be used to select a percentage slice of data in this order, see function _split_dataset() for current % splits.
+    train and test tags can be used to select a percentage slice of data in this order,see function _split_dataset()
+    for current % splits.
 
     If there is insufficient data for one batch, sample_size will be reduced to match the data.
     """
@@ -54,9 +56,8 @@ class BuildingTemperatureDataset(Dataset):
         if torch.is_tensor(idx):
             idx = idx.tolist()
 
-        # Get upper and lower bounds of dataset slice
+        # Get lower bound of dataset slice
         lb = idx * self.sample_size + self.rows_to_skip
-        ub = (idx + 1) * self.sample_size + self.rows_to_skip
 
         # Get pandas df of sample
         df_sample = pd.read_csv(self.csv_path, skiprows=lb, nrows=self.sample_size)
@@ -65,8 +66,9 @@ class BuildingTemperatureDataset(Dataset):
         t_sample = torch.tensor(df_sample.iloc[:, 1].values, dtype=torch.float64)  # units (s)
 
         # Get temp matrix
-        temp_sample = torch.tensor(df_sample.iloc[:, 2:].values,
-                                   dtype=torch.float32)  # pandas needs 2: to get all but first & second column
+        temp_sample = torch.tensor(
+            df_sample.iloc[:, 2:].values, dtype=torch.float32
+        )  # pandas needs 2: to get all but first & second column
 
         # apply transforms if required
         if self.transform:
@@ -79,7 +81,7 @@ class BuildingTemperatureDataset(Dataset):
         from csv import reader
 
         # the rows in the .csv are counted:
-        with open(self.csv_path, "r") as f:
+        with open(self.csv_path) as f:
             read_f = reader(f, delimiter=",")
             entry_count = sum(1 for row in read_f) - 1  # minus one to account for heading
 
@@ -105,7 +107,7 @@ class BuildingTemperatureDataset(Dataset):
             entry_count = total_entries
             return rows_to_skip, entry_count
         else:
-            raise ValueError('train, test and validation all False')
+            raise ValueError("train, test and validation all False")
 
     def get_all_data(self):
         # Get upper and lower bounds of dataset slice
@@ -118,8 +120,9 @@ class BuildingTemperatureDataset(Dataset):
         t_sample = torch.tensor(df_sample.iloc[:, 1].values, dtype=torch.float64)  # units (s)
 
         # Get temp matrix
-        temp_sample = torch.tensor(df_sample.iloc[:, 2:].values,
-                                   dtype=torch.float32)  # pandas needs 2: to get all but first & second column
+        temp_sample = torch.tensor(
+            df_sample.iloc[:, 2:].values, dtype=torch.float32
+        )  # pandas needs 2: to get all but first & second column
 
         # apply transforms if required
         if self.transform:
@@ -140,8 +143,9 @@ class RandomSampleDataset(Dataset):
     len(dataset_test) == (len(data_set)-warmup_size) * 0.2
     """
 
-    def __init__(self, csv_path, sample_size, warmup_size, transform=None, all=True, train=False, test=False,
-                 epoch_length=None):
+    def __init__(
+        self, csv_path, sample_size, warmup_size, transform=None, all=True, train=False, test=False, epoch_length=None
+    ):
         self.csv_path = csv_path
         self.transform = transform
         self.sample_size = int(sample_size)  # this is the number of rows of data from the csv per sample.
@@ -175,7 +179,7 @@ class RandomSampleDataset(Dataset):
 
             # Insufficient data for 1 whole sample size. Remainder of data used instead.
             if num_samples == 0:
-                raise ValueError('Insufficient amount of data')
+                raise ValueError("Insufficient amount of data")
 
         return num_samples
 
@@ -200,8 +204,9 @@ class RandomSampleDataset(Dataset):
         t_sample = torch.tensor(df_sample.iloc[:, 1].values, dtype=torch.float64)  # units (s)
 
         # Get temp matrix
-        temp_sample = torch.tensor(df_sample.iloc[:, 2:].values,
-                                   dtype=torch.float32)  # pandas needs 2: to get all but first & second column
+        temp_sample = torch.tensor(
+            df_sample.iloc[:, 2:].values, dtype=torch.float32
+        )  # pandas needs 2: to get all but first & second column
 
         # apply transforms if required
         if self.transform:
@@ -214,10 +219,10 @@ class RandomSampleDataset(Dataset):
         from csv import reader
 
         # the rows in the .csv are counted:
-        with open(self.csv_path, "r") as f:
+        with open(self.csv_path) as f:
             read_f = reader(f, delimiter=",")
             total_entries = sum(1 for row in read_f) - 1  # minus one to account for heading
-            
+
         total_entries -= self.warmup_size  # remove the chunk of data used soley for warm up
 
         # check there is sufficient data
@@ -245,16 +250,17 @@ class RandomSampleDataset(Dataset):
             entry_count = total_entries
             return rows_to_skip, entry_count
         else:
-            raise ValueError('train, test and validation all False')
+            raise ValueError("train, test and validation all False")
 
     def get_all_data(self):
         start_idx = self.rows_to_skip
 
         # Get pandas df of entire valid dataset (iterate to avoid errors)
         # df_sample = pd.read_csv(self.csv_path, skiprows=start_idx, nrows=self.entry_count + self.sample_size)  #OLD
-        iter_csv = pd.read_csv(self.csv_path, skiprows=start_idx, nrows=self.entry_count + self.sample_size,
-                               iterator=True, chunksize=10000)
-        df_sample = pd.concat([chunk.dropna(how='all') for chunk in iter_csv])
+        iter_csv = pd.read_csv(
+            self.csv_path, skiprows=start_idx, nrows=self.entry_count + self.sample_size, iterator=True, chunksize=10000
+        )
+        df_sample = pd.concat([chunk.dropna(how="all") for chunk in iter_csv])
 
         # Get time column (time must be in the 1th column)
         t_sample = torch.tensor(df_sample.iloc[:, 1].values, dtype=torch.float64)  # units (s)
@@ -273,13 +279,14 @@ class InfiniteSampler(Sampler):
     """Works with RandomSampleDataset to allow for infinite samples of data to be drawn.
     usage:
     train_loader = DataLoader(dataset_train, batch_size=batch_size, sampler=InfiniteSampler(dataset_train))"""
+
     def __init__(self, data_source):
         super().__init__(data_source)
         assert len(data_source) > 0
         self.dataset = data_source
 
     def __iter__(self):
-        order = list(range((len(self.dataset))))
+        order = list(range(len(self.dataset)))
         idx = 0
         while True:
             yield order[idx]
