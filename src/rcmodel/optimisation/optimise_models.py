@@ -16,7 +16,7 @@ However if we do env.variable = value, this will only set the variable in the wr
 
 def make_update_env_fn(config):
     """Little function to enable interaction with the environment within Algorithm across all workers.
-    >>> algo.workers.foreach_worker(make_update_env_fn(env_config))"""
+    >>> algo.env_runner_group.foreach_worker(make_update_env_fn(env_config))"""
 
     def update_env_conf(env):
         env.unwrapped.config.update(config)
@@ -240,20 +240,20 @@ class OptimisePolicy:
         if policy_weights:
             weights = ray.put({"default_policy": policy_weights})
             # ... so that we can broadcast these weights to all rollout-workers once.
-            for w in self.rl_algorithm.workers.remote_workers():
+            for w in self.rl_algorithm.env_runner_group.remote_workers():
                 w.set_weights.remote(weights)
 
     def train(self):
         results = self.rl_algorithm.train()
         self.environment_steps += results["num_steps_trained_this_iter"]
-        avg_reward = results["episode_reward_mean"]
+        avg_reward = results["env_runners"]["episode_return_mean"]
         return avg_reward
 
     def update_environment(self, config):
         """Update the environment over all workers with a new config. Only certain
         parameters can be updated, check the environment class. Also setups the RC
         model and calculates latent vars."""
-        self.rl_algorithm.workers.foreach_worker(make_update_env_fn(config))
+        self.rl_algorithm.env_runner_group.foreach_worker(make_update_env_fn(config))
 
     def get_weights(self):
         return self.rl_algorithm.get_policy().get_weights()

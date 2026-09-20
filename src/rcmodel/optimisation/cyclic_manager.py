@@ -274,7 +274,8 @@ class OptimiseManager:
         directory_path = Path(directory_path)
         directory_path.mkdir(parents=True, exist_ok=True)
 
-        checkpoint_path = self.policy_optimiser.rl_algorithm.save(directory_path)
+        self.policy_optimiser.rl_algorithm.save(directory_path)
+        checkpoint_path = str(directory_path.resolve())
         rl_algorithm = self.policy_optimiser.rl_algorithm
 
         self.physical_optimiser.rl_algorithm = None

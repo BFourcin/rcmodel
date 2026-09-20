@@ -68,7 +68,7 @@ def get_policy_config(get_env_config):
 
     policy_config = (
         PPOConfig()
-        .training(train_batch_size=12 * n_workers, sgd_minibatch_size=12 * n_workers)
+        .training(train_batch_size=12 * n_workers, minibatch_size=12 * n_workers)
         .environment(env="LSIEnv", env_config=env_config, disable_env_checking=True)
         .rollouts(num_rollout_workers=n_workers, rollout_fragment_length=12 * n_workers)
         .framework(framework="torch")
@@ -146,7 +146,7 @@ def test_policy_env_update(setup_test):
         def get_info(self):
             def make_info_env_fn():
                 """Little function to enable interaction with the environment within Algorithm across all workers.
-                >>> algo.workers.foreach_worker(make_info_env_fn())"""
+                >>> algo.env_runner_group.foreach_worker(make_info_env_fn())"""
 
                 def get_env_info(env):
                     return env.RC.state_dict()
@@ -156,7 +156,7 @@ def test_policy_env_update(setup_test):
 
                 return look_env_fn
 
-            return self.policy_optimiser.rl_algorithm.workers.foreach_worker(make_info_env_fn())
+            return self.policy_optimiser.rl_algorithm.env_runner_group.foreach_worker(make_info_env_fn())
 
     # Initialise workers
     workers = [Worker.remote(policy_config, weights) for _ in range(1)]
