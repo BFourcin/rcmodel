@@ -1,3 +1,5 @@
+import numpy as np
+import pandas as pd
 import pytest
 import torch
 
@@ -103,3 +105,96 @@ def model_n2(building_n2):
 @pytest.fixture
 def model_n9(building_n9):
     return get_model(building_n9)
+
+
+@pytest.fixture
+def fake_time():
+    """Shared time axis (s) for synthetic weather + indoor-temperature data, so both
+    always cover the exact same domain. Sized to match the 6-hour/720-row shape the
+    old real data file had, keeping batch counts for the optimiser tests similar."""
+    dt = 30
+    n_seconds = 6 * 60**2
+    return np.arange(0, n_seconds, dt)
+
+
+@pytest.fixture
+def fake_outdoor_weather(fake_time):
+    """Synthetic outdoor temperature series over `fake_time`."""
+    n_seconds = fake_time[-1] + (fake_time[1] - fake_time[0])
+    return 10 + 5 * np.sin(2 * np.pi * fake_time / n_seconds)
+
+
+@pytest.fixture
+def fake_rooms():
+    fake_room_coordinates = [
+        [[0, 0], [5, 0], [5, 5], [0, 5]],
+        [[5, 0], [10, 0], [10, 2], [10, 4], [10, 5], [5, 5]],
+        [[0, 5], [5, 5], [10, 5], [10, 6], [10, 8], [10, 10]],
+        [[10, 10], [12, 10], [12, 8], [10, 8]],
+        [[10, 8], [12, 8], [12, 6], [10, 6]],
+        [[10, 6], [12, 6], [12, 4], [10, 4], [10, 5]],
+        [[10, 4], [12, 4], [12, 2], [10, 2]],
+        [[10, 2], [12, 2], [12, 0], [10, 0]],
+        [[12, 0], [12, 2], [12, 4], [12, 6], [12, 8], [12, 10], [14, 10], [14, 0]],
+    ]
+    fake_room_names = ["rm1", "rm2", "rm3", "rm4", "rm5", "rm6", "rm7", "rm8", "rm9"]
+    return fake_room_names, fake_room_coordinates
+
+
+@pytest.fixture
+def synthetic_indoor_temperature_csv(tmp_path, fake_time, fake_rooms):
+    """Writes a synthetic per-room indoor-temperature CSV over the same time domain as
+    `fake_outdoor_weather`, in the (date-time, time, <room columns>) format
+    RandomSampleDataset/BuildingTemperatureDataset expect."""
+    rng = np.random.default_rng(7)
+    n_seconds = fake_time[-1] + (fake_time[1] - fake_time[0])
+    base_indoor = 22 + 2 * np.sin(2 * np.pi * (fake_time - 3 * 60**2) / n_seconds)
+    fake_room_names, _ = fake_rooms
+    room_offsets = rng.uniform(-1.0, 1.0, size=len(fake_room_names))
+    indoor_temps = base_indoor[:, None] + room_offsets[None, :]
+
+    df = pd.DataFrame(indoor_temps, columns=fake_room_names)
+    df.insert(0, "time", fake_time)
+    df.insert(0, "date-time", pd.to_datetime(fake_time, unit="s", origin="2021-01-01"))
+
+    csv_path = tmp_path / "synthetic_indoor_temperature.csv"
+    df.to_csv(csv_path, index=False)
+    return csv_path
+
+
+@pytest.fixture
+def get_model_config(fake_time, fake_outdoor_weather, fake_rooms):
+    np.random.seed(42)
+    fake_room_names, fake_room_coordinates = fake_rooms
+
+    model_config = {
+        # Ranges:
+        "C_rm": [1e3, 1e5],  # [min, max] Capacitance/m2
+        "C1": [1e5, 1e8],  # Capacitance
+        "C2": [1e5, 1e8],
+        "R1": [0.1, 5],  # Resistance ((K.m^2)/W)
+        "R2": [0.1, 5],
+        "R3": [0.5, 6],
+        "Rin": [0.1, 5],
+        "cool": [0, 50],  # Cooling limit in W/m2
+        "gain": [0, 5],  # Gain limit in W/m2
+        "room_names": fake_room_names,
+        "room_coordinates": fake_room_coordinates,
+        "weather_data_outdoor_temperature": fake_outdoor_weather,
+        "weather_data_UTC_time": fake_time,
+        "cooling_policy": None,
+        "load_model_path_policy": None,  # './prior_policy.pt',  # or None
+        "load_model_path_physical": None,  # or None
+        "parameters": {
+            "C_rm": np.random.rand(1).item(),
+            "C1": np.random.rand(1).item(),
+            "C2": np.random.rand(1).item(),
+            "R1": np.random.rand(1).item(),
+            "R2": np.random.rand(1).item(),
+            "R3": np.random.rand(1).item(),
+            "Rin": np.random.rand(1).item(),
+            "cool": np.random.rand(1).item(),  # 0.09133423646610082
+            "gain": np.random.rand(1).item(),  # 0.9086668150306394
+        },
+    }
+    return model_config
