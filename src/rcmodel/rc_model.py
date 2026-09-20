@@ -31,8 +31,8 @@ class RCModel(nn.Module):
         self.cooling_policy = cooling_policy  # Neural net: pi(state) --> action
         self.action = 0  # initialise cooling action
 
-        self.params = None  # initialised in init_physical()
-        self.loads = None  # initialised in init_physical()
+        self.params = None  # initialised in initialise_parameters()
+        self.loads = None  # initialised in initialise_parameters()
         self.initialise_parameters()  # initialise params and loads with random numbers
 
         self.ode_t = None  # Keeps track of t during integration. None is just to initialise attribute
