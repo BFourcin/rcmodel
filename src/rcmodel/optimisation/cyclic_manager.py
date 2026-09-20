@@ -18,8 +18,53 @@ def capped_cubic_test_schedule(episode_id: int) -> bool:
         return episode_id % 1000 == 0
 
 
-# TODO: Add in comments and docstrings.
 class OptimiseManager:
+    """
+    Orchestrates cyclic training of a physical RC model and an RL policy.
+
+    Each call to `cycle()` runs `physical_loops` epochs of physical-model
+    training (via `physical_optimiser`), hands the resulting state over to
+    the policy, then runs `policy_loops` epochs of policy training (via
+    `policy_optimiser`), and hands the policy's state back to the physical
+    model. Testing, rendering, checkpointing (`save`/`load`), and CSV
+    logging of training progress are handled automatically according to
+    the trigger/logging options below.
+
+    Parameters
+    ----------
+    physical_optimiser : OptimiseRC
+        Optimiser used to train the physical RC model.
+    policy_optimiser : OptimisePolicy
+        Optimiser used to train the RL policy.
+    physical_loops : int, optional
+        Number of physical-model training epochs per cycle. Default 100.
+    policy_loops : int, optional
+        Number of policy training epochs per cycle. Default 100.
+    render_phase : {"train", "test", "both", None}, optional
+        Which phase(s) to render environment images for. Default None
+        (no rendering).
+    render_trigger : callable, optional
+        Function taking an epoch number and returning a bool, used to
+        decide whether to render on that epoch. Defaults to a function
+        that always returns True.
+    physical_test_trigger : bool or callable, optional
+        Controls when a test pass runs after physical training. A bool
+        is converted to a function that always returns that value; a
+        callable is used as-is, taking the physical epoch number and
+        returning a bool. Default True (test every epoch).
+    policy_test_trigger : bool or callable, optional
+        Same as `physical_test_trigger`, but for policy training epochs.
+        Default True.
+    logging : bool, optional
+        Whether to log per-epoch training info to a CSV file. Default True.
+    log_filename : str, optional
+        Filename for the CSV log, written inside the run's output
+        directory. Default "log.csv".
+    verbose : bool, optional
+        Whether to print per-epoch training info to the console.
+        Default True.
+    """
+
     def __init__(
         self,
         physical_optimiser,
@@ -50,20 +95,20 @@ class OptimiseManager:
         self.physical_loops = physical_loops
         self.policy_loops = policy_loops
 
-        if physical_test_trigger is True:
+        if physical_test_trigger:
 
             def physical_test_trigger(x):
                 return True
-        elif physical_test_trigger is False:
+        elif not physical_test_trigger:
 
             def physical_test_trigger(x):
                 return False
 
-        if policy_test_trigger is True:
+        if policy_test_trigger:
 
             def policy_test_trigger(x):
                 return True
-        elif policy_test_trigger is False:
+        elif not policy_test_trigger:
 
             def policy_test_trigger(x):
                 return False
@@ -255,7 +300,7 @@ class OptimiseManager:
         """
         Parameters
         ----------
-        filename : str
+        filename : str, Path
             Path to the pickled object to load.
         Returns
         ----------
