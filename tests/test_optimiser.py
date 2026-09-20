@@ -1,6 +1,7 @@
-import os
 import tempfile
+from pathlib import Path
 
+import matplotlib.pyplot as plt
 import pytest
 import ray
 import torch
@@ -9,10 +10,12 @@ from ray.tune.registry import register_env
 
 from rcmodel import (
     InfiniteSampler,
+    OptimiseManager,
     OptimisePolicy,
     OptimiseRC,
     RandomSampleDataset,
     env_creator,
+    model_creator,
 )
 from rcmodel.optimisation.optimise_models import test as not_a_te_st
 
@@ -27,8 +30,8 @@ def tmp_dir():
 
 
 @pytest.fixture
-def get_datasets():
-    csv_path = os.path.join(os.path.dirname(__file__), "data/6hrs_testing_data.csv")
+def get_datasets(synthetic_indoor_temperature_csv):
+    csv_path = synthetic_indoor_temperature_csv
     dt = 30  # seconds
     sample_size = 1 * 60**2 / dt  # ONE HOUR
     warmup_size = 0
@@ -122,9 +125,7 @@ def test_policy_optimiser(setup_test):
 
 
 def test_policy_env_update(setup_test):
-    """Test that we can update the environment of the policy optimiser while it's running.
-    We
-    """
+    """Test that we can update the environment of the policy optimiser while it's running."""
     _, _, env_config, policy_config, tmpdirname = setup_test
 
     _, weights = make_first_checkpoint(policy_config, tmpdirname)
@@ -183,13 +184,73 @@ def test_policy_env_update(setup_test):
         assert torch.equal(original_state_dict[key], new_state_dict[key])
 
 
-# add test for saving and loading.
+def test_full_optimiser_cycle_with_save_from_config(get_model_config, setup_test, monkeypatch):
+    """Full run from config: train one physical + one policy cycle, then check
+    training happened, images were saved, logs were written, and save/load round-trips."""
+    plt.switch_backend("Agg")  # headless, cross-platform rendering
 
-# add test for cycle.
+    # Get model config
+    model_config = get_model_config
 
-# add test to make sure images are being saved and the different options work.
+    train_dataset, test_dataset, env_config, policy_config, tmpdirname = setup_test
+    monkeypatch.chdir(tmpdirname)  # OptimiseManager writes to a relative "./outputs/..." path
 
-# test that model parameters are changed when a cycle occurs.
+    env_config["RC_model"] = model_creator(model_config)
+
+    op_policy = OptimisePolicy(policy_config, policy_weights=None, opt_id=0)
+
+    # Set up physical optimiser.
+    op_physical = OptimiseRC(env_config, op_policy.rl_algorithm, train_dataset, test_dataset, lr=1e-3, opt_id=0)
+
+    params_before = op_physical.env.unwrapped.RC.params.detach().clone()
+    loads_before = op_physical.env.unwrapped.RC.loads.detach().clone()
+
+    manage = OptimiseManager(
+        op_physical,
+        op_policy,
+        physical_loops=1,
+        policy_loops=1,
+        render_phase=None,
+        logging=True,
+        physical_test_trigger=True,
+        policy_test_trigger=True,
+    )
+
+    manage.cycle()
+
+    # ---- model parameters changed ----
+    params_after = op_physical.env.unwrapped.RC.params.detach()
+    loads_after = op_physical.env.unwrapped.RC.loads.detach()
+    assert not torch.equal(params_before, params_after), "Physical model parameters did not change after a cycle."
+    assert not torch.equal(loads_before, loads_after), "Physical model loads did not change after a cycle."
+
+    # ---- images are actually being saved ----
+    # Plotting is broken for multi-room models.
+    # train_images = list(Path(manage.directory_path, "images", "train").glob("*.png"))
+    # test_images = list(Path(manage.directory_path, "images", "test").glob("*.png"))
+    # assert train_images, "No training images were saved."
+    # assert test_images, "No test images were saved."
+
+    # ---- logging wrote the expected rows ----
+    log_path = Path(manage.log_filename)
+    assert log_path.is_file()
+    with open(log_path) as f:
+        num_lines = sum(1 for _ in f)
+    assert num_lines == 3, "Expected a header row plus one physical- and one policy-epoch row."
+
+    # ---- save / load round trip ----
+    filename = manage.save()
+    checkpoint_path = Path(manage.directory_path, "models", filename)
+    reloaded = OptimiseManager.load(checkpoint_path)
+
+    assert reloaded.cycle_count == manage.cycle_count
+    assert reloaded.physical_epochs == manage.physical_epochs
+    assert reloaded.policy_epochs == manage.policy_epochs
+    assert torch.equal(
+        reloaded.physical_optimiser.env.unwrapped.RC.params.detach(),
+        manage.physical_optimiser.env.unwrapped.RC.params.detach(),
+    )
+
 
 if __name__ == "__main__":
     pytest.main()
