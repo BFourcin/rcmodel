@@ -36,19 +36,21 @@ def model_creator(model_config):
         "cooling_policy": None,
         "load_model_path_policy": None,  # './prior_policy.pt',  # or None
         "load_model_path_physical": None,  # or None
-        "parameters": {
-            "C_rm": np.random.rand(1).item(),
-            "C1": np.random.rand(1).item(),
-            "C2": np.random.rand(1).item(),
-            "R1": np.random.rand(1).item(),
-            "R2": np.random.rand(1).item(),
-            "R3": np.random.rand(1).item(),
-            "Rin": np.random.rand(1).item(),
-            "cool": np.random.rand(1).item(),
-            "gain": np.random.rand(1).item(),
+        "parameters": {  # scaled 0-1, or None to initialise randomly
+            "C_rm": np.random.rand(1),
+            "C1": np.random.rand(1),
+            "C2": np.random.rand(1),
+            "R1": np.random.rand(1),
+            "R2": np.random.rand(1),
+            "R3": np.random.rand(1),
+            "Rin": np.random.rand(1),
+            "cool": np.random.rand(len(room_coordinates)),  # one per room, or a single value for all
+            "gain": np.random.rand(len(room_coordinates)),
         }
     }
     """
+    # Names of the [min, max] ranges. The "parameters" dict uses the same names.
+    range_keys = ("C_rm", "C1", "C2", "R1", "R2", "R3", "Rin", "cool", "gain")
 
     def init_scaling():
         # Initialise scaling class
@@ -59,19 +61,52 @@ def model_creator(model_config):
         R2 = model_config["R2"]
         R3 = model_config["R3"]
         Rin = model_config["Rin"]
-        cool = model_config["cool"]  # Cooling limit in W/m2
-        gain = model_config["gain"]  # Gain limit in W/m2
+        cool = model_config["cool"]  # Cooling limit per room in W/m2
+        gain = model_config["gain"]  # Gain limit per room in W/m2
 
         scaling = InputScaling(C_rm, C1, C2, R1, R2, R3, Rin, cool, gain)
         return scaling
 
     def model_sanity_checks():
-
-        assert len(model_config["weather_data_outdoor_temperature"]) == len(model_config["weather_data_UTC_time"]), (
-            "Length of 'weather_data_outdoor_temperature' and 'weather_data_UTC_time' should match."
+        """Check the config is self-consistent before anything is built."""
+        n_weather = len(model_config["weather_data_outdoor_temperature"])
+        n_time = len(model_config["weather_data_UTC_time"])
+        assert n_weather == n_time, (
+            f"Weather data length mismatch: 'weather_data_outdoor_temperature' has {n_weather} points, "
+            f"'weather_data_UTC_time' has {n_time}."
         )
 
+        n_names = len(model_config["room_names"])
+        n_rooms = len(model_config["room_coordinates"])
+        assert n_names == n_rooms, f"Each room needs a name: got {n_names} names for {n_rooms} rooms."
+
+        # InputScaling checks min <= max, here we only check the shape of each range.
+        for key in range_keys:
+            assert len(model_config[key]) == 2, f"Range for '{key}' should be [min, max], got: {model_config[key]}"
+
+        # Starting parameters are optional, but if given they must be complete.
+        # Their lengths are checked where the tensors are built, as a single value is allowed for every room.
+        if model_config["parameters"] is not None:
+            missing = [key for key in range_keys if key not in model_config["parameters"]]
+            assert not missing, f"model_config['parameters'] is missing: {missing}"
+
         return
+
+    def as_scalar(value):
+        """A float, a 1-element array or a 0-d tensor can all be used interchangeably."""
+        return np.asarray(value).item()
+
+    def as_room_vector(value, n_rooms, name):
+        """Format a load as a 1D tensor with one value per room. A single value is used for every room."""
+        vector = torch.as_tensor(value, dtype=torch.float32).flatten()
+        if vector.numel() == 1:
+            vector = vector.repeat(n_rooms)
+
+        assert vector.numel() == n_rooms, (
+            f"Each room needs a '{name}' load - give one value per room, or a single value for all. "
+            f"Got {vector.numel()} values for {n_rooms} rooms."
+        )
+        return vector
 
     model_sanity_checks()
 
@@ -122,23 +157,33 @@ def model_creator(model_config):
         del m
 
     # check if any parameters have been chosen by the user:
-    try:
-        loads = model.loads.detach()
-        if model_config["parameters"] is not None:
-            parameters = []
-            for param in model_config["parameters"]:
-                parameters.append(model_config["parameters"][param])
+    if model_config["parameters"] is not None:
+        p = model_config["parameters"]
+        n_rooms = len(model.building.rooms)
 
-            assert len(parameters) == 9, "Include all parameters"
+        # Order is important - must match Building.categorise_theta()
+        params = torch.tensor(
+            [
+                as_scalar(p["C_rm"]),
+                as_scalar(p["C1"]),
+                as_scalar(p["C2"]),
+                as_scalar(p["R1"]),
+                as_scalar(p["R2"]),
+                as_scalar(p["R3"]),
+                as_scalar(p["Rin"]),
+            ],
+            dtype=torch.float32,
+        )
 
-            params = torch.logit(torch.tensor(parameters[0:7]))
-            loads = torch.logit(torch.tensor(parameters[7:]).unsqueeze(0).T)
+        # cool and gain are per room.
+        cool = as_room_vector(p["cool"], n_rooms, "cool")
+        gain = as_room_vector(p["gain"], n_rooms, "gain")
 
-        model.params = torch.nn.Parameter(params)
-        model.loads = torch.nn.Parameter(loads)
+        # Row 0 is cool, row 1 is gain. Must match InputScaling.physical_loads_scaling()
+        loads = torch.stack([cool, gain])  # shape (2, n_rooms)
 
-    except KeyError as exception:  # input not found
-        print(f"Exception during RCmodel creation, missing var in model config: {exception}")
+        model.params = torch.nn.Parameter(torch.logit(params))
+        model.loads = torch.nn.Parameter(torch.logit(loads))
 
     return model
 
@@ -250,7 +295,9 @@ def change_origin(room_coordinates):
     return shifted_rooms
 
 
-def initialise_model(pi, scaling, weather_data_outdoor_temperature, weather_data_UTC_time, room_names, room_coordinates):
+def initialise_model(
+    cooling_policy, scaling, weather_data_outdoor_temperature, weather_data_UTC_time, room_names, room_coordinates
+):
     room_coordinates = change_origin(room_coordinates)
 
     rooms = []
@@ -266,7 +313,7 @@ def initialise_model(pi, scaling, weather_data_outdoor_temperature, weather_data
 
     # Initialise RCModel with the building
     transform = torch.sigmoid
-    model = RCModel(bld, scaling, Tout_continuous, transform, pi)
+    model = RCModel(bld, scaling, Tout_continuous, transform, cooling_policy)
 
     return model
 

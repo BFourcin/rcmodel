@@ -52,70 +52,42 @@ def test_model_loads_scaling(scaling):
     assert torch.equal(cool_scaled, torch.tensor([[0.3, 0.8], [0.1, 0.25]]))
 
 
-def test_model_setup():
-    np.random.seed(42)
-    n = 24 * 60**2
-    fake_time = np.arange(0, n, 30)
-    fake_weather = 10 + 5 * np.sin(2 * np.pi * fake_time / n)
+def expected_physical(model_config, key, n_rooms=1):
+    """Physical value of a 0-1 config parameter, straight from its [min, max] range.
+    A single value is broadcast to every room, a per-room array must already match."""
+    lo, hi = model_config[key]
+    scaled = np.broadcast_to(np.asarray(model_config["parameters"][key], dtype=float).flatten(), (n_rooms,))
+    return torch.tensor(lo + scaled * (hi - lo), dtype=torch.float32)
 
-    model_config = {
-        # Ranges:
-        "C_rm": [1e3, 1e5],  # [min, max] Capacitance/m2
-        "C1": [1e5, 1e8],  # Capacitance
-        "C2": [1e5, 1e8],
-        "R1": [0.1, 5],  # Resistance ((K.m^2)/W)
-        "R2": [0.1, 5],
-        "R3": [0.5, 6],
-        "Rin": [0.1, 5],
-        "cool": [0, 50],  # Cooling limit in W/m2
-        "gain": [0, 5],  # Gain limit in W/m2
-        "room_names": ["rm1", "rm2", "rm3", "rm4", "rm5", "rm6", "rm7", "rm8", "rm9"],
-        "room_coordinates": [
-            [[0, 0], [5, 0], [5, 5], [0, 5]],
-            [[5, 0], [10, 0], [10, 2], [10, 4], [10, 5], [5, 5]],
-            [[0, 5], [5, 5], [10, 5], [10, 6], [10, 8], [10, 10]],
-            [[10, 10], [12, 10], [12, 8], [10, 8]],
-            [[10, 8], [12, 8], [12, 6], [10, 6]],
-            [[10, 6], [12, 6], [12, 4], [10, 4], [10, 5]],
-            [[10, 4], [12, 4], [12, 2], [10, 2]],
-            [[10, 2], [12, 2], [12, 0], [10, 0]],
-            [[12, 0], [12, 2], [12, 4], [12, 6], [12, 8], [12, 10], [14, 10], [14, 0]],
-        ],
-        "weather_data_outdoor_temperature": fake_weather,
-        "weather_data_UTC_time": fake_time,
-        "cooling_policy": None,
-        "load_model_path_policy": None,  # './prior_policy.pt',  # or None
-        "load_model_path_physical": None,  # or None
-        "parameters": {
-            "C_rm": np.random.rand(1).item(),
-            "C1": np.random.rand(1).item(),
-            "C2": np.random.rand(1).item(),
-            "R1": np.random.rand(1).item(),
-            "R2": np.random.rand(1).item(),
-            "R3": np.random.rand(1).item(),
-            "Rin": np.random.rand(1).item(),
-            "cool": np.random.rand(1).item(),  # 0.09133423646610082
-            "gain": np.random.rand(1).item(),  # 0.9086668150306394
-        },
-    }
+
+PARAM_KEYS = ("C_rm", "C1", "C2", "R1", "R2", "R3", "Rin")  # order of Building.categorise_theta()
+
+
+@pytest.mark.parametrize("load_form", ["float", "array_of_one", "array_per_room"])
+def test_model_setup(get_model_config, load_form):
+    model_config = get_model_config
+    p = model_config["parameters"]
+    n_rooms = len(model_config["room_names"])
+
+    if load_form != "float":
+        for key in PARAM_KEYS:  # np.random.rand(1) rather than a float must not break anything
+            p[key] = np.random.rand(1)
+    if load_form == "array_of_one":
+        p["cool"], p["gain"] = np.random.rand(1), np.random.rand(1)
+    elif load_form == "array_per_room":
+        p["cool"], p["gain"] = np.random.rand(n_rooms), np.random.rand(n_rooms)
 
     model = model_creator(model_config)
-
     params, loads = model.get_physical_paramaters()
-    scaled_parameters_from_model = torch.cat((params, loads.flatten()))
 
-    parameters_from_config = []
-    for p in model_config["parameters"]:
-        parameters_from_config.append(model_config["parameters"][p])
-
-    config_params = model.scaling.physical_param_scaling(parameters_from_config[0:-2])
-    config_loads = model.scaling.physical_loads_scaling(torch.tensor(parameters_from_config[-2:]).reshape(2, 1))
-
-    scaled_parameters_from_config = torch.cat((config_params, config_loads.flatten()))
-
-    assert (abs(scaled_parameters_from_config - scaled_parameters_from_model) < 1e-2).all(), (
-        "Parameters from the model are not matching with parameters provided in the config."
+    expected_params = torch.cat([expected_physical(model_config, key) for key in PARAM_KEYS])
+    # Row 0 is cool, row 1 is gain, one column per room.
+    expected_loads = torch.stack(
+        [expected_physical(model_config, "cool", n_rooms), expected_physical(model_config, "gain", n_rooms)]
     )
+
+    torch.testing.assert_close(params, expected_params, rtol=1e-4, atol=0)
+    torch.testing.assert_close(loads, expected_loads, rtol=1e-4, atol=1e-4)
 
 
 if __name__ == "__main__":
