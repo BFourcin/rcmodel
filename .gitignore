@@ -15,3 +15,5 @@ src/tuned_trial
 
 **/*cache*
 poetry.lock
+
+CLAUDE.local.md
