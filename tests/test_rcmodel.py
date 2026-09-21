@@ -1,9 +1,12 @@
 import tempfile
 
+import numpy as np
+import pandas as pd
 import pytest
 import torch
 
-from rcmodel import RCModel
+from rcmodel import BuildingTemperatureDataset, RCModel, model_creator
+from rcmodel.rc_model import get_iv_array, steady_state_iv
 
 
 @pytest.mark.parametrize(
@@ -93,6 +96,100 @@ def test_save_load(model_n9):
         diff_loads = abs(loaded_loads - original_loads)
 
     assert (diff_params < 1e-3).all() and (diff_loads < 1e-3).all(), "model parameters are changing during a save and load"
+
+
+def test_get_iv_array_converges_to_steady_state(get_model_config, fake_rooms, fake_time, tmp_path):
+    """With near-constant outdoor/indoor temperatures held for long enough, get_iv_array()'s
+    latent node estimates should settle close to the analytic steady-state solution
+    (steady_state_iv()) - an implementation-agnostic invariant, independent of how the
+    integration itself is done.
+
+    Overrides get_model_config's (random) physical parameters with fixed, minimal ones instead of
+    using its random seed-42 draw directly: the physical parameter ranges legally permit R*C time
+    constants of hundreds of days (confirmed empirically - the raw seed-42 draw has a ~439-day
+    slow mode), so no dataset length short enough to run as a fast test would actually converge
+    for an arbitrary draw. Minimal R/C values keep the slowest time constant to ~72 minutes, so a
+    24-hour dataset (~20x that) converges comfortably and still runs in a fraction of a second.
+
+    The target is computed via the same "Tin averaged over ALL rooms, not just the ones touching
+    the external wall" formula get_iv_array() uses internally (see its `Tin_agg` comment) rather
+    than assuming the raw indoor temperature value - for `fake_rooms`, only 6 of 9 rooms are
+    externally connected, so the true driving Tin is diluted from 21.0 down to 14.0.
+    """
+    model_config = get_model_config
+    fake_room_names, _ = fake_rooms
+    model_config["parameters"] = dict.fromkeys(
+        ["C_rm", "C1", "C2", "R1", "R2", "R3", "Rin", "cool", "gain"], 0.0
+    )  # scaled 0-1: minimum of every range -> smallest R*C -> fastest time constant
+
+    dt = 30
+    n_rows = 2_880  # 24 hours @ dt=30s
+    t = fake_time[0] + np.arange(0, n_rows * dt, dt)
+    tout = 12.0
+    tin = 21.0
+
+    model_config["weather_data_outdoor_temperature"] = np.full(n_rows, tout)
+    model_config["weather_data_UTC_time"] = t
+
+    indoor_temps = tin + np.random.default_rng(3).uniform(-1e-3, 1e-3, size=(n_rows, len(fake_room_names)))
+    df = pd.DataFrame(indoor_temps, columns=fake_room_names)
+    df.insert(0, "time", t)
+    df.insert(0, "date-time", pd.to_datetime(t, unit="s"))
+    csv_path = tmp_path / "steady_state_indoor_temperature.csv"
+    df.to_csv(csv_path, index=False)
+
+    model = model_creator(model_config)
+    model._build_matrices()
+    model._build_loads()
+    dataset = BuildingTemperatureDataset(csv_path, sample_size=n_rows, all=True)
+
+    iv_array = get_iv_array(model, dataset)
+
+    # Query with t_eval read back from the dataset (not the `t` array above directly) - writing
+    # epoch-scale floats to CSV and reading them back can shift the last value by enough to fall
+    # just outside iv_array's interpolation domain otherwise.
+    t_eval, _ = dataset.get_all_data()
+    if t_eval.dim() > 1:
+        t_eval = t_eval.squeeze(0)
+
+    external_rooms = model.building.connectivity_matrix[0, 1:]
+    tin_agg = (torch.full((len(fake_room_names),), tin) * external_rooms).float().mean().item()
+
+    steady = steady_state_iv(model, torch.tensor(tout), torch.tensor(tin_agg)).squeeze()
+    final_state = iv_array(t_eval[-1])
+
+    assert torch.allclose(final_state[0:2], steady[0:2], atol=0.05), (
+        f"latent state {final_state[0:2]} did not converge to steady state {steady[0:2]}"
+    )
+
+
+def test_get_iv_array_handles_realistic_timestamps(get_model_config, full_building_dataset):
+    """Regression test for a real bug: get_iv_array() internally shifted its time array to a
+    relative (starts-at-zero) origin, then queried model.Tout_continuous - whose domain is the
+    dataset's own absolute (epoch-scale) time - with that shifted array. On any dataset that
+    doesn't already start at t=0 (i.e. every real dataset), that queried far outside
+    Tout_continuous's domain, and Interp1D's default extrapolation silently returned NaN for
+    every row, propagating into an all-NaN iv_array - this is what broke a real training run.
+
+    conftest's fixtures are realistic-epoch by construction (see T_ORIGIN in conftest.py), so
+    this would also be caught by the steady-state test above - this test exists to name and pin
+    down the exact failure mode directly.
+    """
+    model = model_creator(get_model_config)
+    model._build_matrices()
+    model._build_loads()
+
+    iv_array = get_iv_array(model, full_building_dataset)
+
+    t_eval, _ = full_building_dataset.get_all_data()
+    if t_eval.dim() > 1:
+        t_eval = t_eval.squeeze(0)
+
+    assert t_eval[0].item() > 1e9, "fixture should use realistic epoch-scale absolute times"
+
+    for idx in [0, len(t_eval) // 2, len(t_eval) - 1]:
+        sample = iv_array(t_eval[idx])
+        assert torch.isfinite(sample).all(), f"idx={idx}: iv_array returned non-finite values: {sample}"
 
 
 if __name__ == "__main__":

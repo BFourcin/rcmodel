@@ -3,7 +3,12 @@ import pandas as pd
 import pytest
 import torch
 
-from rcmodel import Building, InputScaling, RCModel, Room
+from rcmodel import Building, BuildingTemperatureDataset, InputScaling, RandomSampleDataset, RCModel, Room
+
+T_ORIGIN = 1_600_000_000  # realistic unix-epoch-scale start time (2020-09-13), deliberately not 0.
+# get_iv_array() once had a bug where it queried an Interp1D built over absolute (epoch-scale)
+# time using a relative (starts-at-zero) time array. Every fixture below started at t=0, which
+# made that shift a silent no-op and completely hid the bug - hence the non-zero origin here.
 
 
 @pytest.fixture
@@ -111,17 +116,19 @@ def model_n9(building_n9):
 def fake_time():
     """Shared time axis (s) for synthetic weather + indoor-temperature data, so both
     always cover the exact same domain. Sized to match the 6-hour/720-row shape the
-    old real data file had, keeping batch counts for the optimiser tests similar."""
+    old real data file had, keeping batch counts for the optimiser tests similar.
+    Starts at T_ORIGIN (realistic epoch scale), not 0 - see the module-level comment."""
     dt = 30
     n_seconds = 6 * 60**2
-    return np.arange(0, n_seconds, dt)
+    return T_ORIGIN + np.arange(0, n_seconds, dt)
 
 
 @pytest.fixture
 def fake_outdoor_weather(fake_time):
     """Synthetic outdoor temperature series over `fake_time`."""
-    n_seconds = fake_time[-1] + (fake_time[1] - fake_time[0])
-    return 10 + 5 * np.sin(2 * np.pi * fake_time / n_seconds)
+    t_rel = fake_time - fake_time[0]
+    n_seconds = t_rel[-1] + (t_rel[1] - t_rel[0])
+    return 10 + 5 * np.sin(2 * np.pi * t_rel / n_seconds)
 
 
 @pytest.fixture
@@ -147,15 +154,16 @@ def synthetic_indoor_temperature_csv(tmp_path, fake_time, fake_rooms):
     `fake_outdoor_weather`, in the (date-time, time, <room columns>) format
     RandomSampleDataset/BuildingTemperatureDataset expect."""
     rng = np.random.default_rng(7)
-    n_seconds = fake_time[-1] + (fake_time[1] - fake_time[0])
-    base_indoor = 22 + 2 * np.sin(2 * np.pi * (fake_time - 3 * 60**2) / n_seconds)
+    t_rel = fake_time - fake_time[0]
+    n_seconds = t_rel[-1] + (t_rel[1] - t_rel[0])
+    base_indoor = 22 + 2 * np.sin(2 * np.pi * (t_rel - 3 * 60**2) / n_seconds)
     fake_room_names, _ = fake_rooms
     room_offsets = rng.uniform(-1.0, 1.0, size=len(fake_room_names))
     indoor_temps = base_indoor[:, None] + room_offsets[None, :]
 
     df = pd.DataFrame(indoor_temps, columns=fake_room_names)
     df.insert(0, "time", fake_time)
-    df.insert(0, "date-time", pd.to_datetime(fake_time, unit="s", origin="2021-01-01"))
+    df.insert(0, "date-time", pd.to_datetime(fake_time, unit="s"))
 
     csv_path = tmp_path / "synthetic_indoor_temperature.csv"
     df.to_csv(csv_path, index=False)
@@ -198,3 +206,21 @@ def get_model_config(fake_time, fake_outdoor_weather, fake_rooms):
         },
     }
     return model_config
+
+
+@pytest.fixture
+def get_datasets(synthetic_indoor_temperature_csv):
+    csv_path = synthetic_indoor_temperature_csv
+    dt = 30  # seconds
+    sample_size = 1 * 60**2 / dt  # ONE HOUR
+    warmup_size = 0
+    train_dataset = RandomSampleDataset(csv_path, sample_size, warmup_size, train=True, test=False)
+    test_dataset = RandomSampleDataset(csv_path, sample_size, warmup_size, train=False, test=True)
+    return train_dataset, test_dataset
+
+
+@pytest.fixture
+def full_building_dataset(synthetic_indoor_temperature_csv, fake_time):
+    """The whole of `synthetic_indoor_temperature_csv`, deterministically (no random
+    windowing) - for tests that need the full dataset a model would see, e.g. get_iv_array()."""
+    return BuildingTemperatureDataset(synthetic_indoor_temperature_csv, sample_size=len(fake_time), all=True)

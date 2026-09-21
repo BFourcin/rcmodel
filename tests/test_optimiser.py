@@ -13,7 +13,6 @@ from rcmodel import (
     OptimiseManager,
     OptimisePolicy,
     OptimiseRC,
-    RandomSampleDataset,
     env_creator,
     model_creator,
 )
@@ -27,17 +26,6 @@ register_env("LSIEnv", env_creator)
 def tmp_dir():
     with tempfile.TemporaryDirectory() as tmpdirname:
         yield tmpdirname
-
-
-@pytest.fixture
-def get_datasets(synthetic_indoor_temperature_csv):
-    csv_path = synthetic_indoor_temperature_csv
-    dt = 30  # seconds
-    sample_size = 1 * 60**2 / dt  # ONE HOUR
-    warmup_size = 0
-    train_dataset = RandomSampleDataset(csv_path, sample_size, warmup_size, train=True, test=False)
-    test_dataset = RandomSampleDataset(csv_path, sample_size, warmup_size, train=False, test=True)
-    return train_dataset, test_dataset
 
 
 @pytest.fixture
