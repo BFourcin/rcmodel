@@ -146,12 +146,6 @@ class RCModel(nn.Module):
         self.cool_load = loads[0, :]
         self.gain_load = loads[1, :]
 
-    def reset_iv(self):
-        # Starting Temperatures of nodes. Column vector of shape ([n,1]) n=rooms+2
-        self.iv = 26 * torch.ones(2 + len(self.building.rooms))  # set iv at 26 degrees
-        # Set iv as column vector. Errors caused if Row vector which are difficult to trace.
-        self.iv = self.iv.unsqueeze(1)
-
     def initialise_parameters(self):
         params = torch.rand(self.building.n_params, dtype=torch.float32, requires_grad=True)
         loads = torch.rand((2, len(self.building.rooms)), dtype=torch.float32, requires_grad=True)

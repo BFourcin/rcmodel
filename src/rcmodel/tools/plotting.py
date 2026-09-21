@@ -13,7 +13,10 @@ def pltsolution_1rm(model, dataloader=None, filename=None, prediction=None, time
     Plot a pre run prediction. dt is used to produce the x-axis
     pltsolution_1rm(model, filename, prediction, time)
     """
-    model.reset_iv()  # Reset initial value
+    # Starting Temperatures of nodes. Column vector of shape ([n,1]) n=rooms+2
+    model.iv = 26 * torch.ones(2 + len(model.building.rooms))  # set iv at 26 degrees
+    # Set iv as column vector. Errors caused if Row vector which are difficult to trace.
+    model.iv = model.iv.unsqueeze(1)
     model.eval()  # Put model in evaluation mode
 
     # Get solution ---------------

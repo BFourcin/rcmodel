@@ -356,6 +356,7 @@ class LSIEnv(gym.Env):
         if self.recording:
             if self.render_mode is not None:
                 return self._render()
+            return None
         else:
             # if not recording, return empty list
             return None
