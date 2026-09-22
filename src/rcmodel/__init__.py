@@ -13,6 +13,7 @@ from .optimisation import (
     make_update_env_fn,
     physical_to_scaled,
     preprocess_observation,
+    sample_plausible_population,
     search_space,
     slowest_time_constant_days,
 )

@@ -8,6 +8,7 @@ from .pbt import (
     build_pbt_scheduler,
     build_tuner,
     physical_to_scaled,
+    sample_plausible_population,
     search_space,
     slowest_time_constant_days,
 )
@@ -28,6 +29,7 @@ __all__ = [
     "physical_to_scaled",
     "preprocess_observation",
     "remove_none",
+    "sample_plausible_population",
     "search_space",
     "slowest_time_constant_days",
 ]

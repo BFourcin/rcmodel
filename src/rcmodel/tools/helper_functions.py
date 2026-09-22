@@ -141,8 +141,9 @@ def model_creator(model_config):
         # through torch.logit here to undo the model's sigmoid transform, which only
         # existed to keep gradient descent on unbounded parameters well behaved. There is
         # no gradient descent any more, and logit(0)/logit(1) are -/+inf, which a search
-        # that can land on a range endpoint would hit. set_parameters() validates the
-        # range and handles the per-room broadcasting of cool/gain.
+        # that can land on a range endpoint would hit. set_parameters() checks the values
+        # are physically valid (not that they sit inside the configured range) and handles
+        # the per-room broadcasting of cool/gain.
         model.set_parameters(model_config["parameters"])
 
     return model

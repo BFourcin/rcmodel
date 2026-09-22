@@ -279,7 +279,7 @@ class LSIEnv(gym.Env):
 
         Updatable keys are UPDATABLE_KEYS:
             dataloader        - swap the data the episodes are drawn from (e.g. train -> test).
-            rc_parameters     - dict of 0-1 scaled RC parameters, see RCModel.set_parameters().
+            rc_parameters     - dict of machine-space RC parameters, see RCModel.set_parameters().
             update_state_dict - a full RCModel state_dict, an alternative to rc_parameters.
 
         Whenever any of these change, A/B are rebuilt and iv_array is recomputed for the

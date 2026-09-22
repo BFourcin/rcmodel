@@ -14,22 +14,22 @@ PARAM_KEYS = ("C_rm", "C1", "C2", "R1", "R2", "R3", "Rin")
 LOAD_KEYS = ("cool", "gain")
 RC_PARAM_KEYS = PARAM_KEYS + LOAD_KEYS
 
-# Values outside [0, 1] by more than this are a bug, not float noise (see scaled_params_to_tensors).
-_SCALED_TOL = 1e-6
-
 
 def scaled_params_to_tensors(values, n_rooms):
     """
-    Turn a {name: value} mapping of 0-1 scaled parameters into the (params, loads)
+    Turn a {name: value} mapping of machine-space parameters into the (params, loads)
     tensors RCModel stores.
 
     Parameters
     ----------
     values : dict
-        Keys must cover RC_PARAM_KEYS. Every value is in machine space (0-1), NOT
-        physical units - use InputScaling.model_param_scaling()/model_loads_scaling()
-        (or pbt.physical_to_scaled) to get there. "cool" and "gain" accept either a
-        single value used for every room, or one value per room.
+        Keys must cover RC_PARAM_KEYS. Every value is in machine space - the linear map
+        taking each parameter's configured [min, max] range to [0, 1] - NOT physical units;
+        use pbt.physical_to_scaled to get there. Values outside [0, 1] are allowed: they
+        are physical values outside the configured range, which a PBT perturbation
+        legitimately produces. RCModel.set_parameters() checks the physical values are
+        valid. "cool" and "gain" accept either a single value used for every room, or one
+        value per room.
     n_rooms : int
         Number of rooms in the building.
 
@@ -59,18 +59,11 @@ def scaled_params_to_tensors(values, n_rooms):
     params = torch.tensor([as_scalar(values[key]) for key in PARAM_KEYS], dtype=torch.float32)
     loads = torch.stack([as_room_vector(values[key], key) for key in LOAD_KEYS])
 
-    # Parameters live in 0-1 (there is no sigmoid squashing them any more), so anything
-    # meaningfully outside that range would be silently clamped into a different model.
-    # Clamp float noise, but fail loudly on a real out-of-range value.
     for name, tensor in (("params", params), ("loads", loads)):
-        low, high = tensor.min().item(), tensor.max().item()
-        if low < -_SCALED_TOL or high > 1 + _SCALED_TOL:
-            raise ValueError(
-                f"Scaled {name} must be within [0, 1], got range [{low}, {high}]. "
-                f"Clip to the parameter ranges before calling (see pbt.physical_to_scaled)."
-            )
+        if not torch.isfinite(tensor).all():
+            raise ValueError(f"Scaled {name} must be finite, got {tensor.tolist()}.")
 
-    return params.clamp(0.0, 1.0), loads.clamp(0.0, 1.0)
+    return params, loads
 
 
 # TODO: Format comments to be consistent with PEP8.
@@ -143,23 +136,54 @@ class RCModel(nn.Module):
 
     def set_parameters(self, values):
         """
-        Replace the model's free parameters with a new set, in 0-1 machine space.
+        Replace the model's free parameters with a new set, in machine space.
 
         This is the entry point PBT uses: a trial's parameters live in its Tune config and
         arrive here. Call setup() afterwards to rebuild A/B and recompute iv_array - the
         environment's update_from_config() does that for you.
 
+        Values outside the configured [min, max] ranges are run as given, not clipped, so
+        the model runs exactly what the caller asked for. What is enforced is physical
+        validity, whatever the entry path: every capacitance and resistance must be
+        strictly positive (A is built from 1/(R*C)), and the cooling and gain limits must
+        not be negative (a negative limit would reverse the direction of the load).
+
         Parameters
         ----------
         values : dict
-            {name: value} covering RC_PARAM_KEYS, scaled 0-1. See scaled_params_to_tensors().
+            {name: value} covering RC_PARAM_KEYS, in machine space. See
+            scaled_params_to_tensors().
+
+        Raises
+        ------
+        ValueError
+            If any parameter maps to a physically invalid value.
         """
         params, loads = scaled_params_to_tensors(values, len(self.building.rooms))
+        self._check_physically_valid(params, loads)
         self.params = nn.Parameter(params, requires_grad=False)
         self.loads = nn.Parameter(loads, requires_grad=False)
 
+    def _check_physically_valid(self, params, loads):
+        theta = self.transform(params) if self.transform else params
+        physical_params = self.scaling.physical_param_scaling(theta).flatten()
+        physical_loads = self.scaling.physical_loads_scaling(self.transform(loads) if self.transform else loads)
+
+        problems = [
+            f"{key}={physical_params[i].item():g} (must be > 0)"
+            for i, key in enumerate(PARAM_KEYS)
+            if not physical_params[i].item() > 0
+        ]
+        problems += [
+            f"{key}={physical_loads[i].tolist()} (must be >= 0)"
+            for i, key in enumerate(LOAD_KEYS)
+            if (physical_loads[i] < 0).any()
+        ]
+        if problems:
+            raise ValueError("Physically invalid RC parameters: " + ", ".join(problems))
+
     def get_parameters(self):
-        """Inverse of set_parameters(): the current parameters as a 0-1 scaled dict.
+        """Inverse of set_parameters(): the current parameters as a machine-space dict.
 
         Loads are returned per room, so the result always round-trips through
         set_parameters() even when it was originally given a single value for all rooms.

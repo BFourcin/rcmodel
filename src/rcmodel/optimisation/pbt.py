@@ -28,6 +28,7 @@ included. test_checkpoint_does_not_carry_rc_params pins the invariant down.
 """
 
 import copy
+import logging
 import pickle
 from pathlib import Path
 
@@ -36,6 +37,7 @@ from ray import tune
 from ray.rllib.algorithms.ppo import PPOConfig
 from ray.tune.registry import register_env
 from ray.tune.schedulers import PopulationBasedTraining
+from ray.tune.search.basic_variant import BasicVariantGenerator
 
 import rcmodel.tools
 from rcmodel.rc_model import LOAD_KEYS, PARAM_KEYS, RC_PARAM_KEYS
@@ -46,6 +48,8 @@ try:  # Ray moved RunConfig/CheckpointConfig around between releases.
     from ray.train import CheckpointConfig, RunConfig
 except ImportError:  # pragma: no cover - depends on the installed Ray version
     from ray.tune import CheckpointConfig, RunConfig
+
+logger = logging.getLogger(__name__)
 
 ENV_NAME = "LSIEnv"
 
@@ -72,14 +76,17 @@ def _register_env_once():
 
 def physical_to_scaled(model_config, physical):
     """
-    Convert physical parameter values to the 0-1 machine space the model stores, clipping
-    each one to its configured range.
+    Convert physical parameter values to the machine space the model stores: the linear
+    map that takes each parameter's configured [min, max] range to [0, 1].
 
-    The clipping is not cosmetic. PBT perturbs a value by multiplying it (0.8x / 1.2x by
-    default), which walks it straight out of its range sooner or later, and
-    InputScaling.minmaxscale ASSERTS that its input is in range - so without clipping an
-    exploit would eventually kill a trial with an AssertionError rather than exploring its
-    boundary.
+    Values outside the configured range are NOT clipped - they map outside [0, 1] and the
+    model runs them as given. PBT's explore step multiplies a value by 0.8 or 1.2 without
+    re-clipping, so a trial's config legitimately wanders past the range it was first
+    sampled from. Clipping here used to make the model silently run a different value from
+    the one the config (and every log and plot) reported. The range only shapes where
+    values are sampled from; what keeps a value usable is physical validity (resistances
+    and capacitances > 0, loads >= 0), which RCModel.set_parameters() enforces for every
+    entry path, not just this one.
 
     Parameters
     ----------
@@ -91,12 +98,12 @@ def physical_to_scaled(model_config, physical):
     Returns
     -------
     dict
-        The same keys, scaled to 0-1, ready for RCModel.set_parameters().
+        The same keys in machine space, ready for RCModel.set_parameters().
     """
     scaled = {}
     for key in RC_PARAM_KEYS:
         low, high = model_config[key]
-        values = np.clip(np.asarray(physical[key], dtype=float), low, high)
+        values = np.asarray(physical[key], dtype=float)
         # A degenerate range (min == max) means the parameter is pinned, not searched.
         span = high - low
         normalised = (values - low) / span if span > 0 else np.zeros_like(values)
@@ -155,6 +162,66 @@ def slowest_time_constant_days(model_config, physical_params):
     model = rcmodel.tools.model_creator(probe_config)
     model._build_matrices()
     return model.slowest_time_constant() / SECONDS_PER_DAY
+
+
+def sample_plausible_population(model_config, num_samples, max_time_constant_days, log_uniform=True, max_draws=None):
+    """
+    Draw an initial population whose every member passes the plausibility filter.
+
+    Draws from the same distributions as search_space() and discards any draw whose slowest
+    time constant exceeds max_time_constant_days - i.e. it samples the search prior
+    truncated to plausible buildings. Left to Tune's own sampling, an implausible draw
+    would still get a population slot, but it would report IMPLAUSIBLE_PENALTY and never
+    explore its own region before PBT overwrote it with a copy of another trial. Screening
+    up front means every slot starts from an independent, plausible draw.
+
+    The draws are passed to Tune as configs (points_to_evaluate), so a trial's parameters
+    still come only from its config.
+
+    Parameters
+    ----------
+    model_config : dict
+        Supplies a [min, max] range under each key in RC_PARAM_KEYS.
+    num_samples : int
+        Population size.
+    max_time_constant_days : float
+        Plausibility threshold, as for RCPolicyTrainable.
+    log_uniform : bool
+        As for search_space().
+    max_draws : int or None
+        Give up after this many draws. Defaults to 100 * num_samples.
+
+    Returns
+    -------
+    list of dict
+        num_samples {name: physical value} dicts covering RC_PARAM_KEYS.
+    """
+    space = search_space(model_config, log_uniform=log_uniform)
+    max_draws = max_draws or 100 * num_samples
+
+    population = []
+    draws = 0
+    while len(population) < num_samples and draws < max_draws:
+        draws += 1
+        candidate = {key: float(space[key].sample()) for key in RC_PARAM_KEYS}
+        if slowest_time_constant_days(model_config, candidate) <= max_time_constant_days:
+            population.append(candidate)
+
+    if len(population) < num_samples:
+        raise RuntimeError(
+            f"Only {len(population)} of {draws} draws had a slowest time constant within "
+            f"max_time_constant_days={max_time_constant_days}; needed {num_samples}. The "
+            f"threshold is too tight for these parameter ranges - raise it or narrow the ranges."
+        )
+
+    logger.info(
+        "Initial population: accepted %d of %d draws (%.0f%%) with slowest time constant <= %s days.",
+        num_samples,
+        draws,
+        100 * num_samples / draws,
+        max_time_constant_days,
+    )
+    return population
 
 
 class RCPolicyTrainable(tune.Trainable):
@@ -447,6 +514,12 @@ def build_tuner(
 
     reuse_actors=True is what makes reset_config() worth having: an exploit swaps parameters
     inside the running actor instead of tearing it down and rebuilding the environment.
+
+    With max_time_constant_days set, the initial population is drawn by
+    sample_plausible_population() and handed to Tune as points_to_evaluate, so no slot
+    starts on an implausible draw. The threshold still applies to the trials themselves:
+    a PBT perturbation that lands on an implausible set is sidelined with
+    IMPLAUSIBLE_PENALTY as before.
     """
     if eval_dataloader is None and not env_config.get("data_config"):
         raise ValueError(
@@ -468,6 +541,16 @@ def build_tuner(
         }
     )
 
+    search_alg = None
+    if max_time_constant_days is not None:
+        # Each point replaces one of num_samples, and the RC keys it sets override the
+        # search_space Domains - everything else still comes from param_space.
+        search_alg = BasicVariantGenerator(
+            points_to_evaluate=sample_plausible_population(
+                model_config, num_samples, max_time_constant_days, log_uniform=log_uniform
+            )
+        )
+
     return tune.Tuner(
         RCPolicyTrainable,
         param_space=param_space,
@@ -475,6 +558,7 @@ def build_tuner(
             metric=METRIC,
             mode=MODE,
             scheduler=build_pbt_scheduler(model_config, perturbation_interval=perturbation_interval, log_uniform=log_uniform),
+            search_alg=search_alg,
             num_samples=num_samples,
             reuse_actors=True,
         ),
@@ -495,8 +579,9 @@ def best_parameters(results):
     """
     Physical RC parameters of the best trial in a finished Tuner run.
 
-    Returns a (physical, scaled) pair: the physical values for reporting, and the 0-1 scaled
-    dict ready to hand to RCModel.set_parameters() or model_config["parameters"].
+    Returns a (physical, scaled) pair: the physical values for reporting, and the
+    machine-space dict ready to hand to RCModel.set_parameters() or
+    model_config["parameters"].
     """
     best = results.get_best_result(metric=METRIC, mode=MODE)
     physical = {key: best.config[key] for key in RC_PARAM_KEYS}
@@ -513,6 +598,7 @@ __all__ = [
     "build_pbt_scheduler",
     "build_tuner",
     "physical_to_scaled",
+    "sample_plausible_population",
     "search_space",
     "slowest_time_constant_days",
 ]

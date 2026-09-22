@@ -18,13 +18,14 @@ import pytest
 import ray
 import torch
 
-from rcmodel import RC_PARAM_KEYS, env_creator, evaluate, make_dataloaders
+from rcmodel import LOAD_KEYS, PARAM_KEYS, RC_PARAM_KEYS, env_creator, evaluate, make_dataloaders, model_creator
 from rcmodel.optimisation.pbt import (
     IMPLAUSIBLE_PENALTY,
     METRIC,
     RCPolicyTrainable,
     build_tuner,
     physical_to_scaled,
+    sample_plausible_population,
     search_space,
     slowest_time_constant_days,
 )
@@ -104,26 +105,65 @@ def assert_parameters_close(actual, expected):
 # --------------------------------------------------------------------------- scaling
 
 
-def test_physical_to_scaled_clips_out_of_range(get_model_config, physical_params):
-    """Out-of-range values must clip, not raise.
+def _physical_values(model):
+    """{name: physical value(s)} the model is actually running."""
+    params, loads = model.get_physical_paramaters()
+    values = {key: params.flatten()[i].item() for i, key in enumerate(PARAM_KEYS)}
+    values.update({key: loads[i].numpy() for i, key in enumerate(LOAD_KEYS)})
+    return values
 
-    PBT perturbs a parameter by multiplying it (0.8x / 1.2x by default), so it walks out of
-    its range sooner or later. InputScaling.minmaxscale ASSERTS its input is in range, so
-    without clipping here an exploit would eventually kill a trial with an AssertionError
-    instead of exploring the edge of the space.
+
+def test_out_of_range_values_pass_through_unclipped(get_model_config):
+    """Values outside the configured range are run as given, not clipped.
+
+    PBT perturbs a parameter by multiplying it (0.8x / 1.2x by default) without re-clipping,
+    so a trial's config walks out of its range. The model must run exactly what the config
+    says - if anything clips on the way in, the logged config and the model disagree, and two
+    trials reporting different values silently run the same model.
     """
-    low_set, _ = physical_params
-    out_of_range = dict(low_set)
-    for key in RC_PARAM_KEYS:
-        low, high = get_model_config[key]
-        out_of_range[key] = high * 10 if key != "cool" else low - abs(low) - 1.0
+    above = {key: get_model_config[key][1] * 1.5 for key in RC_PARAM_KEYS}
+    below = {key: get_model_config[key][0] * 0.5 for key in PARAM_KEYS}
+    # The loads' configured floor is 0 - there is no physically valid value below it.
+    below.update({key: sum(get_model_config[key]) / 2 for key in LOAD_KEYS})
 
-    scaled = physical_to_scaled(get_model_config, out_of_range)
+    scaled_above = physical_to_scaled(get_model_config, above)
+    scaled_below = physical_to_scaled(get_model_config, below)
+    # Guard against the test passing vacuously: these really are outside machine space's [0, 1].
+    assert all(scaled_above[key] > 1 for key in RC_PARAM_KEYS)
+    assert all(scaled_below[key] < 0 for key in PARAM_KEYS)
 
-    for key in RC_PARAM_KEYS:
-        assert np.all(np.asarray(scaled[key]) >= 0.0), f"'{key}' scaled below 0"
-        assert np.all(np.asarray(scaled[key]) <= 1.0), f"'{key}' scaled above 1"
-    assert np.allclose(scaled["cool"], 0.0), "a value below the range should clip to the bottom of it"
+    for physical, scaled in ((above, scaled_above), (below, scaled_below)):
+        model = model_creator({**get_model_config, "parameters": scaled})
+        running = _physical_values(model)
+        for key in RC_PARAM_KEYS:
+            np.testing.assert_allclose(running[key], physical[key], rtol=1e-5, err_msg=f"'{key}' was not run as given")
+
+
+@pytest.mark.parametrize(
+    "key, value",
+    [("Rin", 0.0), ("R1", -0.1), ("C1", 0.0), ("C_rm", -5.0), ("cool", -1.0), ("gain", -0.5)],
+)
+def test_physically_invalid_parameters_are_rejected(get_model_config, physical_params, key, value):
+    """Out of range is allowed; physically impossible is not.
+
+    A must be built from 1/(R*C), so resistances and capacitances have to be strictly
+    positive, and a negative cooling or gain limit would reverse the direction of the load.
+    """
+    physical = dict(physical_params[0])
+    physical[key] = value
+    with pytest.raises(ValueError, match=key):
+        model_creator({**get_model_config, "parameters": physical_to_scaled(get_model_config, physical)})
+
+
+def test_zero_loads_are_physically_valid(get_model_config, physical_params):
+    """No cooling and no gain are meaningful buildings, not errors."""
+    physical = dict(physical_params[0])
+    physical["cool"] = 0.0
+    physical["gain"] = 0.0
+    model = model_creator({**get_model_config, "parameters": physical_to_scaled(get_model_config, physical)})
+    running = _physical_values(model)
+    assert np.all(running["cool"] == 0.0)
+    assert np.all(running["gain"] == 0.0)
 
 
 def test_physical_to_scaled_round_trips(get_model_config, physical_params):
@@ -132,6 +172,46 @@ def test_physical_to_scaled_round_trips(get_model_config, physical_params):
     scaled = physical_to_scaled(get_model_config, quarter)
     for key in RC_PARAM_KEYS:
         np.testing.assert_allclose(np.asarray(scaled[key]), 0.25, rtol=1e-6)
+
+
+# --------------------------------------------------------------------------- initial population
+
+
+def restrictive_threshold(model_config, quantile=0.25, n=20, seed=0):
+    """A time-constant threshold most prior draws fail, so rejection genuinely happens.
+
+    Taken from the fixture building's own distribution rather than hardcoded, because the
+    time constants depend on the building geometry as much as on the ranges.
+    """
+    rng_state = np.random.get_state()
+    np.random.seed(seed)
+    try:
+        space = search_space(model_config)
+        taus = [
+            slowest_time_constant_days(model_config, {key: float(space[key].sample()) for key in RC_PARAM_KEYS})
+            for _ in range(n)
+        ]
+    finally:
+        np.random.set_state(rng_state)
+    return float(np.quantile(taus, quantile))
+
+
+def test_sample_plausible_population_respects_threshold(get_model_config):
+    """Every member of the initial population passes the plausibility filter."""
+    threshold = restrictive_threshold(get_model_config)
+    population = sample_plausible_population(get_model_config, 4, threshold)
+
+    assert len(population) == 4
+    for draw in population:
+        assert set(draw) == set(RC_PARAM_KEYS)
+        assert slowest_time_constant_days(get_model_config, draw) <= threshold
+    assert len({tuple(sorted(draw.items())) for draw in population}) == 4, "draws should be independent"
+
+
+def test_sample_plausible_population_raises_when_unreachable(get_model_config):
+    """A threshold nothing can meet fails loudly instead of looping forever."""
+    with pytest.raises(RuntimeError, match="max_time_constant_days"):
+        sample_plausible_population(get_model_config, 2, 1e-12, max_draws=10)
 
 
 def test_capacitances_are_sampled_log_uniformly(get_model_config):
@@ -481,6 +561,33 @@ def test_pbt_smoke(get_model_config, env_config, tmp_path, ray_cluster):
 
     best = results.get_best_result(metric=METRIC, mode="max")
     assert all(key in best.config for key in RC_PARAM_KEYS)
+
+
+@pytest.mark.slow
+def test_initial_population_is_plausible(get_model_config, env_config, tmp_path, ray_cluster):
+    """With a threshold set, no trial starts on an implausible draw.
+
+    The threshold is picked so that roughly 3 in 4 prior draws fail it: without screening,
+    both trials starting plausible would be a ~6% fluke. With screening, they must - and the
+    parameters Tune records must be the screened ones, not a fresh sample.
+    """
+    threshold = restrictive_threshold(get_model_config)
+    tuner = build_tuner(
+        model_config=get_model_config,
+        env_config=env_config,
+        num_samples=2,
+        stop={"training_iteration": 1},
+        max_time_constant_days=threshold,
+        ppo=tiny_ppo_settings(),
+        storage_path=str(tmp_path / "ray_results"),
+    )
+    results = tuner.fit()
+
+    assert results.num_errors == 0, "a trial errored - see the Ray logs for the traceback"
+    for result in results:
+        assert not result.metrics_dataframe["implausible"].iloc[0], "a trial started on an implausible draw"
+        physical = {key: result.config[key] for key in RC_PARAM_KEYS}
+        assert slowest_time_constant_days(get_model_config, physical) <= threshold
 
 
 if __name__ == "__main__":
