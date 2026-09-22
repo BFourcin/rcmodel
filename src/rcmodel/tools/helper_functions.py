@@ -34,8 +34,11 @@ def model_creator(model_config):
         "cool": [0, 50],  # Cooling limit in W/m2
         "gain": [0, 5],  # Gain limit in W/m2
         "room_names": ["seminar_rm_a_t0106"],
-        "room_coordinates": [[[92.07, 125.94], [92.07, 231.74], [129.00, 231.74], [154.45, 231.74],
-                              [172.64, 231.74], [172.64, 125.94]]],
+        # Room polygons in METRES. Shifted to a common origin by change_origin(); the enclosed
+        # area scales C_rm and converts cool/gain from W/m2 to W.
+        "room_coordinates": [[[9.207, 12.594], [9.207, 23.174], [12.900, 23.174], [15.445, 23.174],
+                              [17.264, 23.174], [17.264, 12.594]]],
+        "room_height": 1,  # metres, optional. Sets external wall area (perimeter * height).
         "weather_data_outdoor_temperature": DataFrame or Array like,
         "weather_data_UTC_time": DataFrame or Array like,
         "cooling_policy": None,
@@ -110,6 +113,7 @@ def model_creator(model_config):
         model_config["weather_data_UTC_time"],
         model_config["room_names"],
         model_config["room_coordinates"],
+        model_config.get("room_height", 1),
     )
 
     # NOTE: the old "load_model_path_policy" branch has been removed. RCModel.load is a
@@ -292,19 +296,30 @@ def make_dataloaders(data_config):
 def change_origin(room_coordinates):
     """Shifts a list of room coordinate polygons so [0,0] sits at the
     minimum x/y corner across all rooms combined, preserving each room's
-    position relative to the others."""
+    position relative to the others.
+
+    Coordinates are in METRES, in and out. This used to divide by 10 as well, which meant
+    configs had to be written in decimetres to come out as metres - undocumented, and the
+    only reason the LSI coordinates looked like [92.07, 125.94] for an 8 x 10 m room.
+    """
     all_points = [point for room in room_coordinates for point in room]
     x0 = min(point[0] for point in all_points)
     y0 = min(point[1] for point in all_points)
 
     shifted_rooms = []
     for room in room_coordinates:
-        shifted_rooms.append([[round((x - x0) / 10, 2), round((y - y0) / 10, 2)] for x, y in room])
+        shifted_rooms.append([[round(x - x0, 2), round(y - y0, 2)] for x, y in room])
     return shifted_rooms
 
 
 def initialise_model(
-    cooling_policy, scaling, weather_data_outdoor_temperature, weather_data_UTC_time, room_names, room_coordinates
+    cooling_policy,
+    scaling,
+    weather_data_outdoor_temperature,
+    weather_data_UTC_time,
+    room_names,
+    room_coordinates,
+    room_height=1,
 ):
     room_coordinates = change_origin(room_coordinates)
 
@@ -312,8 +327,10 @@ def initialise_model(
     for i in range(len(room_names)):
         rooms.append(Room(room_names[i], room_coordinates[i]))
 
-    # Initialise Building
-    bld = Building(rooms)
+    # Initialise Building. room_height (m) sets the external wall area: Wall.area is
+    # length * height, so leaving it at 1 makes surf_area the external perimeter rather than
+    # the real wall area, and R1/R2/R3 absorb the difference.
+    bld = Building(rooms, room_height)
 
     Tout = torch.tensor(weather_data_outdoor_temperature)
     t = torch.tensor(weather_data_UTC_time)

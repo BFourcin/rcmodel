@@ -2,6 +2,10 @@ import numpy as np
 import pytest
 import torch
 
+from rcmodel.physical import Building
+from rcmodel.physical.room import Room
+from rcmodel.tools.helper_functions import change_origin
+
 
 def rounded(x):
     """torch doesent round to n decimal place so this function does that"""
@@ -264,6 +268,66 @@ def test_input_matrix_shape(building):
     B = building.input_matrix()
 
     assert B.shape == torch.Size([2 + len(building.rooms), 1 + len(building.rooms)])
+
+
+# -------- Geometry: units and areas --------
+# Building.__init__ rewrites room.walls into indices into its own wall list, so a Room cannot
+# be reused across two Buildings. Each test below builds its own.
+
+
+def test_room_area_is_floor_area_not_perimeter():
+    """Room.area must be the enclosed floor area (m^2), which is what scales C_rm and converts
+    cool/gain from W/m2 to W.
+
+    scipy names these the other way round for a 2D ConvexHull: .volume is the enclosed area and
+    .area is the perimeter. Reading .area made a 3 x 4 m room report 14.0 instead of 12.0.
+    """
+    rm = Room("3x4", [[0, 0], [0, 4], [3, 4], [3, 0]])
+
+    assert rm.area == pytest.approx(12.0), "area should be 3*4=12 m^2, not the perimeter 14 m"
+
+
+def test_room_area_of_concave_room_uses_convex_hull():
+    """Known simplification, pinned rather than fixed: ConvexHull fills in a concave room, while
+    Room.walls keeps the original vertex order. So an L-shaped room's walls and its area come
+    from different polygons - the area is the hull's 14 m^2, not the L's true 12 m^2.
+    """
+    l_shape = [[0, 0], [0, 4], [2, 4], [2, 2], [4, 2], [4, 0]]
+    rm = Room("L", l_shape)
+
+    assert rm.area == pytest.approx(14.0), "convex hull fills the notch: 4*4 - 2*1 = 14"
+    assert len(rm.walls) == len(l_shape), "walls still follow the original concave outline"
+
+
+def test_change_origin_is_in_metres():
+    """change_origin only shifts to a common origin - no unit conversion. It used to divide by
+    10, so configs had to be written in decimetres to come out as metres.
+    """
+    rooms = change_origin([[[10.0, 20.0], [10.0, 24.0], [13.0, 24.0], [13.0, 20.0]]])
+
+    assert rooms == [[[0.0, 0.0], [0.0, 4.0], [3.0, 4.0], [3.0, 0.0]]]
+
+
+def test_change_origin_preserves_relative_position():
+    """Two rooms keep their offset from each other; only the shared origin moves."""
+    rooms = change_origin([[[5.0, 5.0], [5.0, 7.0], [7.0, 7.0], [7.0, 5.0]], [[7.0, 5.0], [9.0, 5.0]]])
+
+    assert rooms[0][0] == [0.0, 0.0], "bounding-box corner becomes the origin"
+    assert rooms[1] == [[2.0, 0.0], [4.0, 0.0]], "second room keeps its offset from the first"
+
+
+def test_surf_area_uses_room_height():
+    """surf_area is external wall area: perimeter * height. The EnergyPlus 1-zone case is a
+    15.24 m square, 4.572 m tall -> 4 * 15.24 * 4.572 = 278.71 m^2.
+    """
+    coordinates = [[0, 0], [0, 15.24], [15.24, 15.24], [15.24, 0]]
+
+    bld = Building([Room("zone_one", coordinates)], 4.572)
+    assert bld.surf_area.item() == pytest.approx(278.71, abs=0.01)
+
+    # height defaults to 1, which makes surf_area the bare perimeter.
+    bare = Building([Room("zone_one", coordinates)])
+    assert bare.surf_area.item() == pytest.approx(60.96, abs=0.01)
 
 
 if __name__ == "__main__":

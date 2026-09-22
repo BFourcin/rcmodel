@@ -8,7 +8,7 @@ from scipy.spatial import ConvexHull
 class Room:
     """
     A room in a building (2D).
-    Coordinates must be entered in a clockwise or anti-clockwise order.
+    Coordinates are in METRES and must be entered in a clockwise or anti-clockwise order.
     """
 
     def __init__(self, name, coordinates):
@@ -18,7 +18,11 @@ class Room:
         self.capacitance = 0  # Dummy Value, is changed during optimisation process.
 
         self.hull = ConvexHull(coordinates)
-        self.area = self.hull.area
+        # For a 2D ConvexHull scipy names these the other way round to what you would expect:
+        # .volume is the enclosed area (m^2) and .area is the perimeter (m). This used to read
+        # .area, which silently made C_rm, cool and gain per-metre-of-perimeter rather than
+        # per-m^2 - for the LSI seminar room, 37.3 in place of 85.3.
+        self.area = self.hull.volume  # floor area (m^2)
         self._path = mpltPath.Path(self.coordinates)
 
         # Iterate through sorted vertices and store each pair which form a wall

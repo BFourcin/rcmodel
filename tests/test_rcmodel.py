@@ -119,8 +119,8 @@ def test_get_iv_array_converges_to_steady_state(get_model_config, fake_rooms, fa
     using its random seed-42 draw directly: the physical parameter ranges legally permit R*C time
     constants of hundreds of days (confirmed empirically - the raw seed-42 draw has a ~439-day
     slow mode), so no dataset length short enough to run as a fast test would actually converge
-    for an arbitrary draw. Minimal R/C values keep the slowest time constant to ~72 minutes, so a
-    24-hour dataset (~20x that) converges comfortably and still runs in a fraction of a second.
+    for an arbitrary draw. Minimal R/C values keep the slowest time constant to ~34 minutes, so a
+    24-hour dataset (~42x that) converges comfortably and still runs in a fraction of a second.
 
     The target is computed via the same "Tin averaged over ALL rooms, not just the ones touching
     the external wall" formula get_iv_array() uses internally (see its `Tin_agg` comment) rather
