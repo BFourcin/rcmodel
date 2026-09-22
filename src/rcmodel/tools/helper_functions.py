@@ -10,9 +10,15 @@ from xitorch.interpolate import Interp1D
 
 import rcmodel.optimisation
 from rcmodel.physical import Building, InputScaling, Room
-from rcmodel.rc_model import RCModel
+from rcmodel.rc_model import RC_PARAM_KEYS, RCModel
 
-from .rcmodel_dataset import RandomSampleDataset
+from .rcmodel_dataset import BuildingTemperatureDataset, InfiniteSampler, RandomSampleDataset
+
+# Normalisation constants for PreprocessEnv. These were hardcoded at the point of use; they
+# are defaults now so a different building can override them via env_config without editing
+# the library. They should really be computed from the training split - see make_dataloaders.
+DEFAULT_OBSERVATION_MU = 23.359
+DEFAULT_OBSERVATION_STD_DEV = 1.41
 
 
 def model_creator(model_config):
@@ -50,7 +56,7 @@ def model_creator(model_config):
     }
     """
     # Names of the [min, max] ranges. The "parameters" dict uses the same names.
-    range_keys = ("C_rm", "C1", "C2", "R1", "R2", "R3", "Rin", "cool", "gain")
+    range_keys = RC_PARAM_KEYS
 
     def init_scaling():
         # Initialise scaling class
@@ -86,31 +92,15 @@ def model_creator(model_config):
 
         # Starting parameters are optional, but if given they must be complete.
         # Their lengths are checked where the tensors are built, as a single value is allowed for every room.
-        if model_config["parameters"] is not None:
+        if model_config.get("parameters") is not None:
             missing = [key for key in range_keys if key not in model_config["parameters"]]
             assert not missing, f"model_config['parameters'] is missing: {missing}"
 
         return
 
-    def as_scalar(value):
-        """A float, a 1-element array or a 0-d tensor can all be used interchangeably."""
-        return np.asarray(value).item()
-
-    def as_room_vector(value, n_rooms, name):
-        """Format a load as a 1D tensor with one value per room. A single value is used for every room."""
-        vector = torch.as_tensor(value, dtype=torch.float32).flatten()
-        if vector.numel() == 1:
-            vector = vector.repeat(n_rooms)
-
-        assert vector.numel() == n_rooms, (
-            f"Each room needs a '{name}' load - give one value per room, or a single value for all. "
-            f"Got {vector.numel()} values for {n_rooms} rooms."
-        )
-        return vector
-
     model_sanity_checks()
 
-    pi = model_config["cooling_policy"]
+    pi = model_config.get("cooling_policy")
     scaling = init_scaling()
 
     # Initialise RCModel with the building
@@ -123,67 +113,37 @@ def model_creator(model_config):
         model_config["room_coordinates"],
     )
 
-    # load physical and/or policy models if available
-    if model_config["load_model_path_policy"]:
-        model.load(model_config["load_model_path_policy"])  # load policy
-        model.initialise_parameters()  # re-randomise physical params, as they were also copied from the loaded policy
+    # NOTE: the old "load_model_path_policy" branch has been removed. RCModel.load is a
+    # staticmethod, so `model.load(path)` built a model and threw it away - the branch only
+    # ever re-randomised the parameters. The cooling policy now lives in the RLlib
+    # checkpoint, not inside the RCModel, so there is nothing for it to load.
 
-    if model_config["load_model_path_physical"]:
-        # Try loading a dummy model with no policy, if it fails load with a policy. (We don't know what file contains)
-        try:
-            m = initialise_model(
-                None,
-                scaling,
-                model_config["weather_data_outdoor_temperature"],
-                model_config["weather_data_UTC_time"],
-                model_config["room_names"],
-                model_config["room_coordinates"],
-            )
-            m.load(model_config["load_model_path_physical"])
+    if model_config.get("load_model_path_physical"):
+        # NOTE: this used to build a throwaway model and call m.load(path) on it. RCModel.load
+        # is a staticmethod, so that returned a new model which was discarded, and the
+        # parameters copied out of `m` afterwards were its freshly randomised ones - the
+        # branch never loaded anything. Use the returned model.
+        loaded = RCModel.load(model_config["load_model_path_physical"])
 
-        except RuntimeError:
-            m = initialise_model(
-                pi,
-                scaling,
-                model_config["weather_data_outdoor_temperature"],
-                model_config["weather_data_UTC_time"],
-                model_config["room_names"],
-                model_config["room_coordinates"],
-            )
-            m.load(model_config["load_model_path_physical"])
+        # A model pickled before parameters moved to 0-1 machine space stored them in logit
+        # space with a sigmoid transform. Apply that model's own transform (if it had one) so
+        # an older file still loads to the right physical values.
+        loaded_params = loaded.transform(loaded.params) if loaded.transform else loaded.params
+        loaded_loads = loaded.transform(loaded.loads) if loaded.transform else loaded.loads
 
-        model.params = m.params  # put loaded physical parameters onto model.
-        model.loads = m.loads
-        del m
+        model.params = torch.nn.Parameter(loaded_params.detach().clone(), requires_grad=False)
+        model.loads = torch.nn.Parameter(loaded_loads.detach().clone(), requires_grad=False)
+        del loaded
 
     # check if any parameters have been chosen by the user:
-    if model_config["parameters"] is not None:
-        p = model_config["parameters"]
-        n_rooms = len(model.building.rooms)
-
-        # Order is important - must match Building.categorise_theta()
-        params = torch.tensor(
-            [
-                as_scalar(p["C_rm"]),
-                as_scalar(p["C1"]),
-                as_scalar(p["C2"]),
-                as_scalar(p["R1"]),
-                as_scalar(p["R2"]),
-                as_scalar(p["R3"]),
-                as_scalar(p["Rin"]),
-            ],
-            dtype=torch.float32,
-        )
-
-        # cool and gain are per room.
-        cool = as_room_vector(p["cool"], n_rooms, "cool")
-        gain = as_room_vector(p["gain"], n_rooms, "gain")
-
-        # Row 0 is cool, row 1 is gain. Must match InputScaling.physical_loads_scaling()
-        loads = torch.stack([cool, gain])  # shape (2, n_rooms)
-
-        model.params = torch.nn.Parameter(torch.logit(params))
-        model.loads = torch.nn.Parameter(torch.logit(loads))
+    if model_config.get("parameters") is not None:
+        # Parameters are stored directly in 0-1 machine space. They used to be pushed
+        # through torch.logit here to undo the model's sigmoid transform, which only
+        # existed to keep gradient descent on unbounded parameters well behaved. There is
+        # no gradient descent any more, and logit(0)/logit(1) are -/+inf, which a search
+        # that can land on a range endpoint would hit. set_parameters() validates the
+        # range and handles the per-room broadcasting of cool/gain.
+        model.set_parameters(model_config["parameters"])
 
     return model
 
@@ -192,28 +152,33 @@ def env_creator(env_config):
     """
     Creates a Reinforcement Learning environment for use with the Ray RLlib library.
 
-    If an existing RCModel object is provided in env_config, it will be used directly. If not, the function
-    will attempt to load an RCModel object from a pickled file path provided in env_config. If that fails,
-    it will create a new RCModel object using the model configuration specified in env_config. If an RCModel
-    object is successfully obtained or created, its state_dict can be optionally loaded from a dictionary
-    provided in env_config.
+    The RC model is obtained in the first of these ways that works:
+      1. env_config["RC_model"], an already-built RCModel (handy in tests).
+      2. env_config["model_pickle_path"], a pickled RCModel.
+      3. env_config["model_config"], a config dict - see model_creator().
+
+    For a PBT run, use route 3. The trial's sampled RC parameters live in
+    model_config["parameters"] (0-1 scaled), so the environment is fully described by plain
+    data in the config, and a trial's parameters are whatever its config says they are.
+    Route 1 puts a live, mutable object in the config, which Tune would deep-copy between
+    trials - parameters would stop tracking the config and a PBT exploit would silently do
+    nothing.
+
+    Note this function does NOT write back into env_config. It used to stash the constructed
+    model under "RC_model", which had exactly the aliasing problem described above.
 
     Args:
-        env_config (dict): A dictionary containing the configuration settings for the environment. It can have
-            the following keys:
-            - "RC_model": An optional RCModel object that will be used directly if provided.
-            - "model_pickle_path": An optional path to a pickled RCModel object.
-            - "model_config": Required if RC_model and model_pickle_path are not provided. A dictionary containing
-                the configuration settings for the RCModel object to be created. It should be in the same format
-                as the config dictionaries used to create RCModel objects.
-            - "update_state_dict": An optional dictionary containing the state_dict for the RCModel object. If provided,
-                it will be loaded into the RCModel object before it is used to create the environment.
-            - "dataloader": Required. A PyTorch DataLoader object that will be used to provide input data to the
-                RCModel object. It should be configured to return batches of data in the format expected by the
-                RCModel object.
-            - "step_length": Required. The number of minutes passed in each environment step.
-            - "render_mode": Optional. The render mode to use for the environment. Currently, only "single_rgb_array"
-                is supported.
+        env_config (dict): Configuration for the environment. Keys:
+            - "RC_model" / "model_pickle_path" / "model_config": the model source, see above.
+            - "dataloader": Required unless "data_config" is given. Provides episode data.
+            - "data_config": Alternative to "dataloader" - see make_dataloaders(). Keeps the
+                config plain data, which is what a distributed search wants.
+            - "step_length": Required. Minutes of data per environment step.
+            - "render_mode": Optional.
+            - "rc_parameters": Optional dict of 0-1 scaled parameters applied on top of the
+                model, the route a PBT exploit uses.
+            - "update_state_dict": Optional RCModel state_dict applied on top of the model.
+            - "observation_mu" / "observation_std_dev": Optional normalisation constants.
 
     Returns:
         env (gym.Env): A Reinforcement Learning environment that is ready for use with RLlib.
@@ -232,53 +197,102 @@ def env_creator(env_config):
         if model is None:
             model = model_creator(env_config["model_config"])
 
-        # Finally, check if update_state_dict has been provided and load it if so.
-        update_state_dict = env_config.get("update_state_dict", None)
-        if update_state_dict:
-            model.load_state_dict(update_state_dict)
-        env_config["update_state_dict"] = None  # We've done the update.
+        dataloader = env_config.get("dataloader")
+        if dataloader is None:
+            dataloader, _ = make_dataloaders(env_config["data_config"])
 
-        # env_config now has a model and can be used to create an environment.
-        env_config["RC_model"] = model
-
-        # Let's make a new config of just the items needed for the environment
-        env_keys = ["RC_model", "dataloader", "step_length", "render_mode", "update_state_dict"]
-        config = {}
-        for key in env_keys:
-            config[key] = env_config[key]
+        # Build the environment's own config rather than handing it the caller's dict.
+        config = {
+            "RC_model": model,
+            "dataloader": dataloader,
+            "step_length": env_config["step_length"],
+            "render_mode": env_config.get("render_mode"),
+            "rc_parameters": env_config.get("rc_parameters"),
+            "update_state_dict": env_config.get("update_state_dict"),
+        }
 
         env = rcmodel.optimisation.LSIEnv(config)
 
         # wrap environment:
-        env = rcmodel.optimisation.PreprocessEnv(env, mu=23.359, std_dev=1.41)
+        env = rcmodel.optimisation.PreprocessEnv(
+            env,
+            mu=env_config.get("observation_mu", DEFAULT_OBSERVATION_MU),
+            std_dev=env_config.get("observation_std_dev", DEFAULT_OBSERVATION_STD_DEV),
+        )
 
         # Wrap with nice render list api if we want get renders.
-        if env_config["render_mode"] is not None:
+        if config["render_mode"] is not None:
             env = RenderCollection(env)
     return env
 
 
 def env_create_and_setup(env_config):
     """
-    Call env_creator and then set up RC model with system matrix and get iv_array.
-    Usage with:
-        register_env("LSIEnv", env_create_and_setup)
+    Deprecated alias for env_creator().
 
-    Parameters
-    ----------
-    env_config: dict
-        Configuration for environment.
+    LSIEnv now builds its own A/B matrices and iv_array in __init__, so there is no longer a
+    separate setup step to forget. Kept so existing register_env("LSIEnv", ...) calls keep
+    working.
+    """
+    return env_creator(env_config)
+
+
+def make_dataloaders(data_config):
+    """
+    Build the training and evaluation dataloaders from plain config values.
 
     Returns
     -------
-    env: gym.Env
-        LSIEnv environment with RC model set up.
-    """
+    train_dataloader :
+        RandomSampleDataset over the train split, with an InfiniteSampler - random windows,
+        drawn endlessly. Random windows are what you want for TRAINING: they decorrelate
+        episodes and expose the policy to the whole split.
+    eval_dataloader :
+        BuildingTemperatureDataset over the test split - consecutive, deterministic windows,
+        walked once. Determinism is the point: this is the metric PBT selects trials on, and
+        scoring the same trial twice must give the same number. A RandomSampleDataset here
+        would make the metric jitter with the draw, and PBT would exploit sampling luck.
 
-    env = env_creator(env_config)
-    # Rebuild matrices and get iv_array, needed after parameter change
-    env.RC.setup(env.dataloader.dataset)
-    return env
+    data_config keys:
+        "csv_path"    : path to the room temperature .csv
+        "sample_size" : rows of data per episode
+        "warmup_size" : rows reserved at the start for warming up the latent nodes (default 0)
+        "dt"          : timestep the data is resampled to, seconds (default 30)
+
+    NOTE: the two dataset classes compute their test split the same way only when
+    warmup_size is 0 (RandomSampleDataset subtracts the warmup twice - see its
+    _split_dataset). With a non-zero warmup the evaluation windows would not line up with
+    the split the training loader avoids, so that combination is rejected here rather than
+    silently leaking training data into the metric.
+    """
+    csv_path = data_config["csv_path"]
+    sample_size = data_config["sample_size"]
+    warmup_size = data_config.get("warmup_size", 0)
+    dt = data_config.get("dt", 30)
+
+    if warmup_size:
+        raise NotImplementedError(
+            "make_dataloaders only supports warmup_size=0 - RandomSampleDataset._split_dataset "
+            "subtracts the warmup from the test split's offset as well as from the total, so the "
+            "train and evaluation splits would overlap. Fix that split before using a warmup here."
+        )
+
+    path_sorted = sort_data(str(csv_path), dt)
+    with FileLock(f"{os.path.dirname(os.path.abspath(path_sorted))}.lock"):
+        train_dataset = RandomSampleDataset(
+            path_sorted, sample_size, warmup_size, train=True, test=False, epoch_length=data_config.get("epoch_length")
+        )
+        eval_dataset = BuildingTemperatureDataset(path_sorted, sample_size, all=False, train=False, test=True)
+
+    train_dataloader = torch.utils.data.DataLoader(
+        train_dataset,
+        batch_size=1,
+        shuffle=False,
+        sampler=InfiniteSampler(train_dataset),
+    )
+    eval_dataloader = torch.utils.data.DataLoader(eval_dataset, batch_size=1, shuffle=False)
+
+    return train_dataloader, eval_dataloader
 
 
 def change_origin(room_coordinates):
@@ -311,9 +325,12 @@ def initialise_model(
     t = torch.tensor(weather_data_UTC_time)
     Tout_continuous = Interp1D(t, Tout, method="linear")  # Interp1D object
 
-    # Initialise RCModel with the building
-    transform = torch.sigmoid
-    model = RCModel(bld, scaling, Tout_continuous, transform, cooling_policy)
+    # Initialise RCModel with the building.
+    # transform=None: parameters are held directly in 0-1 machine space. The sigmoid
+    # parameterisation existed to keep gradient descent on unbounded parameters well
+    # behaved; the search supplies bounded parameters directly, so it would only obscure
+    # what a perturbation actually does.
+    model = RCModel(bld, scaling, Tout_continuous, transform=None, cooling_policy=cooling_policy)
 
     return model
 

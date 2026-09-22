@@ -4,73 +4,17 @@ from collections import deque
 import gymnasium as gym
 import numpy as np
 import torch
-import torch.nn as nn
 from gymnasium import spaces
 from matplotlib import pyplot as plt
 
+# Keys of LSIEnv's config that may be changed after construction. Everything else is
+# structural (it changes the observation space or the episode shape) and needs a new env.
+UPDATABLE_KEYS = ("dataloader", "rc_parameters", "update_state_dict")
 
-# TODO: Remove POLICY NETWORK and all references to it.
-class PolicyNetwork(nn.Module):
-    def __init__(self, in_dim, out_dim):
-        super().__init__()
-
-        n = 10
-        self.flatten = nn.Flatten()
-        self.linear_relu_stack = nn.Sequential(
-            nn.Linear(in_dim, n),
-            nn.ReLU(),
-            nn.Linear(n, n),
-            nn.ReLU(),
-            nn.Linear(n, out_dim),
-        )
-
-        self.log_probs = None  # initialised in on_policy_reset()
-        self.on_policy_reset()
-
-    def forward(self, state):
-        logits = self.linear_relu_stack(state)
-
-        return logits
-
-    def get_action(self, state):
-        logits = self.forward(state)
-
-        # Debugging ----------------------
-        if torch.isnan(logits).any():
-            from datetime import datetime
-            from pathlib import Path
-
-            # datetime object containing current date and time
-            now = datetime.now()
-            # YY/mm/dd H:M:S
-            dt_string = now.strftime("%y-%m-%d_%H:%M:%S")
-            logfile = "outputs/" + dt_string + "_errorlog" + ".csv"
-            # Create dir if needed
-            Path("./outputs/").mkdir(parents=True, exist_ok=True)
-
-            s = state.detach().numpy()
-            np.savetxt(logfile, s, delimiter=",")
-
-            action = 0
-            return action
-        # ----------------------------------------------------------
-
-        prob_dist = torch.distributions.categorical.Categorical(logits=logits)  # make a probability distribution
-
-        action = prob_dist.sample()  # sample from distribution pi(a|s) (action given state)
-
-        self.log_probs.append(prob_dist.log_prob(action))  # store log probability of action
-
-        return action
-
-    def on_policy_reset(self):
-        # this stores log_probs during an integration step.
-        self.log_probs = []
-        # self.rewards = []
+# Changing either of these would change the observation space, so they are rejected outright.
+FROZEN_KEYS = ("step_length", "render_mode")
 
 
-# TODO: Update gym to gymnasium
-# TODO: Ensure that environment works with multiple batches.
 class LSIEnv(gym.Env):
     """Custom Environment that follows gym interface
 
@@ -91,6 +35,12 @@ class LSIEnv(gym.Env):
     dataloader. Once all the batches have been seen we refresh the dataloader and go
     again from the start.
 
+    The reward is the negative MSE between the model's predicted room temperatures and
+    the measured ones, i.e. this is a system-identification objective: a policy scores
+    well by reproducing whatever cooling the real building actually did. The RC
+    parameters are NOT learned here - they are fixed for the life of a PBT trial and
+    supplied through the config (see update_from_config).
+
     ### Observation Space:
     [[unix_time, T_node1, T_node2, TRm1, TRm2, ...],    t0
     .                                                   t1
@@ -107,19 +57,23 @@ class LSIEnv(gym.Env):
     def __init__(self, config: dict):
         super().__init__()
 
-        self.config = config
-        self.config["update_state_dict"] = config.get("update_state_dict")
-        self.RC = config["RC_model"]
+        self.config = dict(config)  # Own a copy: the caller's dict must not be mutated.
+        self.config.setdefault("update_state_dict", None)
+        self.config.setdefault("rc_parameters", None)
+        self.RC = self.config["RC_model"]
         self.step_length = config["step_length"]
-        self.render_mode = config.get("render_mode")
-        self._update_environment()  # Initialise dataloader and check for updates.
-        # self.epochs_per_reset = env_config.get("epochs_per_reset", 1)
+        self.render_mode = self.config.get("render_mode")
+        self.dataloader = self.config["dataloader"]
 
-        # self.epochs = -1  # keeps count of the total epochs of data seen.
         self.time_min = None  # used to help render graph. initialised in _init_render()
         self.time_max = None
         self.fig = None  # figure used in render
-        self.collect_rc_grad = False  # Flag to collect in rcModel or not.
+        # Persistent iterator over self.dataloader. reset() used to do next(iter(dataloader)),
+        # which builds a FRESH iterator every episode and therefore always yields index 0.
+        # RandomSampleDataset hid that (every index returns a different random window), but on
+        # a deterministic dataset - which is what a stable evaluation metric needs - it means
+        # every episode replays the same window. Held as state and advanced instead.
+        self._batch_iter = None
         # init info dictionary:
         self.info = {}
 
@@ -129,7 +83,6 @@ class LSIEnv(gym.Env):
 
         self.day = 24 * 60**2
 
-        self.step_length = config["step_length"]  # Minutes
         self.step_size = int((self.step_length * 60) / self.dt)  # num rows of data needed for step_length minutes.
         self.loss_fn = torch.nn.MSELoss()
 
@@ -147,7 +100,6 @@ class LSIEnv(gym.Env):
 
         # Define action and observation space
         # They must be gym.spaces objects
-        # Example when using discrete actions:
         self.action_space = spaces.Discrete(
             2,
         )
@@ -155,14 +107,18 @@ class LSIEnv(gym.Env):
         # Observation is temperature of each room.
         self.observation_space = spaces.Box(low, high, dtype=np.float64)
 
-        self.render_mode = config["render_mode"]
         assert self.render_mode is None or self.render_mode in self.metadata["render_modes"]
         self.episode_info = {}  # for collecting render info.
 
-        if self.render_mode:
-            self.recording = True
-        else:
-            self.recording = False
+        self.recording = bool(self.render_mode)
+
+        # Build A/B and the initial-value array up front. The environment is constructed
+        # from a config by every rollout worker, so it has to arrive ready to step - relying
+        # on the caller to remember a separate setup() call is how a worker ends up
+        # integrating from a stale (or absent) iv_array.
+        self.update_from_config()
+        if self.RC.A is None or self.RC.iv_array is None:
+            self.RC.setup(self.dataloader.dataset)
 
     def step(self, action):
         """
@@ -180,35 +136,18 @@ class LSIEnv(gym.Env):
 
         Returns
         -------
-        Returns:
-            observation (ObsType): An element of the environment's :attr:`observation_space` as the next observation due
-                to the agent actions. An example is a numpy array containing the positions and velocities of the pole in
-                CartPole.
-            reward (float): The reward as a result of taking the action.
-            terminated (bool): Whether the agent reaches the terminal state (as defined under the MDP of the task)
-                which can be positive or negative. An example is reaching the goal state or moving into the lava from
-                the Sutton and Barton, Gridworld. If true, the user needs to call :meth:`reset`.
-            truncated (bool): Whether the truncation condition outside the scope of the MDP is satisfied.
-                Typically, this is a timelimit, but could also be used to indicate an agent physically going out of bounds.
-                Can be used to end the episode prematurely before a terminal state is reached.
-                If true, the user needs to call :meth:`reset`.
-            info (dict): Contains auxiliary diagnostic information (helpful for debugging, learning, and logging).
-                This might, for instance, contain: metrics that describe the agent's performance state, variables that are
-                hidden from observations, or individual reward terms that are combined to produce the total reward.
-                In OpenAI Gym <v26, it contains "TimeLimit.truncated" to distinguish truncation and termination,
-                however this is deprecated in favour of returning terminated and truncated variables.
-
-
         observation: np.array
             The observation at the end of the step.
         reward: float
-            The reward for the step.
-        done: bool
+            Negative MSE between predicted and measured room temperatures over the step.
+        terminated: bool
             True if the batch is finished.
+        truncated: bool
+            Always False in this environment.
         info: dict
             A dictionary of information about the step.
         """
-        with torch.set_grad_enabled(self.collect_rc_grad):
+        with torch.no_grad():
             # solves an off by one issue caused by the iv technically being t0.
             # TODO: must be a more elegant way to do this.
             t_start = self.t_index - 1 if self.t_index > 0 else self.t_index
@@ -218,10 +157,6 @@ class LSIEnv(gym.Env):
             # Take a sample of the time and temperature data
             t_eval = self.time_data[t_start:t_end]
             temperature_sample = self.temp_data[t_start:t_end, 0 : self.n_rooms]
-
-            # record both start and end, so we can plot actions later
-            # self.info["actions"].extend([action, action])
-            # self.info["t_actions"].extend([t_eval[0], t_eval[-1]])
 
             # set iv from last observation
             self.RC.iv = self.observation[-1, 1:].unsqueeze(0).T
@@ -234,17 +169,17 @@ class LSIEnv(gym.Env):
             # remove first observation as this was the iv from the previous step
             # TODO: Tidy this up, there must be a better way.
             if self.t_index == 0:
-                self.observation = torch.concat((t_eval.unsqueeze(0).T, pred.detach().clone()), dim=1)
+                self.observation = torch.concat((t_eval.unsqueeze(0).T, pred.clone()), dim=1)
             else:
-                self.observation = torch.concat((t_eval[1:].unsqueeze(0).T, pred[1:, :].detach().clone()), dim=1)
+                self.observation = torch.concat((t_eval[1:].unsqueeze(0).T, pred[1:, :].clone()), dim=1)
 
             if self.render_mode is not None:
                 self.episode_info["true_temperature"].extend(temperature_sample.numpy())
-                self.episode_info["predicted_temperature"].extend(pred.detach().numpy())
+                self.episode_info["predicted_temperature"].extend(pred.numpy())
                 self.episode_info["time"].extend(t_eval.unsqueeze(0).T.numpy())
                 self.episode_info["actions"].extend([action, action])
                 self.episode_info["t_actions"].extend([t_eval[0], t_eval[-1]])
-                self.episode_info["reward"].append(reward.detach().numpy())
+                self.episode_info["reward"].append(reward.numpy())
                 self.episode_info["t_reward"].append(t_eval[-1])
 
             # Check for done condition:
@@ -254,12 +189,9 @@ class LSIEnv(gym.Env):
             self.t_index += self.step_size
             self.step_count += 1  # Keep track of the number of steps taken.
 
-            if not self.collect_rc_grad:  # Don't need to save grads, keeps ray happy.
-                reward = reward.detach().numpy()
-
             truncated = False  # Not used in this environment.
 
-            return self.observation.numpy(), reward, self.terminated, truncated, self.info
+            return self.observation.numpy(), float(reward), self.terminated, truncated, self.info
 
     def reset(
         self,
@@ -287,14 +219,14 @@ class LSIEnv(gym.Env):
         self.episode_info["Q_watts"] = self.RC.building.proportional_heating(self.RC.cool_load)
 
         # get next batch from dataloader:
-        self.time_data, self.temp_data = next(iter(self.dataloader))
+        self.time_data, self.temp_data = self._next_batch()
 
         self.time_data = self.time_data.squeeze(0)
         self.temp_data = self.temp_data.squeeze(0)
 
         # Find correct initial value for current start from pre-calculated array
         # if statement allows iv_array to be none and not cause reset() to fail.
-        if self.RC.iv_array:
+        if self.RC.iv_array is not None:
             self.RC.iv = self.RC.iv_array(self.time_data[0])
 
         self.observation = self._get_obs()
@@ -308,48 +240,89 @@ class LSIEnv(gym.Env):
     def _get_obs(self):
         return torch.concat((self.time_data[0].unsqueeze(0), self.RC.iv.flatten())).unsqueeze(0)
 
+    def _next_batch(self):
+        """Next batch from the dataloader, wrapping around at the end of an epoch.
+
+        Note an InfiniteSampler dataloader never raises StopIteration, so the wrap-around
+        only fires for a finite one (e.g. the deterministic dataset used for evaluation).
+        """
+        if self._batch_iter is None:
+            self._batch_iter = iter(self.dataloader)
+        try:
+            return next(self._batch_iter)
+        except StopIteration:
+            self._batch_iter = iter(self.dataloader)
+            return next(self._batch_iter)
+
+    def __getstate__(self):
+        # DataLoader iterators and matplotlib figures don't pickle, and Ray pickles
+        # environments when it moves them between processes. Both are derived state that
+        # rebuilds itself on demand, so drop them rather than trying to serialise them.
+        state = self.__dict__.copy()
+        state["_batch_iter"] = None
+        state["fig"] = None
+        return state
+
+    def __setstate__(self, state):
+        self.__dict__.update(state)
+        self._batch_iter = None
+        self.fig = None
+
     def update_from_config(self, new_config=None):
         """
-        Some environment parameters can be updated on the fly. This method checks for
-        changes in updatable parameters between new_config and the current
-        environment parameters and updates the environment accordingly.
+        Apply any pending updates from the config to the environment and model.
 
-        Parameters which can be updated on the fly are produced by:
-        self._get_updatable_config()
+        This is the ONLY route by which a running environment's RC parameters change, and
+        it is what a PBT exploit relies on: the new parameters arrive in the config (via
+        make_update_env_fn across every rollout worker, or via a fresh env built from the
+        trial's config) and land on the model here.
 
-        Only matching keys in the provided new_config are checked, everything else is
-        ignored.
+        Updatable keys are UPDATABLE_KEYS:
+            dataloader        - swap the data the episodes are drawn from (e.g. train -> test).
+            rc_parameters     - dict of 0-1 scaled RC parameters, see RCModel.set_parameters().
+            update_state_dict - a full RCModel state_dict, an alternative to rc_parameters.
+
+        Whenever any of these change, A/B are rebuilt and iv_array is recomputed for the
+        current dataset, because both depend on the parameters.
+
+        Anything in FROZEN_KEYS cannot be changed and raises. Unknown keys are ignored, so a
+        caller can pass a whole trial config without filtering it first.
         """
+        if new_config:
+            for key in FROZEN_KEYS:
+                if key in new_config and new_config[key] != self.config.get(key):
+                    raise ValueError(f"Cannot change '{key}' on the fly - build a new environment instead.")
 
-        if new_config is None:
-            new_config = self.config
+            for key in UPDATABLE_KEYS:
+                if key in new_config:
+                    self.config[key] = new_config[key]
 
-        env_parameters = self._get_updatable_config()
+        needs_setup = False
 
-        # Pop state_dict from new_config, we'll use it to update the model later.
-        new_state_dict = new_config.pop("update_state_dict", None)
-        env_parameters.pop("update_state_dict", None)  # Don't need anymore
+        dataloader = self.config.get("dataloader")
+        if dataloader is not None and dataloader is not self.dataloader:
+            self.dataloader = dataloader
+            self._batch_iter = None  # the old iterator belongs to the old dataloader
+            needs_setup = True
 
-        # Check if all keys in env_parameters are in new_config
-        assert set(env_parameters.keys()).issubset(set(new_config.keys())), (
-            "New config does not contain all keys of env_parameters."
-        )
+        # Both parameter routes are consumed (popped back to None) once applied, so a
+        # later reset() doesn't redundantly re-apply and re-solve for iv_array.
+        rc_parameters = self.config.get("rc_parameters")
+        if rc_parameters:
+            self.RC.set_parameters(rc_parameters)
+            self.config["rc_parameters"] = None
+            needs_setup = True
 
-        # For all keys in env_parameters get differences between env_parameters and
-        # new_config
-        changed = set(env_parameters.items()).difference(set(new_config.items()))
-
-        for key, _ in iter(changed):
-            assert key not in ("step_length", "render_mode"), "Cannot change step_length or render_mode on the fly."
-
-            self.config[key] = new_config[key]
-
-        if changed:
-            self._update_environment()
-
-        if new_state_dict:
-            self.RC.load_state_dict(new_state_dict)
+        state_dict = self.config.get("update_state_dict")
+        if state_dict:
+            self.RC.load_state_dict(state_dict)
             self.config["update_state_dict"] = None
+            needs_setup = True
+
+        if needs_setup:
+            # Rebuilds A/B from the new parameters and re-solves the latent nodes' initial
+            # values over the (possibly new) dataset.
+            self.RC.setup(self.dataloader.dataset)
 
     # TODO: Better render.
     def render(self):
@@ -362,24 +335,14 @@ class LSIEnv(gym.Env):
             return None
 
     def _render(self):
-        # if self.render_mode:  # overwrite mode
-        #     mode = self.render_mode
-
         assert self.render_mode in self.metadata["render_modes"]
 
         with torch.no_grad():
-            # set up render environment
-            # if self.need_init_render:
-            #     self._init_render(mode)
-            #     self.need_init_render = False
-
             # return empty list unless until episode is done.
             if self.render_mode in ["single_rgb_array", "single_epoch_rgb_array"] and not self.terminated:
                 return None
 
             _line1, heat_line, ax, ax2 = self._init_render()
-
-            # line1.set_data(self.observation[:, 0].numpy(), self.observation[:, 3:].numpy())
 
             # Plot the predicted temperature
             y = np.array(self.episode_info["predicted_temperature"])
@@ -396,15 +359,11 @@ class LSIEnv(gym.Env):
                 t = np.array(self.episode_info["t_actions"]) - self.time_min.numpy()
                 heat_line.set_data(t / self.day, Q)
 
-            # fig = plt.gcf()
-            # ax = plt.gca()
             ax.relim()
             ax.autoscale_view(tight=None, scalex=False, scaley=True)
             ax2.relim()
             ax2.autoscale_view(tight=None, scalex=False, scaley=True)
             self.fig.canvas.draw()
-            # fig.canvas.flush_events()
-            # plt.draw()
 
             if self.render_mode == "human":
                 plt.pause(0.0001)
@@ -419,8 +378,6 @@ class LSIEnv(gym.Env):
 
     def _init_render(self):
 
-        # global line1, heat_line, ax, ax2
-
         if self.render_mode == "human":
             plt.ion()
             self.fig = plt.gcf()
@@ -433,9 +390,6 @@ class LSIEnv(gym.Env):
             if width < 10:
                 width = 10
 
-            # if self.fig is None:
-            #     self.fig = plt.figure(figsize=(width, width * 0.75))
-            # canvas = FigureCanvas(fig)
             self.fig = plt.figure(figsize=(width, width * 0.75))
 
         if self.time_min is None:
@@ -447,7 +401,6 @@ class LSIEnv(gym.Env):
 
         x = torch.arange(0, self.time_max - self.time_min, self.dt) / self.day
         y = torch.empty(len(x)) * torch.nan
-        # y = torch.zeros(len(x))
 
         ax = self.fig.add_subplot(111)
         ax2 = ax.twinx()
@@ -464,8 +417,6 @@ class LSIEnv(gym.Env):
             ":r",
             label=r"data ($^\circ$C)",
         )
-        # ln3 = ax.plot(t_days_all.numpy(), self.RC.Tout_continuous(self.time_all).numpy(), linestyle=':',
-        #               color='darkorange', label=r'outside ($^\circ$C)')
 
         if self.RC.transform:
             gain = self.RC.scaling.physical_loads_scaling(self.RC.transform(self.RC.loads))[1, :]
@@ -484,7 +435,7 @@ class LSIEnv(gym.Env):
         # fake line so we can get a legend now. Real line is created in render()
         (heat_line,) = ax2.plot([0], [0], color="k", linestyle="--", alpha=0.5, label="heat ($W$)")
 
-        lns = [line1, heat_line, gain_line, *ln2]  # + ln3
+        lns = [line1, heat_line, gain_line, *ln2]
         labs = [line.get_label() for line in lns]
         ax.legend(lns, labs, loc="upper right")
 
@@ -496,26 +447,6 @@ class LSIEnv(gym.Env):
     def save_episode_info_to_file(self, file_path):
         with open(file_path, "wb") as f:
             pickle.dump(self.episode_info, f)
-
-    def _get_updatable_config(self):
-        config = {
-            # "RC_model": self.RC,
-            "dataloader": self.dataloader,
-            # "step_length": self.step_length,
-            # "render_mode": self.render_mode,
-            "update_state_dict": None,
-        }
-        return config
-
-    def _update_environment(self):
-        """Sets the environment to the new config."""
-
-        # self.RC = self.config["RC_model"]
-        self.dataloader = self.config["dataloader"]
-        # self.batch_generator = iter(self.dataloader) # this was causing pickle issues
-        # just remove it.
-        # self.step_length = self.config["step_length"]
-        # self.render_mode = self.config["render_mode"]
 
 
 class PreprocessEnv(gym.ObservationWrapper):
@@ -597,7 +528,6 @@ def preprocess_observation(x, unix_time, mu, std_dev):
 
     day = 24 * 60**2
     week = 7 * day
-    # year = (365.2425) * day
 
     state = [
         *x_norm.tolist(),

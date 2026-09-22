@@ -1,22 +1,23 @@
 from . import optimisation, physical, rc_model, tools
-
-# from .optimisation import DDPOptimiseRC
-# from .optimisation import PriorEnv
 from .optimisation import (
+    METRIC,
+    MODE,
     LSIEnv,
-    OptimiseManager,
-    OptimisePolicy,
-    OptimiseRC,
-    PolicyNetwork,
     PreprocessEnv,
     PriorCoolingPolicy,
+    RCPolicyTrainable,
+    best_parameters,
+    build_pbt_scheduler,
+    build_tuner,
+    evaluate,
+    make_update_env_fn,
+    physical_to_scaled,
     preprocess_observation,
-    test,
+    search_space,
+    slowest_time_constant_days,
 )
 from .physical import Building, InputScaling, Room
-
-# from .tools import get_iv_array
-from .rc_model import RCModel
+from .rc_model import LOAD_KEYS, PARAM_KEYS, RC_PARAM_KEYS, RCModel, scaled_params_to_tensors
 from .tools import (
     BuildingTemperatureDataset,
     InfiniteSampler,
@@ -27,6 +28,7 @@ from .tools import (
     env_creator,
     exponential_smoothing,
     initialise_model,
+    make_dataloaders,
     model_creator,
     model_to_csv,
     pltsolution_1rm,
@@ -34,7 +36,7 @@ from .tools import (
     sort_data,
 )
 
-__all__ = ["RCModel"]
+__all__ = ["LOAD_KEYS", "PARAM_KEYS", "RC_PARAM_KEYS", "RCModel", "scaled_params_to_tensors"]
 __all__.extend(optimisation.__all__)
 __all__.extend(physical.__all__)
 __all__.extend(tools.__all__)

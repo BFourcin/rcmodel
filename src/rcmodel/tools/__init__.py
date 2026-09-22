@@ -5,6 +5,7 @@ from .helper_functions import (
     env_creator,
     exponential_smoothing,
     initialise_model,
+    make_dataloaders,
     model_creator,
     model_to_csv,
     policy_image,
@@ -12,9 +13,6 @@ from .helper_functions import (
 )
 from .plotting import pltsolution_1rm
 from .rcmodel_dataset import BuildingTemperatureDataset, InfiniteSampler, RandomSampleDataset
-
-# from .helper_functions import get_iv_array
-
 
 __all__ = [
     "BuildingTemperatureDataset",
@@ -26,10 +24,10 @@ __all__ = [
     "env_creator",
     "exponential_smoothing",
     "initialise_model",
+    "make_dataloaders",
     "model_creator",
     "model_to_csv",
     "pltsolution_1rm",
     "policy_image",
     "sort_data",
-    # "get_iv_array",
 ]

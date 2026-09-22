@@ -33,6 +33,9 @@ addopts = "-ra -q"
 testpaths = [
     "tests",
 ]
+markers = [
+    "slow: end-to-end tests that start a Ray cluster and run a real search (deselect with '-m \"not slow\"')",
+]
 
 [tool.uv]
 required-environments = [

@@ -7,15 +7,86 @@ from torch import nn
 from torchdiffeq import odeint
 from xitorch.interpolate import Interp1D
 
+# Single source of truth for the names and ORDER of the model's free parameters.
+# PARAM_KEYS must match Building.categorise_theta(); LOAD_KEYS must match the row
+# order of InputScaling.physical_loads_scaling() (row 0 cool, row 1 gain).
+PARAM_KEYS = ("C_rm", "C1", "C2", "R1", "R2", "R3", "Rin")
+LOAD_KEYS = ("cool", "gain")
+RC_PARAM_KEYS = PARAM_KEYS + LOAD_KEYS
+
+# Values outside [0, 1] by more than this are a bug, not float noise (see scaled_params_to_tensors).
+_SCALED_TOL = 1e-6
+
+
+def scaled_params_to_tensors(values, n_rooms):
+    """
+    Turn a {name: value} mapping of 0-1 scaled parameters into the (params, loads)
+    tensors RCModel stores.
+
+    Parameters
+    ----------
+    values : dict
+        Keys must cover RC_PARAM_KEYS. Every value is in machine space (0-1), NOT
+        physical units - use InputScaling.model_param_scaling()/model_loads_scaling()
+        (or pbt.physical_to_scaled) to get there. "cool" and "gain" accept either a
+        single value used for every room, or one value per room.
+    n_rooms : int
+        Number of rooms in the building.
+
+    Returns
+    -------
+    (params, loads) : (torch.Tensor, torch.Tensor)
+        Shapes (len(PARAM_KEYS),) and (2, n_rooms).
+    """
+    missing = [key for key in RC_PARAM_KEYS if key not in values]
+    if missing:
+        raise KeyError(f"Missing RC parameters: {missing}")
+
+    def as_scalar(value):
+        return float(np.asarray(value).item())
+
+    def as_room_vector(value, name):
+        vector = torch.as_tensor(np.asarray(value, dtype=np.float32)).flatten().to(torch.float32)
+        if vector.numel() == 1:
+            vector = vector.repeat(n_rooms)
+        if vector.numel() != n_rooms:
+            raise ValueError(
+                f"Each room needs a '{name}' load - give one value per room, or a single value for all. "
+                f"Got {vector.numel()} values for {n_rooms} rooms."
+            )
+        return vector
+
+    params = torch.tensor([as_scalar(values[key]) for key in PARAM_KEYS], dtype=torch.float32)
+    loads = torch.stack([as_room_vector(values[key], key) for key in LOAD_KEYS])
+
+    # Parameters live in 0-1 (there is no sigmoid squashing them any more), so anything
+    # meaningfully outside that range would be silently clamped into a different model.
+    # Clamp float noise, but fail loudly on a real out-of-range value.
+    for name, tensor in (("params", params), ("loads", loads)):
+        low, high = tensor.min().item(), tensor.max().item()
+        if low < -_SCALED_TOL or high > 1 + _SCALED_TOL:
+            raise ValueError(
+                f"Scaled {name} must be within [0, 1], got range [{low}, {high}]. "
+                f"Clip to the parameter ranges before calling (see pbt.physical_to_scaled)."
+            )
+
+    return params.clamp(0.0, 1.0), loads.clamp(0.0, 1.0)
+
 
 # TODO: Format comments to be consistent with PEP8.
 class RCModel(nn.Module):
     """
-    Custom Pytorch model for gradient optimization.
-    Initialises with random parameters.
+    3R2C thermal model of a building.
 
     scaling - Class containing methods to scale inputs from 0-1 back to their usual values and back again.
-    transform - function to transform parameters e.g. sigmoid
+    transform - optional function applied to parameters before scaling, e.g. sigmoid. Leave as None
+        (the default) to hold parameters directly in 0-1 machine space, which is what the PBT search
+        expects - see set_parameters(). The sigmoid/logit parameterisation only existed to keep
+        gradient descent on unbounded parameters well behaved, and there is no gradient descent here.
+
+    Parameters are NOT optimised by gradient descent: they are supplied from outside (a PBT trial's
+    config) and held fixed while the cooling policy trains against them. Nothing in this class builds
+    an autograd graph.
 
     Runs using forward method should be sequential as the output is used as the initial condition for the next run,
     unless manually reset using self.iv
@@ -31,7 +102,7 @@ class RCModel(nn.Module):
 
         self.Tout_continuous = Tout_continuous  # Interp1D object
 
-        self.cooling_policy = cooling_policy  # Neural net: pi(state) --> action
+        self.cooling_policy = cooling_policy  # Kept for plotting; the action comes from the environment.
         self.action = 0  # initialise cooling action
 
         self.params = None  # initialised in initialise_parameters()
@@ -48,6 +119,10 @@ class RCModel(nn.Module):
         self.iv = None  # initial value
         self.iv_array = None  # Interp1D object of pre found initial values. Means we can get correct iv with just time.
 
+        # Cache of exact discretisations keyed by timestep, populated lazily by _get_discretisation()
+        # and thrown away by setup() whenever A/B change. Not part of state_dict - it is derived data.
+        self._disc_cache = {}
+
     def setup(self, dataset=None):
         """
         Setup must be called:
@@ -60,39 +135,138 @@ class RCModel(nn.Module):
         self._build_matrices()  # get A and B
         self._build_loads()  # get cool and gain load
 
+        # A and B have just been rebuilt, so any cached discretisation of them is stale.
+        self._disc_cache = {}
+
         if dataset:
             self.iv_array = get_iv_array(self, dataset)
 
-    # TODO: Allow for batches of data.
+    def set_parameters(self, values):
+        """
+        Replace the model's free parameters with a new set, in 0-1 machine space.
+
+        This is the entry point PBT uses: a trial's parameters live in its Tune config and
+        arrive here. Call setup() afterwards to rebuild A/B and recompute iv_array - the
+        environment's update_from_config() does that for you.
+
+        Parameters
+        ----------
+        values : dict
+            {name: value} covering RC_PARAM_KEYS, scaled 0-1. See scaled_params_to_tensors().
+        """
+        params, loads = scaled_params_to_tensors(values, len(self.building.rooms))
+        self.params = nn.Parameter(params, requires_grad=False)
+        self.loads = nn.Parameter(loads, requires_grad=False)
+
+    def get_parameters(self):
+        """Inverse of set_parameters(): the current parameters as a 0-1 scaled dict.
+
+        Loads are returned per room, so the result always round-trips through
+        set_parameters() even when it was originally given a single value for all rooms.
+        """
+        values = {key: self.params[i].item() for i, key in enumerate(PARAM_KEYS)}
+        for i, key in enumerate(LOAD_KEYS):
+            values[key] = self.loads[i].detach().cpu().numpy().copy()
+        return values
+
     def forward(self, t_eval, action=0):
         """
-        Integrates the ode forward in time.
+        Integrate the model forward in time with a CONSTANT action, returning the state at
+        every point in t_eval.
 
-        building - Initialised RCModel Class Tout_continuous - A scipy interp1d function covering the whole of
-        t_eval. Tout_continuous(t) = Outside temperature at time t iv - Initial value. Starting temperatures of all
-        nodes t_eval - times function should return a solution. e.g. torch.arange(0, 10000, 30). ensure dtype=float32
-        t0 - starting time if not 0
+        Because the action is held constant over the call and A/B are constant for a given
+        parameter set, this is a linear time-invariant system with a known input trajectory,
+        so it is stepped with an exact first-order-hold discretisation (see _foh_discretize)
+        rather than a numerical ODE solver. The discretisation is cached per timestep, so the
+        per-call cost is a handful of small matrix-vector products.
+
+        See _forward_odeint() for the reference (torchdiffeq rk4) implementation this must
+        agree with; test_forward_matches_odeint pins them together.
+
+        t_eval - times the function should return a solution for, in absolute (unix epoch)
+            seconds. Must be sorted ascending.
+        action - 0 or 1, held constant across the whole call.
         """
+        t_eval = self._prepare_forward(t_eval, action)
+
+        u = self._input_trajectory(t_eval)
+        x0 = self.iv.reshape(-1).to(torch.float64).numpy()
+        t_np = t_eval.to(torch.float64).numpy()
+
+        states = _integrate_states(
+            self.A.detach().to(torch.float64).numpy(),
+            self.B.detach().to(torch.float64).numpy(),
+            t_np,
+            u,
+            x0,
+            disc_cache=self._disc_cache,
+        )
+
+        self.iv = None  # Causes error if iv is not reset before next forward pass.
+
+        # (n_steps, n_states, 1) to match what the odeint path returned - the environment squeezes it.
+        return torch.tensor(states, dtype=torch.float32).unsqueeze(-1)
+
+    def _prepare_forward(self, t_eval, action):
+        """Shared bookkeeping for both forward implementations. Returns a flat t_eval."""
         self.action = action
-        self.record_action = []  # Keeps track of action at time during ODE integration.
+        self.record_action = []  # Keeps track of action at time during integration.
 
         # check if t_eval is formatted correctly:
         if t_eval.dim() != 1:
             t_eval = t_eval.flatten()
 
-        # t0 stores the starting epoch time and t_eval is array of seconds from start, [0, 1*dt, 2*dt, ...]
+        # t0 stores the starting epoch time; used by plotting and by _forward_odeint.
         self.t0 = t_eval[0]
-        t_eval = t_eval - self.t0
 
-        # THIS IS WRONG SINCE WE ARE NOW CALLING FORWARD MULTIPLE TIMES. IE for each time step.
-        # Find the true iv from an initialised Inter1D object.
-        # if self.iv_array:
-        #     self.iv = self.iv_array(self.t0)
+        if self.cooling_policy:
+            # The action is constant across the call, so start and end fully describe it.
+            # (Only used for plotting - see tools/plotting.py.)
+            self.record_action.append([0.0, self.action])
+            self.record_action.append([(t_eval[-1] - self.t0).item(), self.action])
 
         # Format iv.
         self.iv = self.iv.reshape((2 + len(self.building.rooms), 1)).to(torch.float32)
 
-        # integrate using fixed step (rk4) see torchdiffeq docs for more options.
+        return t_eval
+
+    def _input_trajectory(self, t_eval):
+        """
+        Build the input vector u = [Tout, Q_rm1, ... Q_rmn] at every point in t_eval.
+
+        Q is constant across the call (the action is held constant), so only Tout varies.
+        Crucially Tout is fetched for the whole window in ONE batched interpolation call
+        rather than once per solver sub-step, which is where most of the old cost went.
+
+        Returns a (len(t_eval), n_rooms + 1) float64 array, matching Building.input_vector()'s
+        ordering.
+        """
+        # Get energy input, constant for the whole call:
+        Q_area = -self.cool_load * self.action  # W/m2
+        Q_area = Q_area + self.gain_load  # add the constant gain term
+        Q_watts = self.building.proportional_heating(Q_area)
+
+        tout = self.Tout_continuous(t_eval)
+        tout = torch.as_tensor(tout).flatten().to(torch.float64)
+        if tout.numel() == 1:  # a constant-temperature callable may return a scalar
+            tout = tout.repeat(len(t_eval))
+
+        u = np.empty((len(t_eval), len(self.building.rooms) + 1), dtype=np.float64)
+        u[:, 0] = tout.detach().numpy()
+        u[:, 1:] = Q_watts.detach().to(torch.float64).numpy()
+        return u
+
+    def _forward_odeint(self, t_eval, action=0):
+        """
+        Reference implementation of forward() using torchdiffeq's fixed-step rk4.
+
+        Kept ONLY as the thing forward() is validated against (see
+        test_forward_matches_odeint) - it is not used in training, where it was far too slow
+        for a population-based search: it re-interpolated Tout at every solver sub-step.
+        """
+        t_eval = self._prepare_forward(t_eval, action)
+        t_eval = t_eval - self.t0
+
         integrate = odeint(self.f_ode, self.iv, t_eval, method="rk4")  # https://github.com/rtqichen/torchdiffeq
 
         self.iv = None  # Causes error if iv is not reset before next forward pass.
@@ -103,20 +277,9 @@ class RCModel(nn.Module):
         """
         Provides the function:
         dy/dx = Ax + Bu
+
+        Only used by _forward_odeint().
         """
-        # # get cooling action if policy is not None and 15 minutes has passed since last action
-        # if self.cooling_policy:  # policy exists
-        #     if t - self.ode_t >= 60*15:
-        #         self.action, log_prob = self.cooling_policy.get_action(x[2:], t + self.t0)
-        #         self.ode_t = t
-        #
-        #         if self.cooling_policy.training:  # if in training mode store log_prob
-        #             self.cooling_policy.log_probs.append(log_prob)
-
-        if self.cooling_policy:  # policy exists
-            # record every time-step
-            self.record_action.append([t, self.action])  # This is just used for plotting the cooling after.
-
         # Get energy input at timestep:
         Q_area = -self.cool_load * self.action  # W/m2
         Q_area = Q_area + self.gain_load  # add the constant gain term
@@ -150,19 +313,52 @@ class RCModel(nn.Module):
         self.gain_load = loads[1, :]
 
     def initialise_parameters(self):
-        params = torch.rand(self.building.n_params, dtype=torch.float32, requires_grad=True)
-        loads = torch.rand((2, len(self.building.rooms)), dtype=torch.float32, requires_grad=True)
+        """Initialise params and loads with random values in 0-1 machine space.
+
+        A PBT run overwrites these immediately via set_parameters(); this only matters for a
+        model built without an explicit parameter set.
+        """
+        params = torch.rand(self.building.n_params, dtype=torch.float32)
+        loads = torch.rand((2, len(self.building.rooms)), dtype=torch.float32)
 
         # enables spread of initial parameters. Otherwise, sigmoid(rand) tends towards 0.5.
         if self.transform == torch.sigmoid:
             params = torch.logit(params)  # inverse sigmoid
             loads = torch.logit(loads)
 
-        # make theta torch parameters
-        self.params = nn.Parameter(params)
+        # make theta torch parameters. No gradients: parameters are searched, not descended.
+        self.params = nn.Parameter(params, requires_grad=False)
 
         # initialise the room cooling and gain loads
-        self.loads = nn.Parameter(loads)
+        self.loads = nn.Parameter(loads, requires_grad=False)
+
+    def slowest_time_constant(self):
+        """
+        The slowest time constant of the current parameter set, in seconds.
+
+        The eigenvalues of A are the system's modes; the one closest to the imaginary axis
+        decays slowest, and tau = -1/Re(lambda) is how long it takes to settle. The physical
+        parameter ranges legally permit R*C products giving time constants of hundreds of
+        days, and a building that slow simply cannot be identified from a few weeks of data -
+        a PBT trial holding such a draw is wasted compute. See pbt.RCPolicyTrainable's
+        max_time_constant_days option, which uses this to sideline those trials cheaply.
+
+        Returns inf if the system has a non-decaying (zero or positive real part) mode.
+
+        Requires A to have been built - call setup() (or _build_matrices()) first.
+        """
+        if self.A is None:
+            raise RuntimeError("Call setup() before slowest_time_constant() - A has not been built.")
+
+        eigvals = np.linalg.eigvals(self.A.detach().to(torch.float64).numpy())
+        real_parts = eigvals.real
+
+        # A stable thermal system has strictly negative real parts. Anything else never
+        # settles, which is as useless as being arbitrarily slow.
+        if np.any(real_parts >= 0):
+            return float("inf")
+
+        return float(1.0 / np.min(np.abs(real_parts)))
 
     def save(self, filename):
         """
@@ -196,7 +392,7 @@ class RCModel(nn.Module):
 
     def get_physical_paramaters(self):
         """
-        Go from params (most likely in the form: logit(rand(0,1)) to the true physical values.
+        Go from the stored machine-space parameters (0-1 by default) to the true physical values.
         """
         # Transform parameters
         theta = self.transform(self.params) if self.transform else self.params
@@ -273,6 +469,72 @@ def _foh_discretize_batch(A, B, dt_arr):
     return Ad.numpy(), Bd0.numpy(), Bd1.numpy()
 
 
+def _step_recurrence(Ad, Bd0, Bd1, u, x0):
+    """
+    Apply x_{k+1} = Ad @ x_k + Bd0 @ u_k + Bd1 @ u_{k+1} for a CONSTANT (Ad, Bd0, Bd1).
+
+    A plain loop, because the windows this runs over are short (one environment step is
+    typically tens of samples) and each iteration is one small matrix-vector product. The
+    filter-based decomposition used by _integrate_latent_vectorized only pays off over long
+    trajectories with few input channels; here there is one input per room, so it would cost
+    more than it saves.
+
+    u: (n_steps, m) input samples. x0: (n,) initial state.
+    Returns: (n_steps, n) state trajectory including x0 at index 0.
+    """
+    n_steps = len(u)
+    X = np.empty((n_steps, len(x0)))
+    X[0] = x0
+    x = x0
+    for k in range(n_steps - 1):
+        x = Ad @ x + Bd0 @ u[k] + Bd1 @ u[k + 1]
+        X[k + 1] = x
+    return X
+
+
+def _integrate_states(A, B, t, u, x0, disc_cache=None):
+    """
+    Propagate the exact FOH discretization of dx/dt = A x + B u(t) across every point in `t`.
+
+    `disc_cache` is an optional dict owned by the caller (RCModel keeps one, cleared whenever
+    A/B change) so the matrix exponential is computed once per timestep rather than once per
+    environment step. It is keyed by dt.
+
+    Note on exactness: the FOH assumption is that u is linear BETWEEN consecutive points of
+    `t`. Q is constant, so that only constrains Tout - it holds whenever the data grid is at
+    least as fine as the weather grid it is interpolated from (30s indoor data vs hourly
+    weather, say). If the weather series were finer than `t`, a step could span a kink in Tout
+    and this would become an approximation rather than an identity.
+    """
+    if len(t) < 2:
+        return np.repeat(np.asarray(x0, dtype=np.float64)[None, :], len(t), axis=0)
+
+    dt_arr = np.diff(t)
+    uniform = np.allclose(dt_arr, dt_arr[0], rtol=_UNIFORM_DT_TOL, atol=_UNIFORM_DT_TOL)
+
+    if uniform:
+        dt = float(dt_arr[0])
+        cached = disc_cache.get(dt) if disc_cache is not None else None
+        if cached is None:
+            cached = _foh_discretize(A, B, dt)
+            if disc_cache is not None:
+                disc_cache[dt] = cached
+        Ad, Bd0, Bd1 = cached
+        return _step_recurrence(Ad, Bd0, Bd1, u, x0)
+
+    # dt varies between samples: discretize every step with its own dt in one batched call
+    # rather than silently reusing a single-dt discretization that would be wrong elsewhere.
+    Ad_b, Bd0_b, Bd1_b = _foh_discretize_batch(A, B, dt_arr)
+    n_steps = len(u)
+    X = np.empty((n_steps, len(x0)))
+    X[0] = x0
+    x = np.asarray(x0, dtype=np.float64)
+    for k in range(n_steps - 1):
+        x = Ad_b[k] @ x + Bd0_b[k] @ u[k] + Bd1_b[k] @ u[k + 1]
+        X[k + 1] = x
+    return X
+
+
 def _integrate_latent_vectorized(Ad, Bd0, Bd1, W, x0):
     """
     Fully vectorized propagation of x_{k+1} = Ad @ x_k + Bd0 @ w_k + Bd1 @ w_{k+1}
@@ -280,6 +542,9 @@ def _integrate_latent_vectorized(Ad, Bd0, Bd1, W, x0):
     per-input-channel IIR filter (the exact digital-filter realization of this LTI
     system, run via scipy) plus the closed-form free response of x0 via
     eigendecomposition of Ad - avoids a Python loop over time steps entirely.
+
+    Used by get_iv_array(), where the trajectory is the whole dataset (long) and there are
+    only two input channels - the regime where this beats a plain loop.
 
     W: (n_steps, 2) columns [Tout, Tin] at every point in t.
     x0: (2,) initial state.

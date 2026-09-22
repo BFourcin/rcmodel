@@ -1,3 +1,5 @@
+import shutil
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -96,9 +98,9 @@ def get_model(building):
 
     scaling = InputScaling(rm_CA, C1, C2, R1, R2, R3, Rin, cool, gain)
 
-    # Initialise RCModel with the building and InputScaling
-    transform = torch.sigmoid
-    model = RCModel(building, scaling, dummy_tout, transform)
+    # Initialise RCModel with the building and InputScaling.
+    # transform=None: parameters are held directly in 0-1 machine space - see RCModel.
+    model = RCModel(building, scaling, dummy_tout, transform=None)
     return model
 
 
@@ -224,3 +226,63 @@ def full_building_dataset(synthetic_indoor_temperature_csv, fake_time):
     """The whole of `synthetic_indoor_temperature_csv`, deterministically (no random
     windowing) - for tests that need the full dataset a model would see, e.g. get_iv_array()."""
     return BuildingTemperatureDataset(synthetic_indoor_temperature_csv, sample_size=len(fake_time), all=True)
+
+
+@pytest.fixture
+def sorted_csv(synthetic_indoor_temperature_csv, tmp_path):
+    """The synthetic data under a `*_sorted.csv` name.
+
+    sort_data() treats an unsuffixed path as raw data and re-sorts it, and raw data is
+    expected to carry MILLISECOND timestamps (it does pd.to_datetime(..., unit="ms")). The
+    fixtures write seconds, matching what the dataset classes read back, so re-sorting would
+    reinterpret every timestamp as being in 1970. The suffix tells sort_data the file is
+    already in its final form.
+    """
+    destination = tmp_path / "synthetic_indoor_temperature_sorted.csv"
+    shutil.copy(synthetic_indoor_temperature_csv, destination)
+    return destination
+
+
+@pytest.fixture
+def data_config(sorted_csv):
+    """Plain-data description of the dataset, as make_dataloaders() expects."""
+    dt = 30
+    return {
+        "csv_path": str(sorted_csv),
+        "sample_size": int(1 * 60**2 / dt),  # ONE HOUR
+        "warmup_size": 0,
+        "dt": dt,
+    }
+
+
+@pytest.fixture
+def env_config(data_config):
+    """env_creator config holding only plain data - no live RCModel.
+
+    This is the shape a PBT trial uses: everything the environment needs is serialisable,
+    so a trial's parameters are whatever its config says they are.
+    """
+    return {
+        "data_config": data_config,
+        "step_length": 15,  # minutes passed in each step.
+        "render_mode": None,
+        "model_config": None,  # filled in per test from get_model_config
+    }
+
+
+@pytest.fixture
+def physical_params(get_model_config):
+    """Two distinct, plausible physical parameter sets, at 25% and 75% of every range.
+
+    Used to check that a change of parameters actually reaches the model - two sets that
+    differ in every dimension make an accidental pass very unlikely.
+    """
+
+    def at_fraction(fraction):
+        values = {}
+        for key in ("C_rm", "C1", "C2", "R1", "R2", "R3", "Rin", "cool", "gain"):
+            low, high = get_model_config[key]
+            values[key] = low + fraction * (high - low)
+        return values
+
+    return at_fraction(0.25), at_fraction(0.75)
