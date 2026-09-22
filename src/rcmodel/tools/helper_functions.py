@@ -5,7 +5,6 @@ import numpy as np
 import pandas as pd
 import torch
 from filelock import FileLock
-from gymnasium.wrappers import RenderCollection
 from xitorch.interpolate import Interp1D
 
 import rcmodel.optimisation
@@ -175,8 +174,7 @@ def env_creator(env_config):
             - "data_config": Alternative to "dataloader" - see make_dataloaders(). Keeps the
                 config plain data, which is what a distributed search wants.
             - "step_length": Required. Minutes of data per environment step.
-            - "render_mode": Optional.
-            - "rc_parameters": Optional dict of 0-1 scaled parameters applied on top of the
+            - "rc_parameters": Optional dict of machine-space parameters applied on top of the
                 model, the route a PBT exploit uses.
             - "update_state_dict": Optional RCModel state_dict applied on top of the model.
             - "observation_mu" / "observation_std_dev": Optional normalisation constants.
@@ -207,7 +205,6 @@ def env_creator(env_config):
             "RC_model": model,
             "dataloader": dataloader,
             "step_length": env_config["step_length"],
-            "render_mode": env_config.get("render_mode"),
             "rc_parameters": env_config.get("rc_parameters"),
             "update_state_dict": env_config.get("update_state_dict"),
         }
@@ -220,10 +217,6 @@ def env_creator(env_config):
             mu=env_config.get("observation_mu", DEFAULT_OBSERVATION_MU),
             std_dev=env_config.get("observation_std_dev", DEFAULT_OBSERVATION_STD_DEV),
         )
-
-        # Wrap with nice render list api if we want get renders.
-        if config["render_mode"] is not None:
-            env = RenderCollection(env)
     return env
 
 

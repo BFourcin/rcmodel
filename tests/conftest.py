@@ -265,7 +265,6 @@ def env_config(data_config):
     return {
         "data_config": data_config,
         "step_length": 15,  # minutes passed in each step.
-        "render_mode": None,
         "model_config": None,  # filled in per test from get_model_config
     }
 

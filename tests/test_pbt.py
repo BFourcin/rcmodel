@@ -18,7 +18,16 @@ import pytest
 import ray
 import torch
 
-from rcmodel import LOAD_KEYS, PARAM_KEYS, RC_PARAM_KEYS, env_creator, evaluate, make_dataloaders, model_creator
+from rcmodel import (
+    LOAD_KEYS,
+    PARAM_KEYS,
+    RC_PARAM_KEYS,
+    env_creator,
+    evaluate,
+    load_model_record,
+    make_dataloaders,
+    model_creator,
+)
 from rcmodel.optimisation.pbt import (
     IMPLAUSIBLE_PENALTY,
     METRIC,
@@ -309,8 +318,8 @@ def test_env_parameter_update_in_place(get_model_config, env_config, physical_pa
 
 
 def test_env_rejects_structural_changes(get_model_config, env_config):
-    """step_length and render_mode change the observation space, so they cannot be swapped
-    into a running environment - better a clear error than a silently mis-shaped policy."""
+    """step_length changes the observation space, so it cannot be swapped into a running
+    environment - better a clear error than a silently mis-shaped policy."""
     config = {**env_config, "model_config": get_model_config}
     env = env_creator(config)
 
@@ -523,6 +532,38 @@ def test_plausible_trial_trains(get_model_config, env_config, physical_params, r
         assert result[METRIC] > IMPLAUSIBLE_PENALTY
     finally:
         trial.cleanup()
+
+
+def test_trainable_records_the_model_it_evaluated(get_model_config, env_config, physical_params, tmp_path, ray_cluster):
+    """A record pairs the trial's own RC parameters with the score of that evaluation.
+
+    This pairing is why records are written here at all - a checkpoint carries only the
+    policy weights, so it cannot be matched back to its parameters after the run.
+    """
+    fast_set, _ = physical_params
+    trial = RCPolicyTrainable(config=trial_config(get_model_config, env_config, fast_set, model_record_dir=str(tmp_path)))
+    try:
+        result = trial.step()
+    finally:
+        trial.cleanup()
+
+    paths = list(tmp_path.glob("*/*.npz"))
+    assert len(paths) == 1, "one evaluation should write exactly one record"
+    record = load_model_record(paths[0])
+
+    assert record["trial_id"] == trial.trial_id
+    assert record["score"] == pytest.approx(result[METRIC])
+    assert record["training_iteration"] == 1
+    np.testing.assert_allclose(record["param_values"], [fast_set[key] for key in PARAM_KEYS], rtol=1e-5)
+    np.testing.assert_allclose(record["cool_w_m2"], fast_set["cool"], rtol=1e-5)
+    np.testing.assert_allclose(record["gain_w_m2"], fast_set["gain"], rtol=1e-5)
+
+
+def test_trainable_rejects_an_out_of_range_record_window(get_model_config, env_config, physical_params, tmp_path):
+    fast_set, _ = physical_params
+    config = trial_config(get_model_config, env_config, fast_set, model_record_dir=str(tmp_path), model_record_window=99)
+    with pytest.raises(ValueError, match="model_record_window"):
+        RCPolicyTrainable(config=config)
 
 
 # --------------------------------------------------------------------------- end to end

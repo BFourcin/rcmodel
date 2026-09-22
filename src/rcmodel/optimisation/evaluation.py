@@ -1,4 +1,7 @@
+import numpy as np
 import torch
+
+from rcmodel.rc_model import PARAM_KEYS
 
 """
 Note: The environment is likely to be wrapped.
@@ -30,7 +33,7 @@ def make_update_env_fn(config):
     return update_env_fn
 
 
-def evaluate(env, rl_algorithm, dataloader):
+def evaluate(env, rl_algorithm, dataloader, record_window=None):
     """
     Score a policy + RC parameter set over a dataloader, one episode per batch.
 
@@ -51,13 +54,32 @@ def evaluate(env, rl_algorithm, dataloader):
         Provides compute_single_action(obs, explore=False) -> action.
     dataloader : torch.utils.data.DataLoader
         Deterministic loader over the evaluation split.
+    record_window : int or None
+        Index of one window whose full trajectory should be recorded as it is scored - see
+        the record's layout below. None (the default) records nothing. Recording reads what
+        the scored episode already produced; it does not re-run anything.
 
     Returns
     -------
     reward_list : list of float
         One total episode reward per batch.
-    render_list : list
-        Rendered frames, empty unless the environment has a render_mode.
+    record : dict or None
+        For record_window, numpy arrays and scalars (all savable with np.savez):
+
+        time            (T,)          seconds, every simulated row of the window
+        states          (T, n_nodes)  predicted node temperatures: latent (wall) nodes
+                                      first, then one column per room
+        measured_time   (M,)          seconds, the window's data rows
+        measured        (M, n_rooms)  measured room temperatures
+        outdoor         (T,)          outdoor temperature at ``time``
+        action          (S,)          action held over each step (1 = cooling on)
+        action_start    (S,)          seconds, start of each step
+        action_end      (S,)          seconds, end of each step
+        step_reward     (S,)          reward of each step
+        room_names, room_area, cool_w, gain_w   (n_rooms,)  per room; loads in W
+        cool_w_m2, gain_w_m2                    (n_rooms,)  loads in W/m2
+        param_names, param_values               the physical RC parameters
+        window_index, window_reward             scalars
     """
 
     base_env = env.unwrapped  # Env is likely wrapped.
@@ -67,13 +89,12 @@ def evaluate(env, rl_algorithm, dataloader):
     base_env.update_from_config({"dataloader": dataloader})
 
     reward_list = []
-    render_list = []
+    record = None
     try:
         with torch.no_grad():
             for i in range(len(dataloader)):
-                if base_env.render_mode == "single_epoch_rgb_array":
-                    # Only render on the last episode.
-                    base_env.recording = (i + 1) % len(dataloader) == 0
+                recording = i == record_window
+                steps = []
                 terminated = False
                 truncated = False
                 episode_reward = 0
@@ -84,32 +105,50 @@ def evaluate(env, rl_algorithm, dataloader):
                     # the policy's action distribution, so scoring the same trial twice
                     # gives two different numbers and PBT selects on sampling luck.
                     action = rl_algorithm.compute_single_action(obs, explore=False)
+                    step_start = base_env.observation[-1, 0].item()
                     obs, reward, terminated, truncated, _info = env.step(action)
                     episode_reward += reward
+                    if recording:
+                        # The base env's observation is the raw (unnormalised) trajectory of
+                        # this step, without the row it shares with the previous step.
+                        steps.append((int(action), step_start, reward, base_env.observation.clone()))
 
                 reward_list.append(episode_reward)
-                render_list.append(env.render())
+                if recording:
+                    record = _build_record(base_env, steps, i, episode_reward)
     finally:
         base_env.update_from_config({"dataloader": original_dataloader})
 
-    return reward_list, remove_none(render_list)
+    return reward_list, record
 
 
-def remove_none(nested_list):
-    """
-    Flatten a nested list and remove all occurrences of None values.
+def _build_record(base_env, steps, window_index, window_reward):
+    """Assemble the record described in evaluate() from one recorded episode."""
+    model = base_env.RC
+    trajectory = torch.cat([observation for *_, observation in steps]).to(torch.float64)
+    time = trajectory[:, 0].contiguous()  # the Tout interpolator warns on a strided column
 
-    Args:
-        nested_list (list): The nested list to flatten and remove None values from.
+    params, loads = model.get_physical_paramaters()
+    rooms = model.building.rooms
 
-    Returns:
-        list: A flattened list with all None values removed.
-    """
-    flattened = []
-    if isinstance(nested_list, list):
-        for item in nested_list:
-            if isinstance(item, list):
-                flattened.extend(remove_none(item))
-            elif item is not None:
-                flattened.append(item)
-    return flattened
+    return {
+        "time": time.numpy(),
+        "states": trajectory[:, 1:].numpy(),
+        "measured_time": base_env.time_data.to(torch.float64).numpy(),
+        "measured": base_env.temp_data[:, : base_env.n_rooms].numpy(),
+        "outdoor": torch.as_tensor(model.Tout_continuous(time)).flatten().to(torch.float64).numpy(),
+        "action": np.array([action for action, *_ in steps], dtype=np.int64),
+        "action_start": np.array([start for _, start, *_ in steps], dtype=np.float64),
+        "action_end": np.array([observation[-1, 0].item() for *_, observation in steps], dtype=np.float64),
+        "step_reward": np.array([reward for _, _, reward, _ in steps], dtype=np.float64),
+        "room_names": np.array([room.name for room in rooms]),
+        "room_area": np.array([room.area for room in rooms], dtype=np.float64),
+        "cool_w_m2": loads[0].numpy().astype(np.float64),
+        "gain_w_m2": loads[1].numpy().astype(np.float64),
+        "cool_w": model.building.proportional_heating(loads[0]).numpy().astype(np.float64),
+        "gain_w": model.building.proportional_heating(loads[1]).numpy().astype(np.float64),
+        "param_names": np.array(PARAM_KEYS),
+        "param_values": params.flatten().numpy().astype(np.float64),
+        "window_index": window_index,
+        "window_reward": float(window_reward),
+    }

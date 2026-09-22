@@ -30,6 +30,7 @@ included. test_checkpoint_does_not_carry_rc_params pins the invariant down.
 import copy
 import logging
 import pickle
+import time
 from pathlib import Path
 
 import numpy as np
@@ -242,6 +243,16 @@ class RCPolicyTrainable(tune.Trainable):
                                disables the filter.
     evaluation_interval      : run the evaluation every N iterations (default 1).
     ppo                      : dict of PPO settings, see _build_algorithm().
+    model_record_dir         : directory or None (default). When set, every evaluation also
+                               saves one evaluation window's full trajectory to
+                               <model_record_dir>/<trial_id>/<time_ns>.npz - see
+                               evaluate() for the contents and rcmodel.tools.plotting to draw
+                               it. Records are taken here, where the parameters and the
+                               policy weights that produced them are both in hand; a
+                               checkpoint holds only the weights, so a model cannot be
+                               reliably reassembled from checkpoints after the run.
+    model_record_window      : index of the evaluation window to record (default 0). The same
+                               window every time, so records compare across trials and time.
 
     The plausibility filter
     -----------------------
@@ -263,6 +274,7 @@ class RCPolicyTrainable(tune.Trainable):
 
         self.evaluation_interval = config.get("evaluation_interval", 1)
         self.eval_dataloader = self._make_eval_dataloader(config)
+        self._read_record_settings(config)
 
         self._apply_parameters(config)
 
@@ -283,6 +295,20 @@ class RCPolicyTrainable(tune.Trainable):
             return None
         _, eval_dataloader = rcmodel.tools.make_dataloaders(data_config)
         return eval_dataloader
+
+    def _read_record_settings(self, config):
+        self.model_record_dir = config.get("model_record_dir")
+        self.model_record_window = config.get("model_record_window", 0)
+        if self.model_record_dir is None:
+            return
+        if self.eval_dataloader is None:
+            raise ValueError("model_record_dir is set but there is no evaluation split to record from.")
+        n_windows = len(self.eval_dataloader)
+        if not 0 <= self.model_record_window < n_windows:
+            raise ValueError(
+                f"model_record_window={self.model_record_window} is out of range: the evaluation "
+                f"split has {n_windows} window(s)."
+            )
 
     # ---------------------------------------------------------------- parameters
 
@@ -328,7 +354,6 @@ class RCPolicyTrainable(tune.Trainable):
             # swaps the loader in anyway, but starting on it means that swap is a no-op
             # rather than a second solve of iv_array over a dataset we never use.
             eval_env_config = dict(env_config)
-            eval_env_config["render_mode"] = None
             eval_env_config["dataloader"] = self.eval_dataloader
             self.eval_env = rcmodel.tools.env_creator(eval_env_config)
 
@@ -376,8 +401,11 @@ class RCPolicyTrainable(tune.Trainable):
         train_return = _episode_return_mean(results)
 
         if self.eval_env is not None and (self.iteration + 1) % self.evaluation_interval == 0:
-            reward_list, _ = evaluate(self.eval_env, self.algo, self.eval_dataloader)
+            record_window = self.model_record_window if self.model_record_dir is not None else None
+            reward_list, record = evaluate(self.eval_env, self.algo, self.eval_dataloader, record_window=record_window)
             self._last_eval_return = float(np.mean(reward_list)) if reward_list else None
+            if record is not None:
+                self._save_record(record)
 
         # PBT needs METRIC present on EVERY result, so carry the last evaluation forward on
         # iterations that didn't run one. Falling back to the train return keeps the very
@@ -392,6 +420,26 @@ class RCPolicyTrainable(tune.Trainable):
             "slowest_tau_days": self.tau_days,
             "implausible": False,
         }
+
+    def _save_record(self, record):
+        """Write an evaluation record, tagged with what produced it.
+
+        Named by wall-clock time rather than training_iteration, which Ray rewinds when a
+        trial is exploited.
+        """
+        timestamp_ns = time.time_ns()
+        record = dict(record)
+        record.update(
+            {
+                "trial_id": self.trial_id,
+                "timestamp": timestamp_ns / 1e9,
+                "training_iteration": self.iteration + 1,
+                "score": self._last_eval_return,  # this evaluation's METRIC
+            }
+        )
+        path = Path(self.model_record_dir) / self.trial_id / f"{timestamp_ns}.npz"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        rcmodel.tools.save_model_record(path, record)
 
     # ---------------------------------------------------------------- checkpointing
 
@@ -432,6 +480,7 @@ class RCPolicyTrainable(tune.Trainable):
         parameters first, then the weights that come with them.
         """
         self.evaluation_interval = new_config.get("evaluation_interval", self.evaluation_interval)
+        self._read_record_settings(new_config)
         self._apply_parameters(new_config)
         self._last_eval_return = None  # the old score belonged to the old parameters
 
@@ -500,6 +549,8 @@ def build_tuner(
     log_uniform=True,
     storage_path=None,
     checkpoint_config=None,
+    model_record_dir=None,
+    model_record_window=0,
 ):
     """
     Assemble a Tuner running RCPolicyTrainable under PBT.
@@ -520,6 +571,8 @@ def build_tuner(
     starts on an implausible draw. The threshold still applies to the trials themselves:
     a PBT perturbation that lands on an implausible set is sidelined with
     IMPLAUSIBLE_PENALTY as before.
+
+    model_record_dir / model_record_window: see RCPolicyTrainable. Off by default.
     """
     if eval_dataloader is None and not env_config.get("data_config"):
         raise ValueError(
@@ -538,6 +591,8 @@ def build_tuner(
             "max_time_constant_days": max_time_constant_days,
             "evaluation_interval": evaluation_interval,
             "ppo": ppo or {},
+            "model_record_dir": None if model_record_dir is None else str(model_record_dir),
+            "model_record_window": model_record_window,
         }
     )
 

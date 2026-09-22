@@ -1,5 +1,5 @@
 from .environment import LSIEnv, PreprocessEnv, preprocess_observation
-from .evaluation import evaluate, make_update_env_fn, remove_none
+from .evaluation import evaluate, make_update_env_fn
 from .pbt import (
     METRIC,
     MODE,
@@ -28,7 +28,6 @@ __all__ = [
     "make_update_env_fn",
     "physical_to_scaled",
     "preprocess_observation",
-    "remove_none",
     "sample_plausible_population",
     "search_space",
     "slowest_time_constant_days",
