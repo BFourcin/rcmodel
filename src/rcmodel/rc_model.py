@@ -9,9 +9,13 @@ from xitorch.interpolate import Interp1D
 
 # Single source of truth for the names and ORDER of the model's free parameters.
 # PARAM_KEYS must match Building.categorise_theta(); LOAD_KEYS must match the row
-# order of InputScaling.physical_loads_scaling() (row 0 cool, row 1 gain).
+# order of InputScaling.energy_param_range (row 0 cool, row 1 gain, row 2 solar).
+#   cool  - cooling limit, W/m2 of floor area, switched by the action.
+#   gain  - constant heat gain, W/m2 of floor area.
+#   solar - dimensionless fraction p of global horizontal irradiance reaching the room:
+#           solar gain (W) = p * GHI(t) (W/m2) * floor area (m2).
 PARAM_KEYS = ("C_rm", "C1", "C2", "R1", "R2", "R3", "Rin")
-LOAD_KEYS = ("cool", "gain")
+LOAD_KEYS = ("cool", "gain", "solar")
 RC_PARAM_KEYS = PARAM_KEYS + LOAD_KEYS
 
 
@@ -28,15 +32,15 @@ def scaled_params_to_tensors(values, n_rooms):
         use pbt.physical_to_scaled to get there. Values outside [0, 1] are allowed: they
         are physical values outside the configured range, which a PBT perturbation
         legitimately produces. RCModel.set_parameters() checks the physical values are
-        valid. "cool" and "gain" accept either a single value used for every room, or one
-        value per room.
+        valid. The LOAD_KEYS ("cool", "gain", "solar") accept either a single value used for
+        every room, or one value per room.
     n_rooms : int
         Number of rooms in the building.
 
     Returns
     -------
     (params, loads) : (torch.Tensor, torch.Tensor)
-        Shapes (len(PARAM_KEYS),) and (2, n_rooms).
+        Shapes (len(PARAM_KEYS),) and (len(LOAD_KEYS), n_rooms).
     """
     missing = [key for key in RC_PARAM_KEYS if key not in values]
     if missing:
@@ -71,6 +75,8 @@ class RCModel(nn.Module):
     """
     3R2C thermal model of a building.
 
+    Each room's heat input is Q(t) = floor area * (gain - cool * action + solar * GHI(t)), in W.
+
     scaling - Class containing methods to scale inputs from 0-1 back to their usual values and back again.
     transform - optional function applied to parameters before scaling, e.g. sigmoid. Leave as None
         (the default) to hold parameters directly in 0-1 machine space, which is what the PBT search
@@ -83,9 +89,13 @@ class RCModel(nn.Module):
 
     Runs using forward method should be sequential as the output is used as the initial condition for the next run,
     unless manually reset using self.iv
+
+    ghi_continuous - optional callable (normally an Interp1D) giving global horizontal irradiance in W/m2 at
+        absolute (unix epoch) times, like Tout_continuous. None means no solar data: GHI is taken as zero, so
+        the solar parameter has no effect.
     """
 
-    def __init__(self, building, scaling, Tout_continuous, transform=None, cooling_policy=None):
+    def __init__(self, building, scaling, Tout_continuous, transform=None, cooling_policy=None, ghi_continuous=None):
 
         super().__init__()
         self.building = building
@@ -94,6 +104,7 @@ class RCModel(nn.Module):
         self.scaling = scaling  # InputScaling class (helper class to go between machine (0-1) and physical values)
 
         self.Tout_continuous = Tout_continuous  # Interp1D object
+        self.ghi_continuous = ghi_continuous  # Interp1D object, or None for no solar data
 
         self.cooling_policy = cooling_policy  # Kept for plotting; the action comes from the environment.
         self.action = 0  # initialise cooling action
@@ -106,6 +117,7 @@ class RCModel(nn.Module):
         self.record_action = None  # records Q and t during integration
         self.cool_load = None  # cooling in Watts/m2
         self.gain_load = None  # gain in Watts/m2
+        self.solar_load = None  # solar fraction p of GHI (dimensionless)
         self.t0 = None  # unix epoch start time in seconds
         self.A = None  # System Matrix
         self.B = None  # Input Matrix
@@ -145,8 +157,8 @@ class RCModel(nn.Module):
         Values outside the configured [min, max] ranges are run as given, not clipped, so
         the model runs exactly what the caller asked for. What is enforced is physical
         validity, whatever the entry path: every capacitance and resistance must be
-        strictly positive (A is built from 1/(R*C)), and the cooling and gain limits must
-        not be negative (a negative limit would reverse the direction of the load).
+        strictly positive (A is built from 1/(R*C)), and the cooling, gain and solar loads
+        must not be negative (a negative load would reverse its direction).
 
         Parameters
         ----------
@@ -258,27 +270,45 @@ class RCModel(nn.Module):
         """
         Build the input vector u = [Tout, Q_rm1, ... Q_rmn] at every point in t_eval.
 
-        Q is constant across the call (the action is held constant), so only Tout varies.
-        Crucially Tout is fetched for the whole window in ONE batched interpolation call
-        rather than once per solver sub-step, which is where most of the old cost went.
+        The action is held constant across the call, so the cooling and gain part of Q is
+        constant; the solar part follows GHI(t). Crucially Tout and GHI are each fetched for
+        the whole window in ONE batched interpolation call rather than once per solver
+        sub-step, which is where most of the old cost went.
 
         Returns a (len(t_eval), n_rooms + 1) float64 array, matching Building.input_vector()'s
         ordering.
         """
-        # Get energy input, constant for the whole call:
-        Q_area = -self.cool_load * self.action  # W/m2
-        Q_area = Q_area + self.gain_load  # add the constant gain term
-        Q_watts = self.building.proportional_heating(Q_area)
-
-        tout = self.Tout_continuous(t_eval)
-        tout = torch.as_tensor(tout).flatten().to(torch.float64)
-        if tout.numel() == 1:  # a constant-temperature callable may return a scalar
-            tout = tout.repeat(len(t_eval))
-
         u = np.empty((len(t_eval), len(self.building.rooms) + 1), dtype=np.float64)
-        u[:, 0] = tout.detach().numpy()
-        u[:, 1:] = Q_watts.detach().to(torch.float64).numpy()
+        u[:, 0] = _sample(self.Tout_continuous, t_eval)
+        u[:, 1:] = self._heat_input_watts(t_eval, self.action)
         return u
+
+    def _heat_input_watts(self, t, action):
+        """
+        Heat input into each room, in W, at every time in t: floor area * (gain - cool *
+        action + solar * GHI(t)). Returns a (len(t), n_rooms) float64 array.
+        """
+        area = np.array([room.area for room in self.building.rooms], dtype=np.float64)
+        constant = (self.gain_load - self.cool_load * action).detach().to(torch.float64).numpy()
+        q_area = np.broadcast_to(constant, (len(t), len(area))).copy()  # W/m2
+
+        solar = self.solar_load
+        if solar is not None:
+            solar = solar.detach().to(torch.float64).numpy()
+            if np.any(solar != 0):
+                q_area += self.ghi(t)[:, None] * solar[None, :]
+
+        return q_area * area[None, :]
+
+    def ghi(self, t):
+        """Global horizontal irradiance (W/m2) at absolute times t, as a float64 array.
+
+        Zeros if the model was built without solar data.
+        """
+        ghi_continuous = getattr(self, "ghi_continuous", None)  # absent on models pickled before solar
+        if ghi_continuous is None:
+            return np.zeros(len(t), dtype=np.float64)
+        return _sample(ghi_continuous, t)
 
     def _forward_odeint(self, t_eval, action=0):
         """
@@ -305,11 +335,11 @@ class RCModel(nn.Module):
         Only used by _forward_odeint().
         """
         # Get energy input at timestep:
-        Q_area = -self.cool_load * self.action  # W/m2
-        Q_area = Q_area + self.gain_load  # add the constant gain term
-        Q_watts = self.building.proportional_heating(Q_area)
+        t_abs = t.item() + self.t0
+        t_query = torch.as_tensor(t_abs, dtype=torch.float64).reshape(1)
+        Q_watts = torch.tensor(self._heat_input_watts(t_query, self.action)[0], dtype=torch.float32)
 
-        Tout = self.Tout_continuous(t.item() + self.t0)
+        Tout = self.Tout_continuous(t_abs)
 
         u = self.building.input_vector(Tout, Q_watts)
 
@@ -333,8 +363,9 @@ class RCModel(nn.Module):
         """
         _, loads = self.get_physical_paramaters()
 
-        self.cool_load = loads[0, :]
-        self.gain_load = loads[1, :]
+        self.cool_load = loads[LOAD_KEYS.index("cool"), :]
+        self.gain_load = loads[LOAD_KEYS.index("gain"), :]
+        self.solar_load = loads[LOAD_KEYS.index("solar"), :]
 
     def initialise_parameters(self):
         """Initialise params and loads with random values in 0-1 machine space.
@@ -343,7 +374,7 @@ class RCModel(nn.Module):
         model built without an explicit parameter set.
         """
         params = torch.rand(self.building.n_params, dtype=torch.float32)
-        loads = torch.rand((2, len(self.building.rooms)), dtype=torch.float32)
+        loads = torch.rand((len(LOAD_KEYS), len(self.building.rooms)), dtype=torch.float32)
 
         # enables spread of initial parameters. Otherwise, sigmoid(rand) tends towards 0.5.
         if self.transform == torch.sigmoid:
@@ -433,6 +464,17 @@ class RCModel(nn.Module):
 
 
 _UNIFORM_DT_TOL = 1e-6
+
+
+def _sample(continuous, t):
+    """Evaluate a weather callable (Interp1D or plain function) at t as a flat float64 array.
+
+    A constant callable may return a scalar; it is broadcast to len(t).
+    """
+    values = torch.as_tensor(continuous(t)).flatten().to(torch.float64)
+    if values.numel() == 1:
+        values = values.repeat(len(t))
+    return values.detach().numpy()
 
 
 def _foh_discretize(A, B, dt):
@@ -525,10 +567,12 @@ def _integrate_states(A, B, t, u, x0, disc_cache=None):
     environment step. It is keyed by dt.
 
     Note on exactness: the FOH assumption is that u is linear BETWEEN consecutive points of
-    `t`. Q is constant, so that only constrains Tout - it holds whenever the data grid is at
-    least as fine as the weather grid it is interpolated from (30s indoor data vs hourly
-    weather, say). If the weather series were finer than `t`, a step could span a kink in Tout
-    and this would become an approximation rather than an identity.
+    `t`. The cooling and gain part of Q is constant, so that only constrains Tout and GHI (the
+    solar part of Q is proportional to GHI) - it holds whenever the data grid is at least as
+    fine as the weather grids they are interpolated from (30s indoor data vs hourly
+    temperature and 15-minute irradiance, say). If a weather series were finer than `t`, a
+    step could span a kink in it and this would become an approximation rather than an
+    identity.
     """
     if len(t) < 2:
         return np.repeat(np.asarray(x0, dtype=np.float64)[None, :], len(t), axis=0)

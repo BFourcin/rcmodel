@@ -1,6 +1,7 @@
+import functools
 import os
+import warnings
 
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import torch
@@ -9,7 +10,7 @@ from xitorch.interpolate import Interp1D
 
 import rcmodel.optimisation
 from rcmodel.physical import Building, InputScaling, Room
-from rcmodel.rc_model import RC_PARAM_KEYS, RCModel
+from rcmodel.rc_model import LOAD_KEYS, RC_PARAM_KEYS, RCModel
 
 from .rcmodel_dataset import BuildingTemperatureDataset, InfiniteSampler, RandomSampleDataset
 
@@ -18,6 +19,90 @@ from .rcmodel_dataset import BuildingTemperatureDataset, InfiniteSampler, Random
 # the library. They should really be computed from the training split - see make_dataloaders.
 DEFAULT_OBSERVATION_MU = 23.359
 DEFAULT_OBSERVATION_STD_DEV = 1.41
+
+# Column layout of a weather CSV, see write_weather_csv().
+WEATHER_COLUMNS = ("time", "outdoor_temperature", "ghi")
+
+
+def write_weather_csv(path, time, outdoor_temperature, ghi=None):
+    """
+    Write a weather series in the layout model_creator reads through model_config["weather_csv"].
+
+    Columns: time (unix epoch seconds, UTC), outdoor_temperature (degC), ghi (global horizontal
+    irradiance, W/m2). ghi may be left out, in which case the column is written as zeros and the
+    model's solar parameter has no effect.
+
+    Keeping the weather in a file and putting only its path in the config is deliberate: a PBT
+    trial's config is copied into every result row, checkpoint record and PBT log line, and a
+    few weeks of weather held inline made each result row ~0.6 MB.
+
+    Returns the path.
+    """
+    time = np.asarray(time, dtype=np.float64)
+    outdoor_temperature = np.asarray(outdoor_temperature, dtype=np.float64)
+    ghi = np.zeros_like(time) if ghi is None else np.asarray(ghi, dtype=np.float64)
+    _check_weather(time, outdoor_temperature, ghi)
+    pd.DataFrame({"time": time, "outdoor_temperature": outdoor_temperature, "ghi": ghi}).to_csv(path, index=False)
+    return path
+
+
+def load_weather_csv(path):
+    """
+    Read a weather CSV written by write_weather_csv().
+
+    Returns a dict of float64 arrays: "time", "outdoor_temperature", "ghi". Cached on the file's
+    path and modification time, since every trial and every plausibility check builds a model
+    from the same file.
+    """
+    path = os.path.abspath(str(path))
+    return _load_weather_csv_cached(path, os.path.getmtime(path))
+
+
+@functools.lru_cache(maxsize=8)
+def _load_weather_csv_cached(path, mtime):
+    df = pd.read_csv(path)
+    missing = [col for col in WEATHER_COLUMNS if col not in df.columns]
+    if missing:
+        raise ValueError(f"Weather CSV {path} is missing columns {missing}; expected {list(WEATHER_COLUMNS)}.")
+    weather = {col: df[col].to_numpy(dtype=np.float64) for col in WEATHER_COLUMNS}
+    _check_weather(weather["time"], weather["outdoor_temperature"], weather["ghi"])
+    for array in weather.values():
+        array.setflags(write=False)  # shared through the cache - nobody may modify it
+    return weather
+
+
+def _check_weather(time, outdoor_temperature, ghi):
+    lengths = {"time": len(time), "outdoor_temperature": len(outdoor_temperature), "ghi": len(ghi)}
+    if len(set(lengths.values())) != 1:
+        raise ValueError(f"Weather series lengths differ: {lengths}")
+    for name, values in (("time", time), ("outdoor_temperature", outdoor_temperature), ("ghi", ghi)):
+        if not np.all(np.isfinite(values)):
+            raise ValueError(f"Weather series '{name}' contains NaN or inf.")
+    if np.any(np.diff(time) <= 0):
+        raise ValueError("Weather times must be strictly increasing.")
+    if np.any(ghi < 0):
+        raise ValueError(f"GHI must be >= 0 W/m2, got a minimum of {ghi.min():g}.")
+
+
+def _weather_from_config(model_config):
+    """(time, outdoor_temperature, ghi or None) from either a weather CSV or inline arrays."""
+    if model_config.get("weather_csv"):
+        weather = load_weather_csv(model_config["weather_csv"])
+        return weather["time"], weather["outdoor_temperature"], weather["ghi"]
+
+    time = np.asarray(model_config["weather_data_UTC_time"], dtype=np.float64)
+    outdoor_temperature = np.asarray(model_config["weather_data_outdoor_temperature"], dtype=np.float64)
+    ghi = model_config.get("weather_data_ghi")
+    if ghi is None:
+        warnings.warn(
+            "model_config has no solar data (weather_csv or weather_data_ghi) - GHI is taken as zero, "
+            "so the 'solar' parameter has no effect.",
+            stacklevel=3,
+        )
+    else:
+        ghi = np.asarray(ghi, dtype=np.float64)
+    _check_weather(time, outdoor_temperature, np.zeros_like(time) if ghi is None else ghi)
+    return time, outdoor_temperature, ghi
 
 
 def model_creator(model_config):
@@ -33,14 +118,19 @@ def model_creator(model_config):
         "Rin": [0.1, 5],
         "cool": [0, 50],  # Cooling limit in W/m2
         "gain": [0, 5],  # Gain limit in W/m2
+        "solar": [0, 0.2],  # Fraction p of GHI reaching the room: solar gain = p * GHI * floor area
         "room_names": ["seminar_rm_a_t0106"],
         # Room polygons in METRES. Shifted to a common origin by change_origin(); the enclosed
         # area scales C_rm and converts cool/gain from W/m2 to W.
         "room_coordinates": [[[9.207, 12.594], [9.207, 23.174], [12.900, 23.174], [15.445, 23.174],
                               [17.264, 23.174], [17.264, 12.594]]],
         "room_height": 1,  # metres, optional. Sets external wall area (perimeter * height).
+        # Weather, either as a file (preferred - see write_weather_csv):
+        "weather_csv": "path/to/weather.csv",  # columns time, outdoor_temperature, ghi
+        # or inline, all on one time grid (ghi optional - zero if left out):
         "weather_data_outdoor_temperature": DataFrame or Array like,
         "weather_data_UTC_time": DataFrame or Array like,
+        "weather_data_ghi": DataFrame or Array like,  # W/m2
         "cooling_policy": None,
         "load_model_path_policy": None,  # './prior_policy.pt',  # or None
         "load_model_path_physical": None,  # or None
@@ -54,6 +144,7 @@ def model_creator(model_config):
             "Rin": np.random.rand(1),
             "cool": np.random.rand(len(room_coordinates)),  # one per room, or a single value for all
             "gain": np.random.rand(len(room_coordinates)),
+            "solar": np.random.rand(len(room_coordinates)),
         }
     }
     """
@@ -61,28 +152,31 @@ def model_creator(model_config):
     range_keys = RC_PARAM_KEYS
 
     def init_scaling():
-        # Initialise scaling class
-        C_rm = model_config["C_rm"]  # [min, max] Capacitance/m2
-        C1 = model_config["C1"]  # Capacitance
-        C2 = model_config["C2"]
-        R1 = model_config["R1"]  # Resistance ((K.m^2)/W)
-        R2 = model_config["R2"]
-        R3 = model_config["R3"]
-        Rin = model_config["Rin"]
-        cool = model_config["cool"]  # Cooling limit per room in W/m2
-        gain = model_config["gain"]  # Gain limit per room in W/m2
-
-        scaling = InputScaling(C_rm, C1, C2, R1, R2, R3, Rin, cool, gain)
-        return scaling
+        # Initialise scaling class. Ranges are [min, max]: C_rm in J/K per m2 of floor, C1/C2 in
+        # J/K, R1/R2/R3/Rin in K.m2/W, cool/gain in W/m2 of floor, solar a dimensionless fraction.
+        return InputScaling(*(model_config[key] for key in range_keys))
 
     def model_sanity_checks():
         """Check the config is self-consistent before anything is built."""
-        n_weather = len(model_config["weather_data_outdoor_temperature"])
-        n_time = len(model_config["weather_data_UTC_time"])
-        assert n_weather == n_time, (
-            f"Weather data length mismatch: 'weather_data_outdoor_temperature' has {n_weather} points, "
-            f"'weather_data_UTC_time' has {n_time}."
+        missing_ranges = [key for key in range_keys if key not in model_config]
+        assert not missing_ranges, (
+            f"model_config is missing ranges for {missing_ranges}. Every one of {list(range_keys)} needs a "
+            f"[min, max] - 'solar' is the fraction of GHI reaching the room, e.g. [0, 0.2]."
         )
+
+        has_csv = bool(model_config.get("weather_csv"))
+        has_arrays = model_config.get("weather_data_outdoor_temperature") is not None
+        assert has_csv or has_arrays, (
+            "model_config needs weather: 'weather_csv' (see write_weather_csv) or "
+            "'weather_data_outdoor_temperature' + 'weather_data_UTC_time'."
+        )
+        if not has_csv:
+            n_weather = len(model_config["weather_data_outdoor_temperature"])
+            n_time = len(model_config["weather_data_UTC_time"])
+            assert n_weather == n_time, (
+                f"Weather data length mismatch: 'weather_data_outdoor_temperature' has {n_weather} points, "
+                f"'weather_data_UTC_time' has {n_time}."
+            )
 
         n_names = len(model_config["room_names"])
         n_rooms = len(model_config["room_coordinates"])
@@ -104,16 +198,18 @@ def model_creator(model_config):
 
     pi = model_config.get("cooling_policy")
     scaling = init_scaling()
+    weather_time, outdoor_temperature, ghi = _weather_from_config(model_config)
 
     # Initialise RCModel with the building
     model = initialise_model(
         pi,
         scaling,
-        model_config["weather_data_outdoor_temperature"],
-        model_config["weather_data_UTC_time"],
+        outdoor_temperature,
+        weather_time,
         model_config["room_names"],
         model_config["room_coordinates"],
         model_config.get("room_height", 1),
+        weather_data_ghi=ghi,
     )
 
     # NOTE: the old "load_model_path_policy" branch has been removed. RCModel.load is a
@@ -134,6 +230,11 @@ def model_creator(model_config):
         loaded_params = loaded.transform(loaded.params) if loaded.transform else loaded.params
         loaded_loads = loaded.transform(loaded.loads) if loaded.transform else loaded.loads
 
+        # A model pickled before the solar term has only cool and gain rows. Its solar is zero.
+        if loaded_loads.shape[0] < len(LOAD_KEYS):
+            padding = torch.zeros((len(LOAD_KEYS) - loaded_loads.shape[0], loaded_loads.shape[1]))
+            loaded_loads = torch.cat([loaded_loads.detach(), padding])
+
         model.params = torch.nn.Parameter(loaded_params.detach().clone(), requires_grad=False)
         model.loads = torch.nn.Parameter(loaded_loads.detach().clone(), requires_grad=False)
         del loaded
@@ -146,7 +247,7 @@ def model_creator(model_config):
         # no gradient descent any more, and logit(0)/logit(1) are -/+inf, which a search
         # that can land on a range endpoint would hit. set_parameters() checks the values
         # are physically valid (not that they sit inside the configured range) and handles
-        # the per-room broadcasting of cool/gain.
+        # the per-room broadcasting of the loads.
         model.set_parameters(model_config["parameters"])
 
     return model
@@ -320,7 +421,15 @@ def initialise_model(
     room_names,
     room_coordinates,
     room_height=1,
+    weather_data_ghi=None,
 ):
+    """
+    Build an RCModel for the given rooms and weather.
+
+    The weather series are wrapped in linear interpolators over weather_data_UTC_time (unix
+    epoch seconds). weather_data_ghi, global horizontal irradiance in W/m2 on the same time grid,
+    is optional; without it the model's solar input is zero.
+    """
     room_coordinates = change_origin(room_coordinates)
 
     rooms = []
@@ -332,16 +441,22 @@ def initialise_model(
     # the real wall area, and R1/R2/R3 absorb the difference.
     bld = Building(rooms, room_height)
 
-    Tout = torch.tensor(weather_data_outdoor_temperature)
-    t = torch.tensor(weather_data_UTC_time)
+    t = torch.tensor(np.asarray(weather_data_UTC_time, dtype=np.float64))
+    Tout = torch.tensor(np.asarray(weather_data_outdoor_temperature, dtype=np.float64))
     Tout_continuous = Interp1D(t, Tout, method="linear")  # Interp1D object
+
+    ghi_continuous = None
+    if weather_data_ghi is not None:
+        ghi_continuous = Interp1D(t, torch.tensor(np.asarray(weather_data_ghi, dtype=np.float64)), method="linear")
 
     # Initialise RCModel with the building.
     # transform=None: parameters are held directly in 0-1 machine space. The sigmoid
     # parameterisation existed to keep gradient descent on unbounded parameters well
     # behaved; the search supplies bounded parameters directly, so it would only obscure
     # what a perturbation actually does.
-    model = RCModel(bld, scaling, Tout_continuous, transform=None, cooling_policy=cooling_policy)
+    model = RCModel(
+        bld, scaling, Tout_continuous, transform=None, cooling_policy=cooling_policy, ghi_continuous=ghi_continuous
+    )
 
     return model
 
@@ -534,6 +649,8 @@ def policy_image(algo, n=100, path=None):
     :param algo: ray RRLIB algo
 
     """
+    import matplotlib.pyplot as plt
+
     import rcmodel
 
     bounds = [15, 30]

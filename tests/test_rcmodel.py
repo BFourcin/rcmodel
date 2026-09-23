@@ -83,7 +83,9 @@ def test_save_load(model_n9):
 
     original_params = torch.tensor([rm_cap, ex_cap[0], ex_cap[1], ex_r[0], ex_r[1], ex_r[2], wl_r])
 
-    original_loads = 3000 * torch.rand(2, len(model.building.rooms))
+    n_rooms = len(model.building.rooms)
+    # cool and gain rows span their [0, 5000] W/m2 ranges; the solar row its default [0, 1].
+    original_loads = torch.cat([3000 * torch.rand(2, n_rooms), torch.rand(1, n_rooms)])
 
     model.params = torch.nn.Parameter(model.scaling.model_param_scaling(original_params), requires_grad=False)
     model.loads = torch.nn.Parameter(model.scaling.model_loads_scaling(original_loads), requires_grad=False)
@@ -130,7 +132,7 @@ def test_get_iv_array_converges_to_steady_state(get_model_config, fake_rooms, fa
     model_config = get_model_config
     fake_room_names, _ = fake_rooms
     model_config["parameters"] = dict.fromkeys(
-        ["C_rm", "C1", "C2", "R1", "R2", "R3", "Rin", "cool", "gain"], 0.0
+        RC_PARAM_KEYS, 0.0
     )  # scaled 0-1: minimum of every range -> smallest R*C -> fastest time constant
 
     dt = 30
@@ -141,6 +143,7 @@ def test_get_iv_array_converges_to_steady_state(get_model_config, fake_rooms, fa
 
     model_config["weather_data_outdoor_temperature"] = np.full(n_rows, tout)
     model_config["weather_data_UTC_time"] = t
+    model_config["weather_data_ghi"] = np.zeros(n_rows)
 
     indoor_temps = tin + np.random.default_rng(3).uniform(-1e-3, 1e-3, size=(n_rows, len(fake_room_names)))
     df = pd.DataFrame(indoor_temps, columns=fake_room_names)
@@ -325,6 +328,87 @@ def test_forward_responds_to_action(get_model_config, fake_time):
     cooling_on = model(t_eval, action=1).squeeze()
 
     assert (cooling_on[-1, 2:] < cooling_off[-1, 2:]).all()
+
+
+def _run(model, t_eval, action=0, start=24.0):
+    model.iv = start * torch.ones(2 + len(model.building.rooms))
+    return model(t_eval, action=action).squeeze()
+
+
+def test_forward_matches_odeint_with_solar(get_model_config, fake_time):
+    """With a time-varying GHI the heat input is no longer constant across a step, so this is
+    the case that checks forward()'s first-order hold on Q against the rk4 reference, which
+    queries GHI at every solver sub-step. The window is the start of the synthetic day, where
+    GHI rises fastest, and solar is at the top of its range so it dominates the heat input."""
+    mid = dict.fromkeys(RC_PARAM_KEYS, 0.5)
+    mid["solar"] = 1.0
+    model = _model_with_parameters(get_model_config, **mid)
+    t_eval = torch.tensor(fake_time[:31], dtype=torch.float64)
+
+    ghi = model.ghi(t_eval)
+    assert ghi[-1] - ghi[0] > 50, "GHI barely changes over the window, so this would not test a varying input"
+
+    fast = _run(model, t_eval, action=1)
+    model.iv = 24 * torch.ones(2 + len(model.building.rooms))
+    reference = model._forward_odeint(t_eval, action=1).squeeze()
+
+    torch.testing.assert_close(fast, reference, rtol=8 * torch.finfo(torch.float32).eps, atol=0)
+
+    no_solar = _model_with_parameters(get_model_config, **{**mid, "solar": 0.0})
+    effect = (fast - _run(no_solar, t_eval, action=1)).abs().max().item()
+    assert effect > 1e-3, "solar made no visible difference, so the agreement above proves nothing about it"
+
+
+def test_zero_solar_is_the_same_as_no_solar_data(get_model_config, fake_time):
+    """p = 0 with GHI data, and any p without GHI data, must both give exactly the model as it
+    was before the solar term existed - a regression guard for every run without solar data."""
+    t_eval = torch.tensor(fake_time[:31], dtype=torch.float64)
+    zero_p = _model_with_parameters(get_model_config, cool=0.5, gain=0.5, solar=0.0)
+    no_data = _model_with_parameters(get_model_config, cool=0.5, gain=0.5, solar=1.0)
+    no_data.ghi_continuous = None
+
+    torch.testing.assert_close(_run(zero_p, t_eval, action=1), _run(no_data, t_eval, action=1), rtol=0, atol=0)
+
+
+def test_model_pickled_before_solar_still_runs(get_model_config, fake_time):
+    """Models pickled before the solar term have no ghi_continuous attribute at all."""
+    model = _model_with_parameters(get_model_config, gain=0.5)
+    del model.ghi_continuous
+    np.testing.assert_array_equal(model.ghi(torch.tensor(fake_time[:5], dtype=torch.float64)), np.zeros(5))
+    assert torch.isfinite(_run(model, torch.tensor(fake_time[:31], dtype=torch.float64))).all()
+
+
+def test_solar_gain_is_p_times_ghi_times_floor_area(get_model_config, fake_time):
+    """Pins the units: under a constant GHI of G W/m2, solar fraction p must heat the rooms
+    exactly as a constant gain of p * G W/m2 of floor area does."""
+    model_config = dict(get_model_config)
+    ghi_value = 40.0
+    model_config["weather_data_ghi"] = np.full(len(fake_time), ghi_value)
+
+    low, high = model_config["solar"]
+    p_scaled = 0.5
+    p = low + p_scaled * (high - low)
+    gain_low, gain_high = model_config["gain"]
+    gain_scaled = (p * ghi_value - gain_low) / (gain_high - gain_low)
+    assert 0 < gain_scaled < 1
+
+    t_eval = torch.tensor(fake_time[:121], dtype=torch.float64)
+    via_solar = _run(_model_with_parameters(model_config, solar=p_scaled), t_eval)
+    via_gain = _run(_model_with_parameters(model_config, gain=gain_scaled), t_eval)
+
+    assert (via_solar[-1, 2:] - via_solar[0, 2:]).abs().max() > 1e-3, "no heating to compare"
+    torch.testing.assert_close(via_solar, via_gain, rtol=1e-6, atol=1e-5)
+
+
+def test_solar_response_is_linear_in_p(get_model_config, fake_time):
+    """The system is linear, so the change solar makes must double when p doubles."""
+    t_eval = torch.tensor(fake_time[:121], dtype=torch.float64)
+    baseline = _run(_model_with_parameters(get_model_config, solar=0.0), t_eval).double()
+    single = _run(_model_with_parameters(get_model_config, solar=0.25), t_eval).double() - baseline
+    double = _run(_model_with_parameters(get_model_config, solar=0.5), t_eval).double() - baseline
+
+    assert single.abs().max() > 1e-2
+    torch.testing.assert_close(double, 2 * single, rtol=1e-3, atol=1e-4)
 
 
 def test_slowest_time_constant_orders_parameter_sets(get_model_config):

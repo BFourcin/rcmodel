@@ -28,6 +28,7 @@ included. test_checkpoint_does_not_carry_rc_params pins the invariant down.
 """
 
 import copy
+import json
 import logging
 import pickle
 import time
@@ -65,6 +66,67 @@ SECONDS_PER_DAY = 24 * 60**2
 #: because Tune's quantile bookkeeping has to be able to sort and average it.
 IMPLAUSIBLE_PENALTY = -1e9
 
+#: Every PPO training setting a trial's config["ppo"] may hold, with the value used when it is
+#: left out. These are RLlib 2.38's own old-API-stack defaults except train_batch_size and
+#: minibatch_size, which were set for this problem. Spelled out so a run script can show - and
+#: a reader can see - exactly what PPO was trained with. Keys go straight to
+#: PPOConfig.training(), except fcnet_hiddens, which goes to its model config.
+PPO_DEFAULTS = {
+    "lr": 5e-5,  # Adam learning rate. The key PBT can mutate - see build_tuner(ppo_mutations=...).
+    "train_batch_size": 256,  # env steps collected per training iteration.
+    "minibatch_size": 64,  # SGD minibatch drawn from that batch.
+    "num_epochs": 30,  # passes over the batch per iteration - 30 x (256/64) = 120 SGD steps.
+    "gamma": 0.99,  # discount; horizon ~ 1/(1-gamma) = 100 steps.
+    "lambda_": 1.0,  # GAE lambda. 1.0 = Monte Carlo returns: unbiased, high variance.
+    "clip_param": 0.3,  # PPO policy-ratio clip.
+    "vf_clip_param": 10.0,  # clamp on the SQUARED value error. The critic gets no gradient
+    # wherever |V - return| > sqrt(vf_clip_param), so this must be scaled to the size of the
+    # returns (here -MSE summed over an episode: tens to thousands).
+    "vf_loss_coeff": 1.0,  # weight of the value loss.
+    "entropy_coeff": 0.0,  # entropy bonus. 0 lets the policy collapse to one action early.
+    "kl_coeff": 0.2,  # initial KL penalty coefficient (adapted towards kl_target).
+    "kl_target": 0.01,
+    "grad_clip": None,  # global gradient-norm clip, None for off.
+    "fcnet_hiddens": [256, 256],  # policy and value network hidden layers.
+}
+
+#: Rollout and resource settings that may also appear in config["ppo"]. These shape how
+#: samples are collected, not what is learned from them.
+PPO_RUNNER_DEFAULTS = {
+    "num_env_runners": 0,  # 0 = sample in the trial's own process; no extra actors.
+    "rollout_fragment_length": "auto",
+    "num_gpus": 0,
+}
+
+
+def ppo_settings(ppo=None):
+    """
+    Complete PPO settings: PPO_DEFAULTS and PPO_RUNNER_DEFAULTS overlaid with `ppo`.
+
+    Raises ValueError on a key neither of them knows, so a typo in a run script fails loudly
+    instead of silently training with the default.
+    """
+    ppo = dict(ppo or {})
+    unknown = sorted(set(ppo) - set(PPO_DEFAULTS) - set(PPO_RUNNER_DEFAULTS))
+    if unknown:
+        raise ValueError(f"Unknown PPO setting(s) {unknown}. Known: {sorted(PPO_DEFAULTS) + sorted(PPO_RUNNER_DEFAULTS)}.")
+    return {**PPO_DEFAULTS, **PPO_RUNNER_DEFAULTS, **ppo}
+
+
+def ppo_search_space(ppo_mutations):
+    """
+    Tune Domains for the PPO settings PBT should mutate, from {name: [min, max]}.
+
+    Sampled log-uniformly when min > 0 (learning rates span decades), uniformly otherwise.
+    Only numeric PPO_DEFAULTS keys can be mutated.
+    """
+    space = {}
+    for key, (low, high) in (ppo_mutations or {}).items():
+        if key not in PPO_DEFAULTS or key == "fcnet_hiddens":
+            raise ValueError(f"PBT cannot mutate PPO setting '{key}'. Numeric keys of PPO_DEFAULTS only.")
+        space[key] = tune.loguniform(low, high) if low > 0 else tune.uniform(low, high)
+    return space
+
 
 def _register_env_once():
     """Register the environment creator under ENV_NAME.
@@ -94,7 +156,8 @@ def physical_to_scaled(model_config, physical):
     model_config : dict
         Supplies a [min, max] range under each key in RC_PARAM_KEYS.
     physical : dict
-        {name: value} in physical units. "cool" and "gain" may be per-room arrays.
+        {name: value} in physical units. The LOAD_KEYS ("cool", "gain", "solar") may be
+        per-room arrays.
 
     Returns
     -------
@@ -121,8 +184,8 @@ def search_space(model_config, log_uniform=True):
     draws in the top decade and the search would never see a small-capacitance building at
     all.
 
-    The loads ("cool", "gain") are sampled uniformly: their ranges start at 0, where a
-    log-uniform distribution is undefined, and zero cooling or zero gain is a physically
+    The loads ("cool", "gain", "solar") are sampled uniformly: their ranges start at 0, where
+    a log-uniform distribution is undefined, and zero cooling, gain or solar is a physically
     meaningful draw that the search should be able to make.
 
     Parameters
@@ -242,7 +305,11 @@ class RCPolicyTrainable(tune.Trainable):
                                are sidelined - see the plausibility filter below. None
                                disables the filter.
     evaluation_interval      : run the evaluation every N iterations (default 1).
-    ppo                      : dict of PPO settings, see _build_algorithm().
+    ppo                      : dict of PPO settings - see PPO_DEFAULTS and
+                               PPO_RUNNER_DEFAULTS for every key and its default. PBT may
+                               mutate some of these (build_tuner's ppo_mutations); a trial
+                               whose settings change rebuilds its algorithm and keeps its
+                               policy weights.
     model_record_dir         : directory or None (default). When set, every evaluation also
                                saves one evaluation window's full trajectory to
                                <model_record_dir>/<trial_id>/<time_ns>.npz - see
@@ -273,6 +340,7 @@ class RCPolicyTrainable(tune.Trainable):
         self._last_eval_return = None
 
         self.evaluation_interval = config.get("evaluation_interval", 1)
+        self._ppo = ppo_settings(config.get("ppo"))
         self.eval_dataloader = self._make_eval_dataloader(config)
         self._read_record_settings(config)
 
@@ -349,7 +417,7 @@ class RCPolicyTrainable(tune.Trainable):
         env_config = self._env_config(config)
         self.algo = self._build_algorithm(config, env_config)
 
-        if self.eval_dataloader is not None:
+        if self.eval_dataloader is not None and self.eval_env is None:
             # Hand the evaluation environment the evaluation loader up front. evaluate()
             # swaps the loader in anyway, but starting on it means that swap is a no-op
             # rather than a second solve of iv_array over a dataset we never use.
@@ -362,7 +430,7 @@ class RCPolicyTrainable(tune.Trainable):
             self._pending_weights = None
 
     def _build_algorithm(self, config, env_config):
-        ppo = config.get("ppo", {})
+        ppo = ppo_settings(config.get("ppo"))
         builder = (
             PPOConfig()
             # The rest of this codebase is written against the old API stack
@@ -371,17 +439,15 @@ class RCPolicyTrainable(tune.Trainable):
             .api_stack(enable_rl_module_and_learner=False, enable_env_runner_and_connector_v2=False)
             .environment(env=ENV_NAME, env_config=env_config, disable_env_checking=True)
             .env_runners(
-                num_env_runners=ppo.get("num_env_runners", 0),
-                rollout_fragment_length=ppo.get("rollout_fragment_length", "auto"),
+                num_env_runners=ppo["num_env_runners"],
+                rollout_fragment_length=ppo["rollout_fragment_length"],
             )
             .training(
-                train_batch_size=ppo.get("train_batch_size", 256),
-                minibatch_size=ppo.get("minibatch_size", 64),
-                lr=ppo.get("lr", 5e-5),
-                gamma=ppo.get("gamma", 0.99),
+                **{key: ppo[key] for key in PPO_DEFAULTS if key != "fcnet_hiddens"},
+                model={"fcnet_hiddens": list(ppo["fcnet_hiddens"])},
             )
             .framework("torch")
-            .resources(num_gpus=ppo.get("num_gpus", 0))
+            .resources(num_gpus=ppo["num_gpus"])
         )
         return builder.build()
 
@@ -395,6 +461,7 @@ class RCPolicyTrainable(tune.Trainable):
                 "train_return_mean": IMPLAUSIBLE_PENALTY,
                 "slowest_tau_days": self.tau_days,
                 "implausible": True,
+                "ppo_lr": self._ppo["lr"],
             }
 
         results = self.algo.train()
@@ -419,6 +486,7 @@ class RCPolicyTrainable(tune.Trainable):
             "train_return_mean": train_return,
             "slowest_tau_days": self.tau_days,
             "implausible": False,
+            "ppo_lr": self._ppo["lr"],
         }
 
     def _save_record(self, record):
@@ -444,15 +512,35 @@ class RCPolicyTrainable(tune.Trainable):
     # ---------------------------------------------------------------- checkpointing
 
     def save_checkpoint(self, checkpoint_dir):
-        """Write ONLY the policy weights.
+        """Write the policy weights, plus a record of what they were trained against.
 
-        Deliberately no RC parameters: see this module's docstring. A restore must leave the
-        trial's parameters exactly as its (possibly just-mutated) config says.
+        The restorable state is ONLY the policy weights - no RC parameters, see this module's
+        docstring. A restore must leave the trial's parameters exactly as its (possibly
+        just-mutated) config says.
+
+        TRIAL_STATE_FILE is written alongside for people, not for Tune: it records the RC
+        parameters, PPO settings and score that go with these weights, so a checkpoint can be
+        picked up after the run (the only other record, result.json, does not say which row a
+        checkpoint belongs to). load_checkpoint never reads it.
         """
         weights = self.algo.get_policy().get_weights() if self.algo is not None else self._pending_weights
         with open(Path(checkpoint_dir) / "policy_weights.pkl", "wb") as f:
             pickle.dump({"weights": weights}, f)
+        with open(Path(checkpoint_dir) / TRIAL_STATE_FILE, "w") as f:
+            json.dump(self._trial_state(), f, indent=2, default=_json_default)
         return None
+
+    def _trial_state(self):
+        return {
+            "trial_id": self.trial_id,
+            "training_iteration": self.iteration,
+            "timestamp": time.time(),
+            "score": self._last_eval_return,
+            "rc_parameters": self.rc_physical,
+            "slowest_tau_days": self.tau_days,
+            "implausible": self.implausible,
+            "ppo": self._ppo,
+        }
 
     def load_checkpoint(self, checkpoint):
         payload = checkpoint
@@ -478,16 +566,30 @@ class RCPolicyTrainable(tune.Trainable):
 
         Tune calls this before restoring the checkpoint, which is the order this needs:
         parameters first, then the weights that come with them.
+
+        PPO settings are fixed when an RLlib algorithm is built, so if PBT mutated any (see
+        build_tuner's ppo_mutations) the algorithm is rebuilt. Its current weights are carried
+        over, so the policy survives even without a restore; after an exploit, the restore
+        that follows replaces them with the donor's.
         """
         self.evaluation_interval = new_config.get("evaluation_interval", self.evaluation_interval)
         self._read_record_settings(new_config)
+
+        new_ppo = ppo_settings(new_config.get("ppo"))
+        if new_ppo != self._ppo and self.algo is not None:
+            self._pending_weights = self.algo.get_policy().get_weights()
+            self.algo.stop()
+            self.algo = None
+        self._ppo = new_ppo
+
         self._apply_parameters(new_config)
         self._last_eval_return = None  # the old score belonged to the old parameters
 
         if not self.implausible and self.algo is None:
-            # Was sidelined, now viable - build it properly. _apply_parameters has already
-            # set the new parameters, and _build_workers applies any weights that arrived
-            # while there was no algorithm to put them in.
+            # Was sidelined (or its PPO settings changed) and is now viable - build it
+            # properly. _apply_parameters has already set the new parameters, and
+            # _build_workers applies any weights that arrived while there was no algorithm
+            # to put them in.
             self._build_workers(new_config)
 
         return True
@@ -496,6 +598,19 @@ class RCPolicyTrainable(tune.Trainable):
         if self.algo is not None:
             self.algo.stop()
             self.algo = None
+
+
+#: Name of the human-readable sidecar save_checkpoint writes next to the policy weights.
+TRIAL_STATE_FILE = "trial_state.json"
+
+
+def _json_default(value):
+    """Let json.dump write numpy scalars and arrays."""
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, np.generic):
+        return value.item()
+    raise TypeError(f"Object of type {type(value).__name__} is not JSON serialisable")
 
 
 def _episode_return_mean(results):
@@ -518,21 +633,42 @@ def build_pbt_scheduler(
     quantile_fraction=0.25,
     resample_probability=0.25,
     log_uniform=True,
+    perturbation_factors=(1.2, 0.8),
+    ppo_mutations=None,
 ):
     """
-    PBT scheduler over the RC parameters.
+    PBT scheduler over the RC parameters, and optionally some PPO settings.
 
     perturbation_interval is in training iterations. Too small and a trial is judged before
     its policy has adapted to its parameters, which reads a bad policy as bad parameters;
     too large and the search barely moves. It wants to be at least long enough for PPO to
     make visible progress from a fresh set of weights.
+
+    How an exploit explores. At each perturbation the bottom quantile_fraction of trials
+    copy a top-quantile trial's config and weights; the top trials themselves are never
+    perturbed, so the best set found so far is always kept. Each copied value is then,
+    independently:
+      * with probability resample_probability, redrawn from its full prior (search_space) -
+        a long jump. With k searched values, 1 - (1 - resample_probability)**k of exploits
+        resample at least one of them: 94% for the 10 RC values at the default 0.25.
+      * otherwise multiplied by one of perturbation_factors - a local step. Repeated steps
+        compound (1.2 * 0.8 = 0.96), so the achievable resolution is finer than one factor.
+    Lower resample_probability and factors closer to 1 favour fine-tuning around the current
+    best; higher favour exploring.
+
+    ppo_mutations: {name: [min, max]} of PPO_DEFAULTS keys to mutate as well, e.g.
+    {"lr": [1e-5, 1e-3]}. See ppo_search_space().
     """
+    hyperparam_mutations = search_space(model_config, log_uniform=log_uniform)
+    if ppo_mutations:
+        hyperparam_mutations["ppo"] = ppo_search_space(ppo_mutations)
     return PopulationBasedTraining(
         time_attr="training_iteration",
         perturbation_interval=perturbation_interval,
         quantile_fraction=quantile_fraction,
         resample_probability=resample_probability,
-        hyperparam_mutations=search_space(model_config, log_uniform=log_uniform),
+        perturbation_factors=tuple(perturbation_factors),
+        hyperparam_mutations=hyperparam_mutations,
     )
 
 
@@ -551,6 +687,10 @@ def build_tuner(
     checkpoint_config=None,
     model_record_dir=None,
     model_record_window=0,
+    ppo_mutations=None,
+    quantile_fraction=0.25,
+    resample_probability=0.25,
+    perturbation_factors=(1.2, 0.8),
 ):
     """
     Assemble a Tuner running RCPolicyTrainable under PBT.
@@ -573,7 +713,20 @@ def build_tuner(
     IMPLAUSIBLE_PENALTY as before.
 
     model_record_dir / model_record_window: see RCPolicyTrainable. Off by default.
+
+    ppo: PPO settings, see PPO_DEFAULTS. Validated here so a typo fails before any trial starts.
+
+    ppo_mutations, quantile_fraction, resample_probability, perturbation_factors: how PBT
+    explores - see build_pbt_scheduler(). A mutated PPO setting's initial value is drawn from
+    its range, overriding anything given for it in `ppo`.
+
+    Checkpoints and paused trials: an exploited trial restores from a copy of the donor's
+    checkpoint. If there are more trials than concurrent slots, trials get paused and queued,
+    and by the time one resumes the donor may have saved newer checkpoints and pruned the
+    one it needs - it then errors out. Run with num_samples no larger than the number of
+    trials that fit at once, and keep enough checkpoints (num_to_keep=None keeps them all).
     """
+    ppo = ppo_settings(ppo)
     if eval_dataloader is None and not env_config.get("data_config"):
         raise ValueError(
             "Trials need a deterministic evaluation split to be scored on. Either put a "
@@ -590,7 +743,7 @@ def build_tuner(
             "eval_dataloader": eval_dataloader,
             "max_time_constant_days": max_time_constant_days,
             "evaluation_interval": evaluation_interval,
-            "ppo": ppo or {},
+            "ppo": {**ppo, **ppo_search_space(ppo_mutations)},
             "model_record_dir": None if model_record_dir is None else str(model_record_dir),
             "model_record_window": model_record_window,
         }
@@ -612,7 +765,15 @@ def build_tuner(
         tune_config=tune.TuneConfig(
             metric=METRIC,
             mode=MODE,
-            scheduler=build_pbt_scheduler(model_config, perturbation_interval=perturbation_interval, log_uniform=log_uniform),
+            scheduler=build_pbt_scheduler(
+                model_config,
+                perturbation_interval=perturbation_interval,
+                quantile_fraction=quantile_fraction,
+                resample_probability=resample_probability,
+                log_uniform=log_uniform,
+                perturbation_factors=perturbation_factors,
+                ppo_mutations=ppo_mutations,
+            ),
             search_alg=search_alg,
             num_samples=num_samples,
             reuse_actors=True,
@@ -648,11 +809,16 @@ __all__ = [
     "IMPLAUSIBLE_PENALTY",
     "METRIC",
     "MODE",
+    "PPO_DEFAULTS",
+    "PPO_RUNNER_DEFAULTS",
+    "TRIAL_STATE_FILE",
     "RCPolicyTrainable",
     "best_parameters",
     "build_pbt_scheduler",
     "build_tuner",
     "physical_to_scaled",
+    "ppo_search_space",
+    "ppo_settings",
     "sample_plausible_population",
     "search_space",
     "slowest_time_constant_days",

@@ -11,11 +11,17 @@ in rcmodel.optimisation.evaluate().
     for record in best_records_over_time("outputs/<run>/model_records", n=4):
         plot_model_record(record)
         plot_residual_heatmap(record)
+
+Both return the Figure and leave it open. When drawing many records in a loop, save and then
+plt.close(fig) each one - pyplot holds every open figure, so a loop over a run's records
+otherwise keeps them all in memory.
+
+pyplot is imported inside the drawing functions rather than at module level, so importing
+rcmodel (which every Ray actor does) never loads it.
 """
 
 from pathlib import Path
 
-import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.colors import TwoSlopeNorm
 from matplotlib.patches import Patch
@@ -25,6 +31,7 @@ PREDICTED_COLOR = "#2a78d6"
 OUTDOOR_COLOR = "#eb6834"
 NODE_COLORS = ("#1baf7a", "#4a3aa7", "#e87ba4", "#eda100")
 COOLING_COLOR = "#8fc1f0"
+SOLAR_COLOR = "#eda100"
 
 
 # --------------------------------------------------------------------------- records
@@ -161,6 +168,8 @@ def _header(record):
         f"{name}={value:.3g}" for name, value in zip(record["param_names"], record["param_values"], strict=True)
     )
     loads = f"cool {_format_loads(record['cool_w_m2'])} W/m$^2$  gain {_format_loads(record['gain_w_m2'])} W/m$^2$"
+    if "solar_p" in record:  # records written before the solar term have no solar_p
+        loads += f"  solar p {_format_loads(record['solar_p'])}"
     return "   ".join(parts) + "\n" + params + "   " + loads
 
 
@@ -175,7 +184,9 @@ def plot_model_record(record, ncols=None):
     * top: outdoor temperature and the latent (wall) nodes - walls should lag and damp
       the outdoor swing, so this is the quickest check that the parameters are physical;
     * one panel per room: measured and predicted temperature, with the room's RMSE;
-    * bottom: net heat input into the building (gain minus cooling), in W.
+    * bottom: net heat input into the building (gain + solar - cooling), in W, with the
+      solar part drawn on its own. Records written before the solar term have no solar
+      series and are drawn as the old per-step gain - cooling.
 
     The cooling action is one on/off for the whole building, so cooling-on periods are
     shaded across every panel rather than drawn per room.
@@ -183,6 +194,8 @@ def plot_model_record(record, ncols=None):
     Returns:
         The matplotlib Figure.
     """
+    import matplotlib.pyplot as plt
+
     room_names = [str(name) for name in record["room_names"]]
     n_rooms = len(room_names)
     ncols = ncols or min(3, n_rooms)
@@ -223,15 +236,22 @@ def plot_model_record(record, ncols=None):
             ax.legend(handles=handles, fontsize=8, loc="upper right")
 
     ax_heat = fig.add_subplot(grid[-1, :], sharex=ax_top)
-    net = np.sum(record["gain_w"]) - record["action"] * np.sum(record["cool_w"])
-    edges = _hours(record, np.concatenate([record["action_start"][:1], record["action_end"]]))
-    ax_heat.stairs(net, edges, baseline=None, color=MEASURED_COLOR, linewidth=1.2)
+    if "net_heat_w" in record:
+        ax_heat.plot(hours, record["net_heat_w"], color=MEASURED_COLOR, linewidth=1.2, label="net")
+        ax_heat.plot(hours, record["solar_w"], color=SOLAR_COLOR, linewidth=1.2, label="solar")
+        ax_heat.legend(fontsize=8, loc="upper right", ncol=2)
+        heat_title = "Net heat input, all rooms (gain + solar - cooling)"
+    else:
+        net = np.sum(record["gain_w"]) - record["action"] * np.sum(record["cool_w"])
+        edges = _hours(record, np.concatenate([record["action_start"][:1], record["action_end"]]))
+        ax_heat.stairs(net, edges, baseline=None, color=MEASURED_COLOR, linewidth=1.2)
+        heat_title = "Net heat input, all rooms (gain - cooling)"
     ax_heat.margins(y=0.2)
     ax_heat.axhline(0, color="0.6", linewidth=0.8)
     _shade_cooling(ax_heat, spans)
     ax_heat.set_ylabel("W")
     ax_heat.set_xlabel("hours into window")
-    ax_heat.set_title("Net heat input, all rooms (gain - cooling)", fontsize=10, loc="left")
+    ax_heat.set_title(heat_title, fontsize=10, loc="left")
     ax_heat.set_xlim(hours[0], hours[-1])
 
     fig.suptitle(_header(record), fontsize=9)
@@ -247,6 +267,8 @@ def plot_residual_heatmap(record):
     Returns:
         The matplotlib Figure.
     """
+    import matplotlib.pyplot as plt
+
     room_names = [str(name) for name in record["room_names"]]
     residual = _predicted_rooms(record) - _measured_at_prediction_times(record)
     hours = _hours(record, record["time"])

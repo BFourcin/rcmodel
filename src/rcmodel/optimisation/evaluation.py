@@ -1,7 +1,7 @@
 import numpy as np
 import torch
 
-from rcmodel.rc_model import PARAM_KEYS
+from rcmodel.rc_model import LOAD_KEYS, PARAM_KEYS
 
 """
 Note: The environment is likely to be wrapped.
@@ -76,8 +76,13 @@ def evaluate(env, rl_algorithm, dataloader, record_window=None):
         action_start    (S,)          seconds, start of each step
         action_end      (S,)          seconds, end of each step
         step_reward     (S,)          reward of each step
+        ghi             (T,)          global horizontal irradiance at ``time``, W/m2
+        solar_w         (T,)          solar gain into all rooms at ``time``, W
+        net_heat_w      (T,)          net heat input into all rooms at ``time``, W:
+                                      gain + solar - cooling, with the action in force
         room_names, room_area, cool_w, gain_w   (n_rooms,)  per room; loads in W
         cool_w_m2, gain_w_m2                    (n_rooms,)  loads in W/m2
+        solar_p                                 (n_rooms,)  fraction of GHI reaching each room
         param_names, param_values               the physical RC parameters
         window_index, window_reward             scalars
     """
@@ -130,6 +135,14 @@ def _build_record(base_env, steps, window_index, window_reward):
 
     params, loads = model.get_physical_paramaters()
     rooms = model.building.rooms
+    cool, gain, solar = (loads[LOAD_KEYS.index(key)] for key in ("cool", "gain", "solar"))
+
+    # The action in force at every simulated row: each step's rows were simulated under its action.
+    action_per_row = np.concatenate([np.full(len(observation), float(action)) for action, *_, observation in steps])
+    heat_without_cooling = model._heat_input_watts(time, action=0).sum(axis=1)  # gain + solar, W
+    cool_w = model.building.proportional_heating(cool).numpy().astype(np.float64)
+    ghi = model.ghi(time)
+    area = np.array([room.area for room in rooms], dtype=np.float64)
 
     return {
         "time": time.numpy(),
@@ -141,12 +154,16 @@ def _build_record(base_env, steps, window_index, window_reward):
         "action_start": np.array([start for _, start, *_ in steps], dtype=np.float64),
         "action_end": np.array([observation[-1, 0].item() for *_, observation in steps], dtype=np.float64),
         "step_reward": np.array([reward for _, _, reward, _ in steps], dtype=np.float64),
+        "ghi": ghi,
+        "solar_w": ghi * float(np.sum(solar.numpy().astype(np.float64) * area)),
+        "net_heat_w": heat_without_cooling - action_per_row * cool_w.sum(),
         "room_names": np.array([room.name for room in rooms]),
         "room_area": np.array([room.area for room in rooms], dtype=np.float64),
-        "cool_w_m2": loads[0].numpy().astype(np.float64),
-        "gain_w_m2": loads[1].numpy().astype(np.float64),
-        "cool_w": model.building.proportional_heating(loads[0]).numpy().astype(np.float64),
-        "gain_w": model.building.proportional_heating(loads[1]).numpy().astype(np.float64),
+        "cool_w_m2": cool.numpy().astype(np.float64),
+        "gain_w_m2": gain.numpy().astype(np.float64),
+        "solar_p": solar.numpy().astype(np.float64),
+        "cool_w": cool_w,
+        "gain_w": model.building.proportional_heating(gain).numpy().astype(np.float64),
         "param_names": np.array(PARAM_KEYS),
         "param_values": params.flatten().numpy().astype(np.float64),
         "window_index": window_index,

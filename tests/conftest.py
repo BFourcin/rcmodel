@@ -5,7 +5,7 @@ import pandas as pd
 import pytest
 import torch
 
-from rcmodel import Building, BuildingTemperatureDataset, InputScaling, RandomSampleDataset, RCModel, Room
+from rcmodel import RC_PARAM_KEYS, Building, BuildingTemperatureDataset, InputScaling, RandomSampleDataset, RCModel, Room
 
 T_ORIGIN = 1_600_000_000  # realistic unix-epoch-scale start time (2020-09-13), deliberately not 0.
 # get_iv_array() once had a bug where it queried an Interp1D built over absolute (epoch-scale)
@@ -134,6 +134,15 @@ def fake_outdoor_weather(fake_time):
 
 
 @pytest.fixture
+def fake_ghi(fake_time):
+    """Synthetic global horizontal irradiance (W/m2) over `fake_time`: a half-sine 'day'
+    peaking at 800 W/m2, zero at both ends - so it varies within every environment step."""
+    t_rel = fake_time - fake_time[0]
+    n_seconds = t_rel[-1] + (t_rel[1] - t_rel[0])
+    return 800 * np.sin(np.pi * t_rel / n_seconds)
+
+
+@pytest.fixture
 def fake_rooms():
     fake_room_coordinates = [
         [[0, 0], [5, 0], [5, 5], [0, 5]],
@@ -173,7 +182,7 @@ def synthetic_indoor_temperature_csv(tmp_path, fake_time, fake_rooms):
 
 
 @pytest.fixture
-def get_model_config(fake_time, fake_outdoor_weather, fake_rooms):
+def get_model_config(fake_time, fake_outdoor_weather, fake_ghi, fake_rooms):
     np.random.seed(42)
     fake_room_names, fake_room_coordinates = fake_rooms
 
@@ -188,10 +197,12 @@ def get_model_config(fake_time, fake_outdoor_weather, fake_rooms):
         "Rin": [0.1, 5],
         "cool": [0, 50],  # Cooling limit in W/m2
         "gain": [0, 5],  # Gain limit in W/m2
+        "solar": [0, 0.2],  # Fraction of GHI reaching the room
         "room_names": fake_room_names,
         "room_coordinates": fake_room_coordinates,
         "weather_data_outdoor_temperature": fake_outdoor_weather,
         "weather_data_UTC_time": fake_time,
+        "weather_data_ghi": fake_ghi,
         "cooling_policy": None,
         "load_model_path_policy": None,  # './prior_policy.pt',  # or None
         "load_model_path_physical": None,  # or None
@@ -205,6 +216,7 @@ def get_model_config(fake_time, fake_outdoor_weather, fake_rooms):
             "Rin": np.random.rand(1).item(),
             "cool": np.random.rand(1).item(),  # 0.09133423646610082
             "gain": np.random.rand(1).item(),  # 0.9086668150306394
+            "solar": np.random.rand(1).item(),
         },
     }
     return model_config
@@ -279,7 +291,7 @@ def physical_params(get_model_config):
 
     def at_fraction(fraction):
         values = {}
-        for key in ("C_rm", "C1", "C2", "R1", "R2", "R3", "Rin", "cool", "gain"):
+        for key in RC_PARAM_KEYS:
             low, high = get_model_config[key]
             values[key] = low + fraction * (high - low)
         return values

@@ -2,6 +2,7 @@ from . import optimisation, physical, rc_model, tools
 from .optimisation import (
     METRIC,
     MODE,
+    PPO_DEFAULTS,
     LSIEnv,
     PreprocessEnv,
     PriorCoolingPolicy,
@@ -12,6 +13,7 @@ from .optimisation import (
     evaluate,
     make_update_env_fn,
     physical_to_scaled,
+    ppo_settings,
     preprocess_observation,
     sample_plausible_population,
     search_space,
@@ -32,6 +34,7 @@ from .tools import (
     initialise_model,
     load_model_record,
     load_model_records,
+    load_weather_csv,
     make_dataloaders,
     model_creator,
     model_to_csv,
@@ -41,6 +44,7 @@ from .tools import (
     room_rmse,
     save_model_record,
     sort_data,
+    write_weather_csv,
 )
 
 __all__ = ["LOAD_KEYS", "PARAM_KEYS", "RC_PARAM_KEYS", "RCModel", "scaled_params_to_tensors"]

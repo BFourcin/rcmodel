@@ -1,5 +1,4 @@
 import matplotlib.path as mpltPath
-import matplotlib.pyplot as plt
 import numpy as np
 import torch
 from scipy.spatial import ConvexHull
@@ -37,6 +36,8 @@ class Room:
         c = self.coordinates
 
         if ax is None:
+            import matplotlib.pyplot as plt  # imported here so Ray actors never load pyplot
+
             ax = plt
 
         line = ax.plot(

@@ -12,6 +12,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import pytest
+import torch
 
 from rcmodel import (
     PARAM_KEYS,
@@ -84,6 +85,30 @@ def test_record_matches_what_was_scored(env_and_eval_loader, get_model_config):
     assert record["param_names"].tolist() == list(PARAM_KEYS)
 
 
+def test_record_carries_the_heat_input_that_drove_it(env_and_eval_loader):
+    """ghi, solar_w and net_heat_w line up with the simulated rows and follow from the
+    parameters: net heat = floor area * (gain + solar * GHI - cool * action), all rooms, with
+    the action in force at each row."""
+    env, eval_dataloader = env_and_eval_loader
+    _, record = evaluate(env, AlternatingPolicy(), eval_dataloader, record_window=0)
+    n_rows = len(record["time"])
+    area = record["room_area"]
+
+    assert record["ghi"].shape == record["solar_w"].shape == record["net_heat_w"].shape == (n_rows,)
+    assert record["solar_p"].shape == area.shape
+    assert record["ghi"].max() > 0, "the fixture GHI should be non-zero in the evaluation window"
+
+    model = env.unwrapped.RC
+    np.testing.assert_allclose(record["ghi"], model.ghi(torch.tensor(record["time"])))
+    np.testing.assert_allclose(record["solar_w"], record["ghi"] * np.sum(record["solar_p"] * area))
+
+    # The action in force at each row, rebuilt from the step boundaries.
+    step = np.searchsorted(record["action_end"], record["time"], side="left")
+    action = record["action"][np.minimum(step, len(record["action"]) - 1)]
+    expected = np.sum(record["gain_w"]) + record["solar_w"] - action * np.sum(record["cool_w"])
+    np.testing.assert_allclose(record["net_heat_w"], expected, rtol=1e-6)  # loads are float32
+
+
 def test_record_round_trips_through_npz(record, tmp_path):
     path = tmp_path / "record.npz"
     save_model_record(path, record)
@@ -112,6 +137,30 @@ def test_plot_model_record_draws_every_room(record):
         for name in record["room_names"]:
             assert sum(title.startswith(f"{name} ") for title in titles) == 1, f"no single panel for room {name}"
         assert len(fig.axes) == len(record["room_names"]) + 2  # plus the outdoor and net-heat strips
+    finally:
+        plt.close(fig)
+
+
+def test_plot_model_record_draws_the_solar_gain(record):
+    fig = plot_model_record(record)
+    try:
+        ax_heat = fig.axes[-1]
+        labels = [line.get_label() for line in ax_heat.get_lines()]
+        assert "solar" in labels and "net" in labels
+        solar_line = next(line for line in ax_heat.get_lines() if line.get_label() == "solar")
+        np.testing.assert_allclose(solar_line.get_ydata(), record["solar_w"])
+        assert "solar p" in fig._suptitle.get_text()
+    finally:
+        plt.close(fig)
+
+
+def test_record_from_before_solar_still_plots(record):
+    """Records written by older runs have no ghi/solar_w/net_heat_w/solar_p."""
+    old = {key: value for key, value in record.items() if key not in ("ghi", "solar_w", "net_heat_w", "solar_p")}
+    fig = plot_model_record(old)
+    try:
+        assert len(fig.axes) == len(record["room_names"]) + 2
+        assert "solar p" not in fig._suptitle.get_text()
     finally:
         plt.close(fig)
 

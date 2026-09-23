@@ -12,15 +12,18 @@ class InputScaling(Building):
     Physical scaling - returns parameters back to their physical meaning.
 
     Initialise with:
-    InputScaling(rm_CA ex_C, R, Q_limit)
-    or
-    InputScaling(input_range=[rm_CA, ex_C, R, Q_limit])
+    InputScaling(C_rm, C1, C2, R1, R2, R3, Rin, cool, gain, solar)
+
+    The energy (load) ranges are one row each, in LOAD_KEYS order: cool and gain in W/m2 of
+    floor area, and solar as the dimensionless fraction p of global horizontal irradiance that
+    reaches the room (solar gain = p * GHI * floor area). solar defaults to [0, 1] so older
+    callers that only give cool and gain keep working.
     """
 
-    def __init__(self, C_rm=None, C1=None, C2=None, R1=None, R2=None, R3=None, Rin=None, cool=None, gain=None):
+    def __init__(self, C_rm=None, C1=None, C2=None, R1=None, R2=None, R3=None, Rin=None, cool=None, gain=None, solar=(0, 1)):
 
         self.phys_param_range = [C_rm, C1, C2, R1, R2, R3, Rin]
-        self.energy_param_range = [cool, gain]
+        self.energy_param_range = [cool, gain, list(solar)]
 
         # check if the ranges are in the correct format. i.e. [lb, ub]
         for ranges in [self.phys_param_range, self.energy_param_range]:
@@ -49,11 +52,10 @@ class InputScaling(Building):
         """
         Scale from 0-1 back to physical value in W/m2
         """
+        self._check_load_rows(loads_m)
         loads_r = torch.zeros(loads_m.shape)
-        loads_r[0, :] = self.unminmaxscale(loads_m[0, :], self.energy_param_range[0])
-        loads_r[1, :] = self.unminmaxscale(loads_m[1, :], self.energy_param_range[1])
-
-        # Q_area = self.unminmaxscale(Q, [0, self.input_range[3].max()])
+        for row, load_range in enumerate(self.energy_param_range):
+            loads_r[row, :] = self.unminmaxscale(loads_m[row, :], load_range)
 
         return loads_r
 
@@ -61,13 +63,19 @@ class InputScaling(Building):
         """
         Scale to 0-1.
         """
+        self._check_load_rows(loads_r)
         loads_m = torch.zeros(loads_r.shape)
-        loads_m[0, :] = self.minmaxscale(loads_r[0, :], self.energy_param_range[0])
-        loads_m[1, :] = self.minmaxscale(loads_r[1, :], self.energy_param_range[1])
-
-        # Q = self.minmaxscale(Q_area, [0, self.input_range[3].max()])
+        for row, load_range in enumerate(self.energy_param_range):
+            loads_m[row, :] = self.minmaxscale(loads_r[row, :], load_range)
 
         return loads_m
+
+    def _check_load_rows(self, loads):
+        if loads.shape[0] != len(self.energy_param_range):
+            raise ValueError(
+                f"Expected one row of loads per energy range ({len(self.energy_param_range)}: cool, gain, solar), "
+                f"got {loads.shape[0]}."
+            )
 
     def minmaxscale(self, x, x_range):
         if not torch.is_tensor(x_range):
