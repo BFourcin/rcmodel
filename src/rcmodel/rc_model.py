@@ -8,15 +8,29 @@ from torchdiffeq import odeint
 from xitorch.interpolate import Interp1D
 
 # Single source of truth for the names and ORDER of the model's free parameters.
-# PARAM_KEYS must match Building.categorise_theta(); LOAD_KEYS must match the row
+# PARAM_KEYS must match InputScaling.phys_param_range; its first seven must match
+# Building.categorise_theta(), which ignores anything after them. LOAD_KEYS must match the row
 # order of InputScaling.energy_param_range (row 0 cool, row 1 gain, row 2 solar).
+#   k_sa  - dimensionless sol-air coefficient (an effective solar absorptance of the external
+#           walls). The envelope is driven by the sol-air temperature
+#           T_sa = Tout + k_sa * GHI(t) / H_OUT rather than the bare outdoor temperature - see
+#           RCModel.sol_air_temperature(). One value for the building: there is one envelope.
 #   cool  - cooling limit, W/m2 of floor area, switched by the action.
 #   gain  - constant heat gain, W/m2 of floor area.
 #   solar - dimensionless fraction p of global horizontal irradiance reaching the room:
 #           solar gain (W) = p * GHI(t) (W/m2) * floor area (m2).
-PARAM_KEYS = ("C_rm", "C1", "C2", "R1", "R2", "R3", "Rin")
+PARAM_KEYS = ("C_rm", "C1", "C2", "R1", "R2", "R3", "Rin", "k_sa")
 LOAD_KEYS = ("cool", "gain", "solar")
 RC_PARAM_KEYS = PARAM_KEYS + LOAD_KEYS
+
+# Parameters allowed to be exactly zero. Every other PARAM_KEYS entry is a resistance or
+# capacitance and must be strictly positive, because A is built from 1/(R*C).
+NON_NEGATIVE_PARAM_KEYS = ("k_sa",)
+
+# External surface heat transfer coefficient used by the sol-air temperature, W/m2K. Fixed rather
+# than searched, since only k_sa / H_OUT is identifiable. 25 W/m2K is 1/Rse for BS EN ISO 6946's
+# Rse = 0.04 m2K/W, the external film already counted inside R1.
+H_OUT = 25.0
 
 
 def scaled_params_to_tensors(values, n_rooms):
@@ -75,7 +89,9 @@ class RCModel(nn.Module):
     """
     3R2C thermal model of a building.
 
-    Each room's heat input is Q(t) = floor area * (gain - cool * action + solar * GHI(t)), in W.
+    Each room's heat input is Q(t) = floor area * (gain - cool * action + solar * GHI(t)), in W,
+    plus the optional measured heat input below. The envelope is driven by the sol-air temperature
+    T_sa = Tout + k_sa * GHI(t) / H_OUT, which is plain Tout when k_sa is 0.
 
     scaling - Class containing methods to scale inputs from 0-1 back to their usual values and back again.
     transform - optional function applied to parameters before scaling, e.g. sigmoid. Leave as None
@@ -92,10 +108,23 @@ class RCModel(nn.Module):
 
     ghi_continuous - optional callable (normally an Interp1D) giving global horizontal irradiance in W/m2 at
         absolute (unix epoch) times, like Tout_continuous. None means no solar data: GHI is taken as zero, so
-        the solar parameter has no effect.
+        the solar and k_sa parameters have no effect.
+    heat_input_continuous - optional callable (normally an Interp1D) giving a known heat input into each
+        room, in W, at absolute times: shape (n_rooms, len(t)). It is added on top of the modelled loads.
+        For driving the model with measured forcing - e.g. an EnergyPlus run's HVAC output - not something
+        the search fits. None (the default) means no such input.
     """
 
-    def __init__(self, building, scaling, Tout_continuous, transform=None, cooling_policy=None, ghi_continuous=None):
+    def __init__(
+        self,
+        building,
+        scaling,
+        Tout_continuous,
+        transform=None,
+        cooling_policy=None,
+        ghi_continuous=None,
+        heat_input_continuous=None,
+    ):
 
         super().__init__()
         self.building = building
@@ -105,6 +134,7 @@ class RCModel(nn.Module):
 
         self.Tout_continuous = Tout_continuous  # Interp1D object
         self.ghi_continuous = ghi_continuous  # Interp1D object, or None for no solar data
+        self.heat_input_continuous = heat_input_continuous  # Interp1D object (W per room), or None
 
         self.cooling_policy = cooling_policy  # Kept for plotting; the action comes from the environment.
         self.action = 0  # initialise cooling action
@@ -118,6 +148,7 @@ class RCModel(nn.Module):
         self.cool_load = None  # cooling in Watts/m2
         self.gain_load = None  # gain in Watts/m2
         self.solar_load = None  # solar fraction p of GHI (dimensionless)
+        self.k_sa = None  # sol-air coefficient (dimensionless), set by _build_matrices()
         self.t0 = None  # unix epoch start time in seconds
         self.A = None  # System Matrix
         self.B = None  # Input Matrix
@@ -157,8 +188,8 @@ class RCModel(nn.Module):
         Values outside the configured [min, max] ranges are run as given, not clipped, so
         the model runs exactly what the caller asked for. What is enforced is physical
         validity, whatever the entry path: every capacitance and resistance must be
-        strictly positive (A is built from 1/(R*C)), and the cooling, gain and solar loads
-        must not be negative (a negative load would reverse its direction).
+        strictly positive (A is built from 1/(R*C)), and k_sa and the cooling, gain and solar
+        loads must not be negative (a negative value would reverse its direction).
 
         Parameters
         ----------
@@ -184,7 +215,12 @@ class RCModel(nn.Module):
         problems = [
             f"{key}={physical_params[i].item():g} (must be > 0)"
             for i, key in enumerate(PARAM_KEYS)
-            if not physical_params[i].item() > 0
+            if key not in NON_NEGATIVE_PARAM_KEYS and not physical_params[i].item() > 0
+        ]
+        problems += [
+            f"{key}={physical_params[i].item():g} (must be >= 0)"
+            for i, key in enumerate(PARAM_KEYS)
+            if key in NON_NEGATIVE_PARAM_KEYS and not physical_params[i].item() >= 0
         ]
         problems += [
             f"{key}={physical_loads[i].tolist()} (must be >= 0)"
@@ -268,7 +304,8 @@ class RCModel(nn.Module):
 
     def _input_trajectory(self, t_eval):
         """
-        Build the input vector u = [Tout, Q_rm1, ... Q_rmn] at every point in t_eval.
+        Build the input vector u = [T_sa, Q_rm1, ... Q_rmn] at every point in t_eval, where T_sa
+        is the sol-air temperature (plain Tout when k_sa is 0).
 
         The action is held constant across the call, so the cooling and gain part of Q is
         constant; the solar part follows GHI(t). Crucially Tout and GHI are each fetched for
@@ -279,14 +316,15 @@ class RCModel(nn.Module):
         ordering.
         """
         u = np.empty((len(t_eval), len(self.building.rooms) + 1), dtype=np.float64)
-        u[:, 0] = _sample(self.Tout_continuous, t_eval)
+        u[:, 0] = self.sol_air_temperature(t_eval)
         u[:, 1:] = self._heat_input_watts(t_eval, self.action)
         return u
 
     def _heat_input_watts(self, t, action):
         """
         Heat input into each room, in W, at every time in t: floor area * (gain - cool *
-        action + solar * GHI(t)). Returns a (len(t), n_rooms) float64 array.
+        action + solar * GHI(t)), plus the measured heat input if one is attached. Returns a
+        (len(t), n_rooms) float64 array.
         """
         area = np.array([room.area for room in self.building.rooms], dtype=np.float64)
         constant = (self.gain_load - self.cool_load * action).detach().to(torch.float64).numpy()
@@ -298,7 +336,31 @@ class RCModel(nn.Module):
             if np.any(solar != 0):
                 q_area += self.ghi(t)[:, None] * solar[None, :]
 
-        return q_area * area[None, :]
+        q_watts = q_area * area[None, :]
+
+        heat_input_continuous = getattr(self, "heat_input_continuous", None)  # absent on older pickles
+        if heat_input_continuous is not None:
+            q_watts += _sample_rooms(heat_input_continuous, t, len(area))
+
+        return q_watts
+
+    def sol_air_temperature(self, t):
+        """
+        Temperature driving the external envelope at absolute times t, as a float64 array:
+        T_sa = Tout + k_sa * GHI / H_OUT.
+
+        Sun absorbed on the external walls heats them as if the outdoor air were hotter by
+        k_sa * GHI / H_OUT. k_sa is an effective absorptance, and also soaks up the difference
+        between GHI and what actually falls on the (vertical) walls. With k_sa = 0, or no solar
+        data, this is exactly the outdoor temperature.
+
+        Requires the parameters to have been built - call setup() first.
+        """
+        tout = _sample(self.Tout_continuous, t)
+        k_sa = getattr(self, "k_sa", None)  # absent on models pickled before the sol-air term
+        if not k_sa:
+            return tout
+        return tout + k_sa * self.ghi(t) / H_OUT
 
     def ghi(self, t):
         """Global horizontal irradiance (W/m2) at absolute times t, as a float64 array.
@@ -339,7 +401,7 @@ class RCModel(nn.Module):
         t_query = torch.as_tensor(t_abs, dtype=torch.float64).reshape(1)
         Q_watts = torch.tensor(self._heat_input_watts(t_query, self.action)[0], dtype=torch.float32)
 
-        Tout = self.Tout_continuous(t_abs)
+        Tout = torch.as_tensor(self.sol_air_temperature(t_query)[0])
 
         u = self.building.input_vector(Tout, Q_watts)
 
@@ -351,10 +413,16 @@ class RCModel(nn.Module):
         Keep track of parameters used, so we can check when to update.
         """
         theta, _ = self.get_physical_paramaters()
+        theta = theta.flatten()
 
-        # Produce matrix A and B from current parameters
+        # Produce matrix A and B from current parameters. update_inputs() reads only the R and C
+        # values; k_sa enters through the input (see sol_air_temperature), not A or B.
         self.A = self.building.update_inputs(theta)
         self.B = self.building.input_matrix()
+
+        # Models built before the sol-air term hold one parameter fewer. Their envelope saw Tout.
+        k_sa_index = PARAM_KEYS.index("k_sa")
+        self.k_sa = float(theta[k_sa_index]) if len(theta) > k_sa_index else 0.0
 
     def _build_loads(self):
         """
@@ -373,7 +441,7 @@ class RCModel(nn.Module):
         A PBT run overwrites these immediately via set_parameters(); this only matters for a
         model built without an explicit parameter set.
         """
-        params = torch.rand(self.building.n_params, dtype=torch.float32)
+        params = torch.rand(len(PARAM_KEYS), dtype=torch.float32)
         loads = torch.rand((len(LOAD_KEYS), len(self.building.rooms)), dtype=torch.float32)
 
         # enables spread of initial parameters. Otherwise, sigmoid(rand) tends towards 0.5.
@@ -475,6 +543,15 @@ def _sample(continuous, t):
     if values.numel() == 1:
         values = values.repeat(len(t))
     return values.detach().numpy()
+
+
+def _sample_rooms(continuous, t, n_rooms):
+    """Evaluate a per-room callable at t as a (len(t), n_rooms) float64 array.
+
+    The callable returns (n_rooms, len(t)), the layout Interp1D gives for a (n_rooms, T) series.
+    """
+    values = torch.as_tensor(continuous(t)).to(torch.float64).reshape(n_rooms, len(t))
+    return values.T.detach().numpy()
 
 
 def _foh_discretize(A, B, dt):
@@ -694,9 +771,10 @@ def get_iv_array(model, dataset):
     a given model.
 
     Tout --R--T1--R--T2--R-- Tin
-              |      |
-              C      C
+               |      |       |
+              C1     C2      Cin
 
+    Tout here is the sol-air temperature (see RCModel.sol_air_temperature), which is plain Tout when k_sa is 0.
     Tout and Tin are exogenous inputs (not functions of T1/T2), and Q never enters this reduced system - so this is a
     linear time-invariant state-space system with known input trajectories, which is discretized exactly (see
     _foh_discretize) rather than numerically integrated with an ODE solver.
@@ -724,7 +802,8 @@ def get_iv_array(model, dataset):
         if t_eval.dim() > 1:
             t_eval = t_eval.squeeze(0)
 
-        avg_tout = model.Tout_continuous(t_eval).mean()
+        Tout_vals = torch.as_tensor(model.sol_air_temperature(t_eval))
+        avg_tout = Tout_vals.mean()
         avg_tin = Tin_continuous(t_eval).mean()
 
         model.iv = steady_state_iv(model, avg_tout, avg_tin)  # Use avg temp as a good starting guess for iv.
@@ -737,10 +816,11 @@ def get_iv_array(model, dataset):
         # there's no need to shift to a relative time origin here, unlike the old
         # torchdiffeq-based implementation, which needed small relative values to
         # avoid float32 precision loss inside torchdiffeq's internal dtype cast.
-        external_rooms = bl.connectivity_matrix[0, 1:]
-        # Tin is the average temperature of spaces connected to an external wall.
-        Tin_agg = (temp_data[:, 0 : len(bl.rooms)] * external_rooms).mean(dim=1)
-        Tout_vals = model.Tout_continuous(t_eval)
+        # Tin is the room temperature the inner envelope node sees: each room weighted by its share
+        # of the external wall area, exactly as the full model's Te2 row couples it (A_i / R3 per
+        # room). This used to be a plain mean over ALL rooms with internal ones zeroed, which
+        # dragged Tin towards 0 degC in any building with an internal room.
+        Tin_agg = temp_data[:, 0 : len(bl.rooms)] @ external_wall_weights(bl)
 
         W = np.stack(
             [Tout_vals.numpy().astype(np.float64), Tin_agg.numpy().astype(np.float64)],
@@ -758,6 +838,18 @@ def get_iv_array(model, dataset):
         iv_array = Interp1D(t_eval, iv_array.T, method="linear")
 
     return iv_array
+
+
+def external_wall_weights(building):
+    """Each room's share of the building's external wall area, as a float32 tensor summing to 1.
+
+    Rooms with no external wall get 0. This is the weighting with which room temperatures drive
+    the inner envelope node Te2.
+    """
+    external = torch.zeros(len(building.rooms), dtype=torch.float32)
+    for i, room in enumerate(building.rooms):
+        external[i] = sum(float(building.Walls[w].area) for w in room.walls if building.Walls[w].is_external)
+    return external / external.sum()
 
 
 def steady_state_iv(model, temp_out, temp_in):

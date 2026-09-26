@@ -5,7 +5,7 @@ import numpy as np
 import pytest
 import torch
 
-from rcmodel import LOAD_KEYS, InputScaling, RCModel, load_weather_csv, model_creator, write_weather_csv
+from rcmodel import LOAD_KEYS, PARAM_KEYS, InputScaling, RCModel, load_weather_csv, model_creator, write_weather_csv
 
 
 @pytest.fixture
@@ -74,9 +74,6 @@ def expected_physical(model_config, key, n_rooms=1):
     lo, hi = model_config[key]
     scaled = np.broadcast_to(np.asarray(model_config["parameters"][key], dtype=float).flatten(), (n_rooms,))
     return torch.tensor(lo + scaled * (hi - lo), dtype=torch.float32)
-
-
-PARAM_KEYS = ("C_rm", "C1", "C2", "R1", "R2", "R3", "Rin")  # order of Building.categorise_theta()
 
 
 @pytest.mark.parametrize("load_form", ["float", "array_of_one", "array_per_room"])

@@ -72,6 +72,8 @@ def evaluate(env, rl_algorithm, dataloader, record_window=None):
         measured_time   (M,)          seconds, the window's data rows
         measured        (M, n_rooms)  measured room temperatures
         outdoor         (T,)          outdoor temperature at ``time``
+        sol_air_temperature (T,)      temperature driving the envelope at ``time``: outdoor plus
+                                      k_sa * GHI / H_OUT, so equal to outdoor when k_sa is 0
         action          (S,)          action held over each step (1 = cooling on)
         action_start    (S,)          seconds, start of each step
         action_end      (S,)          seconds, end of each step
@@ -150,6 +152,7 @@ def _build_record(base_env, steps, window_index, window_reward):
         "measured_time": base_env.time_data.to(torch.float64).numpy(),
         "measured": base_env.temp_data[:, : base_env.n_rooms].numpy(),
         "outdoor": torch.as_tensor(model.Tout_continuous(time)).flatten().to(torch.float64).numpy(),
+        "sol_air_temperature": model.sol_air_temperature(time),
         "action": np.array([action for action, *_ in steps], dtype=np.int64),
         "action_start": np.array([start for _, start, *_ in steps], dtype=np.float64),
         "action_end": np.array([observation[-1, 0].item() for *_, observation in steps], dtype=np.float64),

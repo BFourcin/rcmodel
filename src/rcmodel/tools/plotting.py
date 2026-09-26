@@ -181,8 +181,9 @@ def plot_model_record(record, ncols=None):
 
     Layout, sharing one time axis (hours into the window):
 
-    * top: outdoor temperature and the latent (wall) nodes - walls should lag and damp
-      the outdoor swing, so this is the quickest check that the parameters are physical;
+    * top: outdoor temperature (and the sol-air temperature, when k_sa is not 0) and the
+      latent (wall) nodes - walls should lag and damp the outdoor swing, so this is the
+      quickest check that the parameters are physical;
     * one panel per room: measured and predicted temperature, with the room's RMSE;
     * bottom: net heat input into the building (gain + solar - cooling), in W, with the
       solar part drawn on its own. Records written before the solar term have no solar
@@ -209,6 +210,11 @@ def plot_model_record(record, ncols=None):
 
     ax_top = fig.add_subplot(grid[0, :])
     ax_top.plot(hours, record["outdoor"], color=OUTDOOR_COLOR, linewidth=1.4, label="outdoor")
+    # Records written before the sol-air term have no sol_air_temperature; with k_sa = 0 it is
+    # the outdoor line again, so only draw it when it adds something.
+    sol_air = record.get("sol_air_temperature")
+    if sol_air is not None and not np.allclose(sol_air, record["outdoor"]):
+        ax_top.plot(hours, sol_air, color=OUTDOOR_COLOR, linewidth=1.0, linestyle="--", label="sol-air")
     for k in range(_n_latent(record)):
         ax_top.plot(
             hours, record["states"][:, k], color=NODE_COLORS[k % len(NODE_COLORS)], linewidth=1.2, label=f"wall node {k + 1}"

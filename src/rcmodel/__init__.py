@@ -20,7 +20,7 @@ from .optimisation import (
     slowest_time_constant_days,
 )
 from .physical import Building, InputScaling, Room
-from .rc_model import LOAD_KEYS, PARAM_KEYS, RC_PARAM_KEYS, RCModel, scaled_params_to_tensors
+from .rc_model import H_OUT, LOAD_KEYS, NON_NEGATIVE_PARAM_KEYS, PARAM_KEYS, RC_PARAM_KEYS, RCModel, scaled_params_to_tensors
 from .tools import (
     BuildingTemperatureDataset,
     InfiniteSampler,
@@ -47,7 +47,15 @@ from .tools import (
     write_weather_csv,
 )
 
-__all__ = ["LOAD_KEYS", "PARAM_KEYS", "RC_PARAM_KEYS", "RCModel", "scaled_params_to_tensors"]
+__all__ = [
+    "H_OUT",
+    "LOAD_KEYS",
+    "NON_NEGATIVE_PARAM_KEYS",
+    "PARAM_KEYS",
+    "RC_PARAM_KEYS",
+    "RCModel",
+    "scaled_params_to_tensors",
+]
 __all__.extend(optimisation.__all__)
 __all__.extend(physical.__all__)
 __all__.extend(tools.__all__)

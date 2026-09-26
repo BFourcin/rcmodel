@@ -10,7 +10,7 @@ from xitorch.interpolate import Interp1D
 
 import rcmodel.optimisation
 from rcmodel.physical import Building, InputScaling, Room
-from rcmodel.rc_model import LOAD_KEYS, RC_PARAM_KEYS, RCModel
+from rcmodel.rc_model import LOAD_KEYS, PARAM_KEYS, RC_PARAM_KEYS, RCModel
 
 from .rcmodel_dataset import BuildingTemperatureDataset, InfiniteSampler, RandomSampleDataset
 
@@ -116,6 +116,7 @@ def model_creator(model_config):
         "R2": [0.1, 5],
         "R3": [0.5, 6],
         "Rin": [0.1, 5],
+        "k_sa": [0, 1],  # Sol-air coefficient: envelope sees Tout + k_sa * GHI / 25. [0, 0] turns it off.
         "cool": [0, 50],  # Cooling limit in W/m2
         "gain": [0, 5],  # Gain limit in W/m2
         "solar": [0, 0.2],  # Fraction p of GHI reaching the room: solar gain = p * GHI * floor area
@@ -142,6 +143,7 @@ def model_creator(model_config):
             "R2": np.random.rand(1),
             "R3": np.random.rand(1),
             "Rin": np.random.rand(1),
+            "k_sa": np.random.rand(1),
             "cool": np.random.rand(len(room_coordinates)),  # one per room, or a single value for all
             "gain": np.random.rand(len(room_coordinates)),
             "solar": np.random.rand(len(room_coordinates)),
@@ -153,15 +155,17 @@ def model_creator(model_config):
 
     def init_scaling():
         # Initialise scaling class. Ranges are [min, max]: C_rm in J/K per m2 of floor, C1/C2 in
-        # J/K, R1/R2/R3/Rin in K.m2/W, cool/gain in W/m2 of floor, solar a dimensionless fraction.
-        return InputScaling(*(model_config[key] for key in range_keys))
+        # J/K, R1/R2/R3/Rin in K.m2/W, k_sa dimensionless, cool/gain in W/m2 of floor, solar a
+        # dimensionless fraction. Passed by name - the key names are InputScaling's argument names.
+        return InputScaling(**{key: model_config[key] for key in range_keys})
 
     def model_sanity_checks():
         """Check the config is self-consistent before anything is built."""
         missing_ranges = [key for key in range_keys if key not in model_config]
         assert not missing_ranges, (
             f"model_config is missing ranges for {missing_ranges}. Every one of {list(range_keys)} needs a "
-            f"[min, max] - 'solar' is the fraction of GHI reaching the room, e.g. [0, 0.2]."
+            f"[min, max] - 'solar' is the fraction of GHI reaching the room, e.g. [0, 0.2], and 'k_sa' the "
+            f"sol-air coefficient, e.g. [0, 1] ([0, 0] turns it off)."
         )
 
         has_csv = bool(model_config.get("weather_csv"))
@@ -229,6 +233,12 @@ def model_creator(model_config):
         # an older file still loads to the right physical values.
         loaded_params = loaded.transform(loaded.params) if loaded.transform else loaded.params
         loaded_loads = loaded.transform(loaded.loads) if loaded.transform else loaded.loads
+
+        # A model pickled before the sol-air term has one parameter fewer. Pad k_sa with the bottom
+        # of its range, which is no sol-air effect for any range starting at 0.
+        if loaded_params.shape[0] < len(PARAM_KEYS):
+            padding = torch.zeros(len(PARAM_KEYS) - loaded_params.shape[0])
+            loaded_params = torch.cat([loaded_params.detach(), padding])
 
         # A model pickled before the solar term has only cool and gain rows. Its solar is zero.
         if loaded_loads.shape[0] < len(LOAD_KEYS):

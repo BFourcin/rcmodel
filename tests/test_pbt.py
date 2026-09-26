@@ -21,6 +21,7 @@ import torch
 
 from rcmodel import (
     LOAD_KEYS,
+    NON_NEGATIVE_PARAM_KEYS,
     PARAM_KEYS,
     RC_PARAM_KEYS,
     env_creator,
@@ -139,14 +140,15 @@ def test_out_of_range_values_pass_through_unclipped(get_model_config):
     """
     above = {key: get_model_config[key][1] * 1.5 for key in RC_PARAM_KEYS}
     below = {key: get_model_config[key][0] * 0.5 for key in PARAM_KEYS}
-    # The loads' configured floor is 0 - there is no physically valid value below it.
-    below.update({key: sum(get_model_config[key]) / 2 for key in LOAD_KEYS})
+    # k_sa's and the loads' configured floor is 0 - there is no physically valid value below it.
+    floored_at_zero = (*NON_NEGATIVE_PARAM_KEYS, *LOAD_KEYS)
+    below.update({key: sum(get_model_config[key]) / 2 for key in floored_at_zero})
 
     scaled_above = physical_to_scaled(get_model_config, above)
     scaled_below = physical_to_scaled(get_model_config, below)
     # Guard against the test passing vacuously: these really are outside machine space's [0, 1].
     assert all(scaled_above[key] > 1 for key in RC_PARAM_KEYS)
-    assert all(scaled_below[key] < 0 for key in PARAM_KEYS)
+    assert all(scaled_below[key] < 0 for key in PARAM_KEYS if key not in floored_at_zero)
 
     for physical, scaled in ((above, scaled_above), (below, scaled_below)):
         model = model_creator({**get_model_config, "parameters": scaled})
@@ -157,7 +159,16 @@ def test_out_of_range_values_pass_through_unclipped(get_model_config):
 
 @pytest.mark.parametrize(
     "key, value",
-    [("Rin", 0.0), ("R1", -0.1), ("C1", 0.0), ("C_rm", -5.0), ("cool", -1.0), ("gain", -0.5), ("solar", -0.01)],
+    [
+        ("Rin", 0.0),
+        ("R1", -0.1),
+        ("C1", 0.0),
+        ("C_rm", -5.0),
+        ("k_sa", -0.1),
+        ("cool", -1.0),
+        ("gain", -0.5),
+        ("solar", -0.01),
+    ],
 )
 def test_physically_invalid_parameters_are_rejected(get_model_config, physical_params, key, value):
     """Out of range is allowed; physically impossible is not.
@@ -172,13 +183,13 @@ def test_physically_invalid_parameters_are_rejected(get_model_config, physical_p
 
 
 def test_zero_loads_are_physically_valid(get_model_config, physical_params):
-    """No cooling, no gain and no solar are meaningful buildings, not errors."""
+    """No cooling, no gain, no solar and no sol-air are meaningful buildings, not errors."""
     physical = dict(physical_params[0])
-    for key in LOAD_KEYS:
+    for key in (*NON_NEGATIVE_PARAM_KEYS, *LOAD_KEYS):
         physical[key] = 0.0
     model = model_creator({**get_model_config, "parameters": physical_to_scaled(get_model_config, physical)})
     running = _physical_values(model)
-    for key in LOAD_KEYS:
+    for key in (*NON_NEGATIVE_PARAM_KEYS, *LOAD_KEYS):
         assert np.all(running[key] == 0.0)
 
 

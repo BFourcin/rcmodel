@@ -12,7 +12,11 @@ class InputScaling(Building):
     Physical scaling - returns parameters back to their physical meaning.
 
     Initialise with:
-    InputScaling(C_rm, C1, C2, R1, R2, R3, Rin, cool, gain, solar)
+    InputScaling(C_rm, C1, C2, R1, R2, R3, Rin, cool, gain, solar, k_sa=k_sa)
+
+    The physical ranges are in PARAM_KEYS order, k_sa last. k_sa is the dimensionless sol-air
+    coefficient (see RCModel.sol_air_temperature). It is a keyword that defaults to [0, 0], i.e.
+    pinned at no sol-air effect, so older callers keep working.
 
     The energy (load) ranges are one row each, in LOAD_KEYS order: cool and gain in W/m2 of
     floor area, and solar as the dimensionless fraction p of global horizontal irradiance that
@@ -20,9 +24,22 @@ class InputScaling(Building):
     callers that only give cool and gain keep working.
     """
 
-    def __init__(self, C_rm=None, C1=None, C2=None, R1=None, R2=None, R3=None, Rin=None, cool=None, gain=None, solar=(0, 1)):
+    def __init__(
+        self,
+        C_rm=None,
+        C1=None,
+        C2=None,
+        R1=None,
+        R2=None,
+        R3=None,
+        Rin=None,
+        cool=None,
+        gain=None,
+        solar=(0, 1),
+        k_sa=(0, 0),
+    ):
 
-        self.phys_param_range = [C_rm, C1, C2, R1, R2, R3, Rin]
+        self.phys_param_range = [C_rm, C1, C2, R1, R2, R3, Rin, list(k_sa)]
         self.energy_param_range = [cool, gain, list(solar)]
 
         # check if the ranges are in the correct format. i.e. [lb, ub]
@@ -33,9 +50,12 @@ class InputScaling(Building):
     def physical_param_scaling(self, theta_scaled):
         """
         Scale from 0-1 back to physical value.
+
+        A theta shorter than phys_param_range is scaled against the leading ranges only: models
+        built before k_sa existed hold just the seven R and C values.
         """
 
-        theta = self.unminmaxscale(theta_scaled, self.phys_param_range)
+        theta = self.unminmaxscale(theta_scaled, self._ranges_for(theta_scaled))
 
         return theta
 
@@ -44,9 +64,13 @@ class InputScaling(Building):
         Scale to 0-1.
         """
 
-        theta_scaled = self.minmaxscale(theta, self.phys_param_range)
+        theta_scaled = self.minmaxscale(theta, self._ranges_for(theta))
 
         return theta_scaled
+
+    def _ranges_for(self, theta):
+        n = torch.as_tensor(theta).shape[-1]
+        return self.phys_param_range[:n]
 
     def physical_loads_scaling(self, loads_m):
         """

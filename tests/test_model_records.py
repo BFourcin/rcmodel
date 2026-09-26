@@ -15,6 +15,7 @@ import pytest
 import torch
 
 from rcmodel import (
+    H_OUT,
     PARAM_KEYS,
     best_records_over_time,
     env_creator,
@@ -107,6 +108,32 @@ def test_record_carries_the_heat_input_that_drove_it(env_and_eval_loader):
     action = record["action"][np.minimum(step, len(record["action"]) - 1)]
     expected = np.sum(record["gain_w"]) + record["solar_w"] - action * np.sum(record["cool_w"])
     np.testing.assert_allclose(record["net_heat_w"], expected, rtol=1e-6)  # loads are float32
+
+
+def test_record_carries_the_sol_air_temperature(env_and_eval_loader):
+    """sol_air_temperature is outdoor + k_sa * GHI / H_OUT at every simulated row."""
+    env, eval_dataloader = env_and_eval_loader
+    _, record = evaluate(env, AlternatingPolicy(), eval_dataloader, record_window=0)
+    k_sa = record["param_values"][list(record["param_names"]).index("k_sa")]
+    assert k_sa > 0, "the fixture should have a sol-air effect to check"
+
+    assert record["sol_air_temperature"].shape == record["outdoor"].shape
+    np.testing.assert_allclose(record["sol_air_temperature"], record["outdoor"] + k_sa * record["ghi"] / H_OUT, rtol=1e-6)
+
+
+def test_record_from_before_sol_air_still_plots(record):
+    """Records written by older runs have no sol_air_temperature and no k_sa."""
+    old = {key: value for key, value in record.items() if key != "sol_air_temperature"}
+    names = list(record["param_names"])
+    keep = [i for i, name in enumerate(names) if name != "k_sa"]
+    old["param_names"] = record["param_names"][keep]
+    old["param_values"] = record["param_values"][keep]
+    fig = plot_model_record(old)
+    try:
+        labels = [line.get_label() for line in fig.axes[0].get_lines()]
+        assert "sol-air" not in labels
+    finally:
+        plt.close(fig)
 
 
 def test_record_round_trips_through_npz(record, tmp_path):

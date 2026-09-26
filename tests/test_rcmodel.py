@@ -4,9 +4,10 @@ import numpy as np
 import pandas as pd
 import pytest
 import torch
+from xitorch.interpolate import Interp1D
 
 from rcmodel import BuildingTemperatureDataset, RCModel, model_creator
-from rcmodel.rc_model import RC_PARAM_KEYS, get_iv_array, steady_state_iv
+from rcmodel.rc_model import H_OUT, RC_PARAM_KEYS, external_wall_weights, get_iv_array, steady_state_iv
 
 
 @pytest.mark.parametrize(
@@ -124,10 +125,10 @@ def test_get_iv_array_converges_to_steady_state(get_model_config, fake_rooms, fa
     for an arbitrary draw. Minimal R/C values keep the slowest time constant to ~34 minutes, so a
     24-hour dataset (~42x that) converges comfortably and still runs in a fraction of a second.
 
-    The target is computed via the same "Tin averaged over ALL rooms, not just the ones touching
-    the external wall" formula get_iv_array() uses internally (see its `Tin_agg` comment) rather
-    than assuming the raw indoor temperature value - for `fake_rooms`, only 6 of 9 rooms are
-    externally connected, so the true driving Tin is diluted from 21.0 down to 14.0.
+    Every room sits at the same temperature, so whatever the external-wall weighting, the inner
+    envelope node sees exactly that temperature. `fake_rooms` has internal rooms too (only 6 of 9
+    touch an external wall): get_iv_array() once averaged over ALL rooms with the internal ones
+    zeroed, diluting the driving Tin here from 21.0 to 14.0.
     """
     model_config = get_model_config
     fake_room_names, _ = fake_rooms
@@ -166,15 +167,30 @@ def test_get_iv_array_converges_to_steady_state(get_model_config, fake_rooms, fa
     if t_eval.dim() > 1:
         t_eval = t_eval.squeeze(0)
 
-    external_rooms = model.building.connectivity_matrix[0, 1:]
-    tin_agg = (torch.full((len(fake_room_names),), tin) * external_rooms).float().mean().item()
-
-    steady = steady_state_iv(model, torch.tensor(tout), torch.tensor(tin_agg)).squeeze()
+    assert (model.building.connectivity_matrix[0, 1:] == 0).any(), "fixture needs an internal room"
+    steady = steady_state_iv(model, torch.tensor(tout), torch.tensor(tin)).squeeze()
     final_state = iv_array(t_eval[-1])
 
     assert torch.allclose(final_state[0:2], steady[0:2], atol=0.05), (
         f"latent state {final_state[0:2]} did not converge to steady state {steady[0:2]}"
     )
+
+
+def test_external_wall_weights(get_model_config):
+    """Weights are each room's share of the external wall area: they sum to 1 and internal rooms
+    get none."""
+    model = model_creator(get_model_config)
+    building = model.building
+    weights = external_wall_weights(building)
+
+    assert weights.sum().item() == pytest.approx(1.0)
+    is_external = building.connectivity_matrix[0, 1:] > 0
+    assert torch.all(weights[~is_external] == 0)
+    assert torch.all(weights[is_external] > 0)
+    # Te2's row of A couples each room with conductance A_i / R3, so the weights must be proportional to it.
+    model._build_matrices()
+    k = building.make_thermal_conductivity_matrix()[0, 1:]
+    torch.testing.assert_close(weights, k / k.sum())
 
 
 def test_get_iv_array_handles_realistic_timestamps(get_model_config, full_building_dataset):
@@ -430,6 +446,134 @@ def test_slowest_time_constant_orders_parameter_sets(get_model_config):
     # settles in well under a day, the maximum-parameter one takes far longer than a week.
     assert tau_fast < 24 * 60**2
     assert tau_slow > 7 * 24 * 60**2
+
+
+# --------------------------------------------------------------------------- sol-air
+
+
+def _constant_ghi_config(model_config, fake_time, ghi_value):
+    config = dict(model_config)
+    config["weather_data_ghi"] = np.full(len(fake_time), ghi_value)
+    return config
+
+
+def _shifted_tout_config(model_config, shift):
+    config = dict(model_config)
+    config["weather_data_outdoor_temperature"] = np.asarray(model_config["weather_data_outdoor_temperature"]) + shift
+    return config
+
+
+def test_zero_k_sa_is_the_same_as_no_solar_data(get_model_config, fake_time):
+    """k_sa = 0 with GHI data, and any k_sa without GHI data, must both drive the envelope with the
+    bare outdoor temperature - exactly the model as it was before the sol-air term existed."""
+    t_eval = torch.tensor(fake_time[:31], dtype=torch.float64)
+    zero_k = _model_with_parameters(get_model_config, cool=0.5, gain=0.5, k_sa=0.0)
+    no_data = _model_with_parameters(get_model_config, cool=0.5, gain=0.5, k_sa=1.0)
+    no_data.ghi_continuous = None
+
+    tout = torch.as_tensor(zero_k.Tout_continuous(t_eval)).to(torch.float64).numpy()
+    np.testing.assert_array_equal(zero_k.sol_air_temperature(t_eval), tout)
+    torch.testing.assert_close(_run(zero_k, t_eval, action=1), _run(no_data, t_eval, action=1), rtol=0, atol=0)
+
+
+def test_sol_air_is_tout_shifted_by_k_sa_ghi_over_h_out(get_model_config, fake_time):
+    """Pins the units: under a constant GHI of G W/m2, k_sa must behave exactly as an outdoor
+    temperature raised by k_sa * G / H_OUT - in the forward run and in the latent-node
+    initial values alike."""
+    ghi_value = 400.0
+    k_sa_scaled = 0.5
+    low, high = get_model_config["k_sa"]
+    k_sa = low + k_sa_scaled * (high - low)
+    shift = k_sa * ghi_value / H_OUT
+    assert shift > 1, "shift too small to be a meaningful comparison"
+
+    with_sol_air = _model_with_parameters(_constant_ghi_config(get_model_config, fake_time, ghi_value), k_sa=k_sa_scaled)
+    shifted = _model_with_parameters(_shifted_tout_config(get_model_config, shift))
+
+    t_eval = torch.tensor(fake_time[:121], dtype=torch.float64)
+    np.testing.assert_allclose(
+        with_sol_air.sol_air_temperature(t_eval), shifted.sol_air_temperature(t_eval), rtol=0, atol=1e-9
+    )
+    torch.testing.assert_close(_run(with_sol_air, t_eval), _run(shifted, t_eval), rtol=1e-6, atol=1e-5)
+
+
+def test_get_iv_array_uses_sol_air(get_model_config, fake_time, full_building_dataset):
+    """The latent wall nodes are initialised from the temperature that actually drives them."""
+    ghi_value = 400.0
+    k_sa_scaled = 0.5
+    low, high = get_model_config["k_sa"]
+    shift = (low + k_sa_scaled * (high - low)) * ghi_value / H_OUT
+
+    with_sol_air = _model_with_parameters(_constant_ghi_config(get_model_config, fake_time, ghi_value), k_sa=k_sa_scaled)
+    shifted = _model_with_parameters(_shifted_tout_config(get_model_config, shift))
+    bare = _model_with_parameters(_constant_ghi_config(get_model_config, fake_time, ghi_value), k_sa=0.0)
+
+    t = torch.tensor(fake_time[len(fake_time) // 2], dtype=torch.float64)
+    iv_sol_air = get_iv_array(with_sol_air, full_building_dataset)(t)
+    iv_shifted = get_iv_array(shifted, full_building_dataset)(t)
+    iv_bare = get_iv_array(bare, full_building_dataset)(t)
+
+    torch.testing.assert_close(iv_sol_air, iv_shifted, rtol=1e-6, atol=1e-5)
+    assert (iv_sol_air[0] - iv_bare[0]).abs().item() > 0.1, "k_sa made no difference to the outer wall node"
+
+
+def test_forward_matches_odeint_with_sol_air_and_heat_input(get_model_config, fake_time):
+    """forward() against the rk4 reference with both new inputs time-varying: sol-air follows the
+    synthetic GHI day, and a measured heat input ramps per room across the window."""
+    mid = dict.fromkeys(RC_PARAM_KEYS, 0.5)
+    mid["k_sa"] = 1.0
+    model = _model_with_parameters(get_model_config, **mid)
+    n_rooms = len(model.building.rooms)
+    t_eval = torch.tensor(fake_time[:31], dtype=torch.float64)
+
+    time = torch.tensor(fake_time, dtype=torch.float64)
+    ramp = (time - time[0]) / (time[-1] - time[0])
+    watts = torch.stack([200.0 * (i + 1) * ramp for i in range(n_rooms)])  # (n_rooms, T)
+    model.heat_input_continuous = Interp1D(time, watts, method="linear")
+
+    fast = _run(model, t_eval, action=1)
+    model.iv = 24 * torch.ones(2 + n_rooms)
+    reference = model._forward_odeint(t_eval, action=1).squeeze()
+    torch.testing.assert_close(fast, reference, rtol=8 * torch.finfo(torch.float32).eps, atol=0)
+
+    plain = _model_with_parameters(get_model_config, **{**mid, "k_sa": 0.0})
+    effect = (fast - _run(plain, t_eval, action=1)).abs().max().item()
+    assert effect > 1e-3, "the new inputs made no visible difference, so the agreement proves nothing"
+
+
+def test_heat_input_matches_the_same_constant_gain(get_model_config, fake_time):
+    """A measured heat input of Q W per room must heat exactly as a gain of Q / floor area W/m2."""
+    gain_w_m2 = 2.5
+    low, high = get_model_config["gain"]
+    via_gain = _model_with_parameters(get_model_config, gain=(gain_w_m2 - low) / (high - low))
+
+    via_input = _model_with_parameters(get_model_config)
+    area = torch.tensor([room.area for room in via_input.building.rooms], dtype=torch.float64)
+    time = torch.tensor(fake_time, dtype=torch.float64)
+    watts = (gain_w_m2 * area)[:, None].repeat(1, len(time))
+    via_input.heat_input_continuous = Interp1D(time, watts, method="linear")
+
+    t_eval = torch.tensor(fake_time[:121], dtype=torch.float64)
+    expected = _run(via_gain, t_eval)
+    assert (expected[-1, 2:] - expected[0, 2:]).abs().max() > 1e-3, "no heating to compare"
+    torch.testing.assert_close(_run(via_input, t_eval), expected, rtol=1e-6, atol=1e-5)
+
+
+def test_model_pickled_before_sol_air_still_runs(get_model_config, fake_time):
+    """Models pickled before the sol-air term hold seven parameters and have neither a k_sa nor a
+    heat_input_continuous attribute. They must still build and run, with no sol-air effect."""
+    model = _model_with_parameters(get_model_config, gain=0.5)
+    model.params = torch.nn.Parameter(model.params[:7].clone(), requires_grad=False)
+    del model.k_sa
+    del model.heat_input_continuous
+
+    t_eval = torch.tensor(fake_time[:31], dtype=torch.float64)
+    tout = torch.as_tensor(model.Tout_continuous(t_eval)).to(torch.float64).numpy()
+    np.testing.assert_array_equal(model.sol_air_temperature(t_eval), tout)
+
+    model.setup()
+    assert model.k_sa == 0.0
+    assert torch.isfinite(_run(model, t_eval)).all()
 
 
 if __name__ == "__main__":

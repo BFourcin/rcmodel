@@ -195,6 +195,7 @@ def get_model_config(fake_time, fake_outdoor_weather, fake_ghi, fake_rooms):
         "R2": [0.1, 5],
         "R3": [0.5, 6],
         "Rin": [0.1, 5],
+        "k_sa": [0, 1],  # Sol-air coefficient
         "cool": [0, 50],  # Cooling limit in W/m2
         "gain": [0, 5],  # Gain limit in W/m2
         "solar": [0, 0.2],  # Fraction of GHI reaching the room
@@ -217,6 +218,7 @@ def get_model_config(fake_time, fake_outdoor_weather, fake_ghi, fake_rooms):
             "cool": np.random.rand(1).item(),  # 0.09133423646610082
             "gain": np.random.rand(1).item(),  # 0.9086668150306394
             "solar": np.random.rand(1).item(),
+            "k_sa": np.random.rand(1).item(),  # drawn last so the draws above keep their seeded values
         },
     }
     return model_config
