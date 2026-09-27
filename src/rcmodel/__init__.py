@@ -11,6 +11,7 @@ from .optimisation import (
     build_pbt_scheduler,
     build_tuner,
     evaluate,
+    learner_diagnostics,
     make_update_env_fn,
     physical_to_scaled,
     ppo_settings,

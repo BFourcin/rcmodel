@@ -320,6 +320,20 @@ class RCPolicyTrainable(tune.Trainable):
                                reliably reassembled from checkpoints after the run.
     model_record_window      : index of the evaluation window to record (default 0). The same
                                window every time, so records compare across trials and time.
+    metric_mode              : "last" (default) or "best" - see "The metric" below.
+
+    The metric
+    ----------
+    With metric_mode="last", METRIC is the latest evaluation. PPO on this problem does not
+    settle: on a fixed, correct parameter set its evaluation swings by hundreds between
+    evaluations (synthetic_rc_recovery.ipynb), far more than the score difference between
+    neighbouring parameter sets, so a single evaluation ranks trials largely by where each
+    policy happens to be in its oscillation. With metric_mode="best", METRIC is the best
+    evaluation since the trial's parameters last changed - the best policy found so far for
+    these parameters, which is what a parameter set should be judged by - and checkpoints carry
+    that best policy's weights rather than the current ones, so a PBT exploit copies the policy
+    the donor was ranked on. The best is forgotten whenever the parameters change
+    (reset_config), because it belonged to the old ones.
 
     The plausibility filter
     -----------------------
@@ -338,7 +352,10 @@ class RCPolicyTrainable(tune.Trainable):
         self.eval_env = None
         self._pending_weights = None
         self._last_eval_return = None
+        self._best_eval_return = None
+        self._best_weights = None
 
+        self.metric_mode = _metric_mode(config)
         self.evaluation_interval = config.get("evaluation_interval", 1)
         self._ppo = ppo_settings(config.get("ppo"))
         self.eval_dataloader = self._make_eval_dataloader(config)
@@ -461,23 +478,33 @@ class RCPolicyTrainable(tune.Trainable):
                 "train_return_mean": IMPLAUSIBLE_PENALTY,
                 "slowest_tau_days": self.tau_days,
                 "implausible": True,
+                "evaluated": False,
                 "ppo_lr": self._ppo["lr"],
+                **learner_diagnostics({}),
             }
 
         results = self.algo.train()
         train_return = _episode_return_mean(results)
 
-        if self.eval_env is not None and (self.iteration + 1) % self.evaluation_interval == 0:
+        evaluated = self.eval_env is not None and (self.iteration + 1) % self.evaluation_interval == 0
+        if evaluated:
             record_window = self.model_record_window if self.model_record_dir is not None else None
             reward_list, record = evaluate(self.eval_env, self.algo, self.eval_dataloader, record_window=record_window)
             self._last_eval_return = float(np.mean(reward_list)) if reward_list else None
+            if self._last_eval_return is not None and (
+                self._best_eval_return is None or self._last_eval_return > self._best_eval_return
+            ):
+                self._best_eval_return = self._last_eval_return
+                if self.metric_mode == "best":
+                    # get_weights() can share memory with the live network, which keeps training.
+                    self._best_weights = copy.deepcopy(self.algo.get_policy().get_weights())
             if record is not None:
                 self._save_record(record)
 
         # PBT needs METRIC present on EVERY result, so carry the last evaluation forward on
         # iterations that didn't run one. Falling back to the train return keeps the very
         # first iterations comparable when evaluation_interval > 1.
-        eval_return = self._last_eval_return
+        eval_return = self._best_eval_return if self.metric_mode == "best" else self._last_eval_return
         if eval_return is None:
             eval_return = train_return
 
@@ -486,7 +513,13 @@ class RCPolicyTrainable(tune.Trainable):
             "train_return_mean": train_return,
             "slowest_tau_days": self.tau_days,
             "implausible": False,
+            # True only on iterations that actually ran an evaluation; on the others METRIC is
+            # the last evaluation carried forward. A learning curve wants only the True rows.
+            "evaluated": evaluated,
+            "last_eval_return": self._last_eval_return,
+            "best_eval_return": self._best_eval_return,
             "ppo_lr": self._ppo["lr"],
+            **learner_diagnostics(results),
         }
 
     def _save_record(self, record):
@@ -522,8 +555,15 @@ class RCPolicyTrainable(tune.Trainable):
         parameters, PPO settings and score that go with these weights, so a checkpoint can be
         picked up after the run (the only other record, result.json, does not say which row a
         checkpoint belongs to). load_checkpoint never reads it.
+
+        With metric_mode="best" the weights written are the best policy's since the parameters
+        last changed (see the class docstring), falling back to the current ones before the
+        first evaluation.
         """
-        weights = self.algo.get_policy().get_weights() if self.algo is not None else self._pending_weights
+        if self.metric_mode == "best" and self._best_weights is not None:
+            weights = self._best_weights
+        else:
+            weights = self.algo.get_policy().get_weights() if self.algo is not None else self._pending_weights
         with open(Path(checkpoint_dir) / "policy_weights.pkl", "wb") as f:
             pickle.dump({"weights": weights}, f)
         with open(Path(checkpoint_dir) / TRIAL_STATE_FILE, "w") as f:
@@ -535,7 +575,10 @@ class RCPolicyTrainable(tune.Trainable):
             "trial_id": self.trial_id,
             "training_iteration": self.iteration,
             "timestamp": time.time(),
-            "score": self._last_eval_return,
+            "score": self._best_eval_return if self.metric_mode == "best" else self._last_eval_return,
+            "last_eval_return": self._last_eval_return,
+            "best_eval_return": self._best_eval_return,
+            "metric_mode": self.metric_mode,
             "rc_parameters": self.rc_physical,
             "slowest_tau_days": self.tau_days,
             "implausible": self.implausible,
@@ -582,8 +625,12 @@ class RCPolicyTrainable(tune.Trainable):
             self.algo = None
         self._ppo = new_ppo
 
+        self.metric_mode = _metric_mode(new_config)
         self._apply_parameters(new_config)
-        self._last_eval_return = None  # the old score belonged to the old parameters
+        # The old scores, and the best policy behind them, belonged to the old parameters.
+        self._last_eval_return = None
+        self._best_eval_return = None
+        self._best_weights = None
 
         if not self.implausible and self.algo is None:
             # Was sidelined (or its PPO settings changed) and is now viable - build it
@@ -598,6 +645,13 @@ class RCPolicyTrainable(tune.Trainable):
         if self.algo is not None:
             self.algo.stop()
             self.algo = None
+
+
+def _metric_mode(config):
+    mode = config.get("metric_mode", "last")
+    if mode not in ("last", "best"):
+        raise ValueError(f"metric_mode must be 'last' or 'best', got {mode!r}.")
+    return mode
 
 
 #: Name of the human-readable sidecar save_checkpoint writes next to the policy weights.
@@ -627,6 +681,59 @@ def _episode_return_mean(results):
     return float(results.get("episode_reward_mean", float("nan")))
 
 
+def learner_diagnostics(results):
+    """
+    The PPO numbers worth watching from one RLlib training result (old API stack).
+
+    Reported with every RCPolicyTrainable result, so a run records how PPO was learning as well
+    as what it scored:
+
+    entropy                policy entropy; ln 2 = 0.69 is a coin flip, near 0 it has stopped exploring.
+    kl                     KL divergence of this iteration's update.
+    vf_explained_var       how well the critic predicts returns; near 0 or below means the
+                           advantages PPO learns from are mostly noise.
+    vf_loss, policy_loss   the two halves of the loss.
+    episodes_this_iter     episodes completed this iteration.
+    train_return_iter      mean return of THIS iteration's training episodes. RLlib's own
+                           episode_return_mean averages the last 100 episodes, which lags a
+                           learning curve badly.
+    timesteps_this_iter    env steps sampled this iteration. Tune sums it into timesteps_total,
+                           which it checkpoints and restores with the trial (so it rewinds with
+                           training_iteration on a PBT exploit, and survives the algorithm being
+                           rebuilt). Stop on timesteps_total to give runs with different
+                           train_batch_size the same sample budget.
+
+    Missing values are NaN (0 for the counts), so an empty dict gives the full set of keys.
+    """
+    runners = results.get("env_runners", {})
+    stats = results.get("info", {}).get("learner", {}).get("default_policy", {}).get("learner_stats", {})
+
+    n_new = int(runners.get("episodes_this_iter", 0) or 0)
+    history = runners.get("hist_stats", {}).get("episode_reward", [])
+    this_iter = float(np.mean(history[-n_new:])) if n_new and history else float("nan")
+
+    return {
+        "entropy": float(stats.get("entropy", np.nan)),
+        "kl": float(stats.get("kl", np.nan)),
+        "vf_explained_var": float(stats.get("vf_explained_var", np.nan)),
+        "vf_loss": float(stats.get("vf_loss", np.nan)),
+        "policy_loss": float(stats.get("policy_loss", np.nan)),
+        "episodes_this_iter": n_new,
+        "train_return_iter": this_iter,
+        "timesteps_this_iter": _env_steps_this_iter(results),
+    }
+
+
+def _env_steps_this_iter(results):
+    """Env steps sampled in one RLlib training iteration, tolerating key moves between releases."""
+    for node in (results, results.get("env_runners", {})):
+        for key in ("num_env_steps_sampled_this_iter", "num_env_steps_sampled"):
+            value = node.get(key) if isinstance(node, dict) else None
+            if value:
+                return int(value)
+    return 0
+
+
 def build_pbt_scheduler(
     model_config,
     perturbation_interval=4,
@@ -635,6 +742,7 @@ def build_pbt_scheduler(
     log_uniform=True,
     perturbation_factors=(1.2, 0.8),
     ppo_mutations=None,
+    burn_in_period=0,
 ):
     """
     PBT scheduler over the RC parameters, and optionally some PPO settings.
@@ -643,6 +751,13 @@ def build_pbt_scheduler(
     its policy has adapted to its parameters, which reads a bad policy as bad parameters;
     too large and the search barely moves. It wants to be at least long enough for PPO to
     make visible progress from a fresh set of weights.
+
+    burn_in_period, also in training iterations, holds off the FIRST perturbation until every
+    trial has trained this long. The two judgements need different amounts of training: the
+    first compares policies trained from scratch, while every later one compares policies that
+    inherited a donor's weights and only have to re-adapt to slightly perturbed parameters.
+    A burn-in lets perturbation_interval be sized for the second without the first ranking
+    half-trained policies - which reads a slow-to-learn policy as bad parameters.
 
     How an exploit explores. At each perturbation the bottom quantile_fraction of trials
     copy a top-quantile trial's config and weights; the top trials themselves are never
@@ -669,6 +784,7 @@ def build_pbt_scheduler(
         resample_probability=resample_probability,
         perturbation_factors=tuple(perturbation_factors),
         hyperparam_mutations=hyperparam_mutations,
+        burn_in_period=burn_in_period,
     )
 
 
@@ -691,6 +807,8 @@ def build_tuner(
     quantile_fraction=0.25,
     resample_probability=0.25,
     perturbation_factors=(1.2, 0.8),
+    burn_in_period=0,
+    metric_mode="last",
 ):
     """
     Assemble a Tuner running RCPolicyTrainable under PBT.
@@ -714,10 +832,13 @@ def build_tuner(
 
     model_record_dir / model_record_window: see RCPolicyTrainable. Off by default.
 
+    metric_mode: "last" (default) or "best" - what a trial reports as METRIC and checkpoints;
+    see RCPolicyTrainable's "The metric".
+
     ppo: PPO settings, see PPO_DEFAULTS. Validated here so a typo fails before any trial starts.
 
-    ppo_mutations, quantile_fraction, resample_probability, perturbation_factors: how PBT
-    explores - see build_pbt_scheduler(). A mutated PPO setting's initial value is drawn from
+    ppo_mutations, quantile_fraction, resample_probability, perturbation_factors,
+    burn_in_period: how PBT explores - see build_pbt_scheduler(). A mutated PPO setting's initial value is drawn from
     its range, overriding anything given for it in `ppo`.
 
     Checkpoints and paused trials: an exploited trial restores from a copy of the donor's
@@ -727,6 +848,7 @@ def build_tuner(
     trials that fit at once, and keep enough checkpoints (num_to_keep=None keeps them all).
     """
     ppo = ppo_settings(ppo)
+    _metric_mode({"metric_mode": metric_mode})
     if eval_dataloader is None and not env_config.get("data_config"):
         raise ValueError(
             "Trials need a deterministic evaluation split to be scored on. Either put a "
@@ -746,6 +868,7 @@ def build_tuner(
             "ppo": {**ppo, **ppo_search_space(ppo_mutations)},
             "model_record_dir": None if model_record_dir is None else str(model_record_dir),
             "model_record_window": model_record_window,
+            "metric_mode": metric_mode,
         }
     )
 
@@ -773,6 +896,7 @@ def build_tuner(
                 log_uniform=log_uniform,
                 perturbation_factors=perturbation_factors,
                 ppo_mutations=ppo_mutations,
+                burn_in_period=burn_in_period,
             ),
             search_alg=search_alg,
             num_samples=num_samples,
@@ -816,6 +940,7 @@ __all__ = [
     "best_parameters",
     "build_pbt_scheduler",
     "build_tuner",
+    "learner_diagnostics",
     "physical_to_scaled",
     "ppo_search_space",
     "ppo_settings",

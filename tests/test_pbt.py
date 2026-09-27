@@ -39,6 +39,7 @@ from rcmodel.optimisation.pbt import (
     RCPolicyTrainable,
     build_pbt_scheduler,
     build_tuner,
+    learner_diagnostics,
     physical_to_scaled,
     ppo_search_space,
     ppo_settings,
@@ -48,6 +49,18 @@ from rcmodel.optimisation.pbt import (
 )
 
 torch.set_num_threads(1)
+
+LEARNER_KEYS = (
+    "entropy",
+    "kl",
+    "vf_explained_var",
+    "vf_loss",
+    "policy_loss",
+    "episodes_this_iter",
+    "train_return_iter",
+    "timesteps_this_iter",
+    "evaluated",
+)
 
 
 # --------------------------------------------------------------------------- helpers
@@ -334,8 +347,10 @@ def test_scheduler_takes_the_exploration_knobs(get_model_config):
         resample_probability=0.1,
         quantile_fraction=0.3,
         ppo_mutations={"lr": [1e-5, 1e-3]},
+        burn_in_period=30,
     )
     assert scheduler._perturbation_factors == (1.1, 0.9)
+    assert scheduler._burn_in_period == 30
     assert scheduler._resample_probability == 0.1
     assert scheduler._quantile_fraction == 0.3
     assert set(scheduler._hyperparam_mutations) == {*RC_PARAM_KEYS, "ppo"}
@@ -681,6 +696,10 @@ def test_implausible_trial_is_sidelined(get_model_config, env_config, physical_p
         assert result[METRIC] == IMPLAUSIBLE_PENALTY
         assert result["implausible"] is True
         assert result["slowest_tau_days"] == pytest.approx(tau_days)
+        # Same keys as a trained result, so a run's progress.csv has one set of columns.
+        assert set(LEARNER_KEYS) <= set(result)
+        assert result["evaluated"] is False
+        assert result["timesteps_this_iter"] == 0
     finally:
         trial.cleanup()
 
@@ -700,8 +719,72 @@ def test_plausible_trial_trains(get_model_config, env_config, physical_params, r
         assert result["implausible"] is False
         assert np.isfinite(result[METRIC])
         assert result[METRIC] > IMPLAUSIBLE_PENALTY
+
+        # PPO's own diagnostics travel with every result, and the env steps are counted so a
+        # run can stop on an equal sample budget (Tune sums timesteps_this_iter).
+        assert set(LEARNER_KEYS) <= set(result)
+        assert result["evaluated"] is True  # evaluation_interval defaults to 1
+        assert np.isfinite(result["entropy"]) and np.isfinite(result["vf_explained_var"])
+        assert result["timesteps_this_iter"] == trial._ppo["train_batch_size"]
+        assert result["episodes_this_iter"] >= 1 and np.isfinite(result["train_return_iter"])
     finally:
         trial.cleanup()
+
+
+def test_best_metric_mode_reports_and_checkpoints_the_best_policy(
+    get_model_config, env_config, physical_params, tmp_path, ray_cluster, monkeypatch
+):
+    """metric_mode="best": METRIC is the best evaluation since the parameters last changed, the
+    checkpoint carries the weights that scored it, and a parameter change forgets both."""
+    import rcmodel.optimisation.pbt as pbt_module
+
+    fast_set, _ = physical_params
+    trial = RCPolicyTrainable(config=trial_config(get_model_config, env_config, fast_set, metric_mode="best"))
+    scripted = iter([-5.0, -1.0, -3.0, -4.0])
+    weights_at_eval = []
+
+    def fake_evaluate(env, algo, dataloader, record_window=None):
+        weights_at_eval.append(copy.deepcopy(algo.get_policy().get_weights()))
+        return [next(scripted)], None
+
+    monkeypatch.setattr(pbt_module, "evaluate", fake_evaluate)
+    try:
+        results = [trial.step() for _ in range(3)]
+        assert [r[METRIC] for r in results] == [-5.0, -1.0, -1.0]
+        assert [r["last_eval_return"] for r in results] == [-5.0, -1.0, -3.0]
+
+        checkpoint = tmp_path / "ckpt"
+        checkpoint.mkdir()
+        trial.save_checkpoint(str(checkpoint))
+        saved = pickle_load(checkpoint / "policy_weights.pkl")["weights"]
+        for key, value in weights_at_eval[1].items():  # the iteration that scored -1
+            np.testing.assert_array_equal(saved[key], value)
+        assert any(not np.array_equal(saved[k], v) for k, v in weights_at_eval[2].items()), "training moved on since"
+
+        # New parameters: the best belonged to the old ones.
+        moved = {**fast_set, "R1": fast_set["R1"] * 1.2}
+        trial.reset_config(trial_config(get_model_config, env_config, moved, metric_mode="best"))
+        assert trial.step()[METRIC] == -4.0
+    finally:
+        trial.cleanup()
+
+
+def test_metric_mode_is_validated(get_model_config, env_config):
+    with pytest.raises(ValueError, match="metric_mode"):
+        build_tuner(get_model_config, env_config, metric_mode="mean")
+
+
+def pickle_load(path):
+    import pickle
+
+    with open(path, "rb") as f:
+        return pickle.load(f)
+
+
+def test_learner_diagnostics_of_an_empty_result_is_complete():
+    diagnostics = learner_diagnostics({})
+    assert set(diagnostics) == set(LEARNER_KEYS) - {"evaluated"}
+    assert diagnostics["timesteps_this_iter"] == 0 and np.isnan(diagnostics["entropy"])
 
 
 def test_trainable_records_the_model_it_evaluated(get_model_config, env_config, physical_params, tmp_path, ray_cluster):
