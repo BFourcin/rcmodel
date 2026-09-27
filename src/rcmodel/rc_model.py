@@ -775,13 +775,21 @@ def get_iv_array(model, dataset):
               C1     C2      Cin
 
     Tout here is the sol-air temperature (see RCModel.sol_air_temperature), which is plain Tout when k_sa is 0.
+
+    The latent nodes are integrated over the dataset's history (every row from the start of its file to the end
+    of its split - see BuildingTemperatureDataset.get_history), so a split that starts part-way through a file,
+    such as the evaluation split, starts from warmed-up wall states. The steady-state starting guess is made at
+    the file's first row, where its error has the longest to decay.
     Tout and Tin are exogenous inputs (not functions of T1/T2), and Q never enters this reduced system - so this is a
     linear time-invariant state-space system with known input trajectories, which is discretized exactly (see
     _foh_discretize) rather than numerically integrated with an ODE solver.
     """
 
     with torch.no_grad():
-        t_eval, temp_data = dataset.get_all_data()
+        # The dataset's whole history up to the end of its split, not just the split: see
+        # get_history(). Datasets without one (e.g. in tests) fall back to their own rows.
+        get_rows = getattr(dataset, "get_history", None) or dataset.get_all_data
+        t_eval, temp_data = get_rows()
         Tin_continuous = Interp1D(t_eval, temp_data[:, 0 : len(model.building.rooms)].T, method="linear")
 
         bl = model.building

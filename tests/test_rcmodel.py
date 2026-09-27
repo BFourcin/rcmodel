@@ -222,6 +222,31 @@ def test_get_iv_array_handles_realistic_timestamps(get_model_config, full_buildi
         assert torch.isfinite(sample).all(), f"idx={idx}: iv_array returned non-finite values: {sample}"
 
 
+def test_test_split_iv_array_is_warmed_up_over_the_history(get_model_config, synthetic_indoor_temperature_csv):
+    """A split that starts part-way through the file must start from the same wall states the whole
+    file's integration reaches there - not from a fresh steady-state guess at its first row.
+
+    get_iv_array() once integrated the latent nodes over the split's own rows only, so the evaluation
+    split's first window started from that guess: on a synthetic building whose perfect policy scores
+    exactly 0 everywhere else, it cost that one window a return of -260.
+    """
+    model = model_creator(get_model_config)
+    model._build_matrices()
+    model._build_loads()
+
+    full = BuildingTemperatureDataset(synthetic_indoor_temperature_csv, sample_size=10, all=True)
+    test = BuildingTemperatureDataset(synthetic_indoor_temperature_csv, sample_size=10, all=False, test=True)
+
+    t_test, _ = test.get_all_data()
+    t_history, _ = test.get_history()
+    assert t_history[0] == full.get_all_data()[0][0], "the history starts at the top of the file"
+    assert t_history[-1] == t_test[-1], "and ends where the split does"
+
+    iv_full = get_iv_array(model, full)
+    iv_test = get_iv_array(model, test)
+    torch.testing.assert_close(iv_test(t_test[0]), iv_full(t_test[0]), atol=1e-4, rtol=0)
+
+
 def _model_with_parameters(model_config, **overrides):
     """model_creator() with every parameter pinned to 0.0 (the bottom of each range) except
     the named overrides, then A/B built. 0.0 gives the smallest R*C products and therefore

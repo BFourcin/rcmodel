@@ -130,6 +130,22 @@ class BuildingTemperatureDataset(Dataset):
 
         return t_sample, temp_sample
 
+    def get_history(self):
+        """Every row from the START OF THE FILE to the end of this split, as (time, temperatures).
+
+        What get_iv_array() warms the latent wall nodes up over. Those nodes are driven only by past
+        outdoor and room temperatures, so running them over everything before the split is causal (no
+        future data), and it means the split's first window starts from warmed-up wall states rather
+        than from a steady-state guess made at the split's first row. For a test split that guess
+        used to cost the first evaluation window more error than the rest of the split put together.
+        """
+        df = pd.read_csv(self.csv_path, nrows=self.rows_to_skip + self.entry_count)
+        t = torch.tensor(df.iloc[:, 1].values, dtype=torch.float64)
+        temp = torch.tensor(df.iloc[:, 2:].values, dtype=torch.float32)
+        if self.transform:
+            temp = self.transform(temp)
+        return t, temp
+
 
 class RandomSampleDataset(Dataset):
     """
@@ -273,6 +289,22 @@ class RandomSampleDataset(Dataset):
             temp_sample = self.transform(temp_sample)
 
         return t_sample, temp_sample
+
+    def get_history(self):
+        """Every row from the START OF THE FILE to the end of this split, as (time, temperatures).
+
+        What get_iv_array() warms the latent wall nodes up over. Those nodes are driven only by past
+        outdoor and room temperatures, so running them over everything before the split is causal (no
+        future data), and it means the split's first window starts from warmed-up wall states rather
+        than from a steady-state guess made at the split's first row. For a test split that guess
+        used to cost the first evaluation window more error than the rest of the split put together.
+        """
+        df = pd.read_csv(self.csv_path, nrows=self.rows_to_skip + self.entry_count)
+        t = torch.tensor(df.iloc[:, 1].values, dtype=torch.float64)
+        temp = torch.tensor(df.iloc[:, 2:].values, dtype=torch.float32)
+        if self.transform:
+            temp = self.transform(temp)
+        return t, temp
 
 
 class InfiniteSampler(Sampler):
