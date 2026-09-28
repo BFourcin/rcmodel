@@ -476,7 +476,9 @@ def make_dataloaders(data_config):
         "eval_split"  : "tail" (default) - the last 20 % of the rows, as above - or
                         {"mode": "interleaved", "every": k} - every k-th sample_size block of the whole
                         record is held out for evaluation and the training windows are drawn from the
-                        rest, never overlapping a held-out block. See interleaved_blocks().
+                        rest, never overlapping a held-out block. See interleaved_blocks(). Or
+                        {"mode": "blocks", "train": [...], "eval": [...]} - explicit sample_size block
+                        indices for each; blocks in neither list are unused (e.g. periods to exclude).
 
     NOTE: the two dataset classes compute their test split the same way only when
     warmup_size is 0 (RandomSampleDataset subtracts the warmup twice - see its
@@ -516,8 +518,25 @@ def make_dataloaders(data_config):
                 exclude_blocks=blocks,
             )
             eval_dataset = BuildingTemperatureDataset(path_sorted, sample_size, all=True, block_indices=blocks)
+        elif isinstance(eval_split, dict) and eval_split.get("mode") == "blocks":
+            n_rows = len(pd.read_csv(path_sorted, usecols=[1]))
+            train_blocks, eval_blocks = _explicit_blocks(eval_split, n_rows, int(sample_size))
+            # Random training windows may start anywhere that doesn't overlap a block outside the training set.
+            not_train = [i for i in range(n_rows // int(sample_size)) if i not in set(train_blocks)]
+            train_dataset = RandomSampleDataset(
+                path_sorted,
+                sample_size,
+                warmup_size,
+                all=True,
+                epoch_length=data_config.get("epoch_length"),
+                exclude_blocks=not_train,
+            )
+            eval_dataset = BuildingTemperatureDataset(path_sorted, sample_size, all=True, block_indices=eval_blocks)
         else:
-            raise ValueError(f"eval_split must be 'tail' or {{'mode': 'interleaved', 'every': k}}, got {eval_split!r}.")
+            raise ValueError(
+                f"eval_split must be 'tail', {{'mode': 'interleaved', 'every': k}} or "
+                f"{{'mode': 'blocks', 'train': [...], 'eval': [...]}}, got {eval_split!r}."
+            )
 
     train_dataloader = torch.utils.data.DataLoader(
         train_dataset,
@@ -552,9 +571,29 @@ def training_windows_dataloader(data_config):
             held_out = set(interleaved_blocks(n_rows, sample_size, int(eval_split["every"])))
             blocks = [i for i in range(n_rows // sample_size) if i not in held_out]
             dataset = BuildingTemperatureDataset(path_sorted, sample_size, all=True, block_indices=blocks)
+        elif isinstance(eval_split, dict) and eval_split.get("mode") == "blocks":
+            n_rows = len(pd.read_csv(path_sorted, usecols=[1]))
+            train_blocks, _ = _explicit_blocks(eval_split, n_rows, sample_size)
+            dataset = BuildingTemperatureDataset(path_sorted, sample_size, all=True, block_indices=train_blocks)
         else:
-            raise ValueError(f"eval_split must be 'tail' or {{'mode': 'interleaved', 'every': k}}, got {eval_split!r}.")
+            raise ValueError(
+                f"eval_split must be 'tail', {{'mode': 'interleaved', 'every': k}} or "
+                f"{{'mode': 'blocks', 'train': [...], 'eval': [...]}}, got {eval_split!r}."
+            )
     return torch.utils.data.DataLoader(dataset, batch_size=1, shuffle=False)
+
+
+def _explicit_blocks(eval_split, n_rows, sample_size):
+    """(train, eval) block lists of an eval_split {"mode": "blocks", "train": [...], "eval": [...]}: the caller
+    chooses exactly which sample_size blocks are trained and scored on (e.g. only periods without heating), and
+    blocks in neither list are not used at all. The two lists must not overlap."""
+    n_blocks = n_rows // sample_size
+    train, evaluate = sorted(int(b) for b in eval_split["train"]), sorted(int(b) for b in eval_split["eval"])
+    if set(train) & set(evaluate):
+        raise ValueError(f"train and eval blocks overlap: {sorted(set(train) & set(evaluate))}.")
+    if not train or not evaluate or min(train + evaluate) < 0 or max(train + evaluate) >= n_blocks:
+        raise ValueError(f"train and eval blocks must be non-empty and within 0..{n_blocks - 1}.")
+    return train, evaluate
 
 
 def change_origin(room_coordinates):

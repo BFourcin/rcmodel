@@ -149,3 +149,22 @@ def test_training_windows_interleaved(data_config):
     train_starts = {b[0][0, 0].item() for b in loader}
     eval_starts = {b[0][0, 0].item() for b in eval_dataloader}
     assert train_starts and eval_starts and not train_starts & eval_starts
+
+
+def test_explicit_blocks_split(data_config):
+    """eval_split mode "blocks": exactly the listed windows, and unlisted ones used by neither loader."""
+    size = data_config["sample_size"] // 6  # 6 blocks over the fixture's 6 hours
+    config = {**data_config, "sample_size": size, "eval_split": {"mode": "blocks", "train": [1, 2, 4], "eval": [3]}}
+    train_loader = training_windows_dataloader(config)
+    train_random, eval_loader = make_dataloaders(config)
+    t0 = train_loader.dataset.get_history()[0][0].item()
+    block_of = lambda batch: (batch[0][0, 0].item() - t0) / (size * data_config["dt"])  # noqa: E731
+    assert [round(block_of(b)) for b in train_loader] == [1, 2, 4]
+    assert [round(block_of(b)) for b in eval_loader] == [3]
+    # Random training windows never overlap blocks 0, 3 or 5: they start within blocks 1-2, or exactly at 4.
+    batches = iter(train_random)
+    for _ in range(20):
+        start = block_of(next(batches))
+        assert 1 - 1e-9 <= start <= 2 + 1e-9 or abs(start - 4) < 1e-9
+    with pytest.raises(ValueError, match="overlap"):
+        training_windows_dataloader({**config, "eval_split": {"mode": "blocks", "train": [1, 3], "eval": [3]}})
