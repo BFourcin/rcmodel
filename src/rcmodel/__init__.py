@@ -1,13 +1,16 @@
 from . import optimisation, physical, rc_model, tools
 from .optimisation import (
+    DEFAULT_OBSERVATION_FEATURES,
     ENVELOPE_KEYS,
     METRIC,
     MODE,
+    OBSERVATION_FEATURES,
     PPO_DEFAULTS,
     LSIEnv,
     PreprocessEnv,
     PriorCoolingPolicy,
     RCPolicyTrainable,
+    SchedulePolicy,
     best_parameters,
     build_pbt_scheduler,
     build_tuner,
@@ -21,6 +24,7 @@ from .optimisation import (
     ppo_settings,
     preprocess_observation,
     sample_plausible_population,
+    schedule_available,
     search_space,
     slowest_time_constant_days,
 )
@@ -63,6 +67,7 @@ from .tools import (
     room_rmse,
     save_model_record,
     sort_data,
+    training_windows_dataloader,
     write_weather_csv,
 )
 

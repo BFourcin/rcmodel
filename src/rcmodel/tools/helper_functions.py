@@ -395,6 +395,8 @@ def env_creator(env_config):
                 model, the route a PBT exploit uses.
             - "update_state_dict": Optional RCModel state_dict applied on top of the model.
             - "observation_mu" / "observation_std_dev": Optional normalisation constants.
+            - "observation_features" / "utc_offset_hours": Optional, what the policy observes - see
+                PreprocessEnv. Default: the original observation.
 
     Returns:
         env (gym.Env): A Reinforcement Learning environment that is ready for use with RLlib.
@@ -433,6 +435,8 @@ def env_creator(env_config):
             env,
             mu=env_config.get("observation_mu", DEFAULT_OBSERVATION_MU),
             std_dev=env_config.get("observation_std_dev", DEFAULT_OBSERVATION_STD_DEV),
+            features=env_config.get("observation_features"),
+            utc_offset_hours=env_config.get("utc_offset_hours", 0.0),
         )
     return env
 
@@ -524,6 +528,33 @@ def make_dataloaders(data_config):
     eval_dataloader = torch.utils.data.DataLoader(eval_dataset, batch_size=1, shuffle=False)
 
     return train_dataloader, eval_dataloader
+
+
+def training_windows_dataloader(data_config):
+    """The TRAINING split of make_dataloaders() as consecutive, deterministic windows, walked once.
+
+    For fitting by a deterministic objective (e.g. a parametric controller searched jointly with the RC
+    parameters): the loss over the training data has to be the same number every time it is evaluated, which
+    make_dataloaders' random training windows are not. Same split as make_dataloaders - the first 80 % of
+    rows ("tail"), or every block not held out ("interleaved") - so a fit on these windows never sees the
+    evaluation split.
+    """
+    sample_size = int(data_config["sample_size"])
+    if data_config.get("warmup_size", 0):
+        raise NotImplementedError("training_windows_dataloader only supports warmup_size=0, as make_dataloaders.")
+    eval_split = data_config.get("eval_split", "tail")
+    path_sorted = sort_data(str(data_config["csv_path"]), data_config.get("dt", 30))
+    with FileLock(f"{os.path.dirname(os.path.abspath(path_sorted))}.lock"):
+        if eval_split == "tail":
+            dataset = BuildingTemperatureDataset(path_sorted, sample_size, all=False, train=True, test=False)
+        elif isinstance(eval_split, dict) and eval_split.get("mode") == "interleaved":
+            n_rows = len(pd.read_csv(path_sorted, usecols=[1]))
+            held_out = set(interleaved_blocks(n_rows, sample_size, int(eval_split["every"])))
+            blocks = [i for i in range(n_rows // sample_size) if i not in held_out]
+            dataset = BuildingTemperatureDataset(path_sorted, sample_size, all=True, block_indices=blocks)
+        else:
+            raise ValueError(f"eval_split must be 'tail' or {{'mode': 'interleaved', 'every': k}}, got {eval_split!r}.")
+    return torch.utils.data.DataLoader(dataset, batch_size=1, shuffle=False)
 
 
 def change_origin(room_coordinates):

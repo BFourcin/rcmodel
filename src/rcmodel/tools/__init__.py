@@ -12,6 +12,7 @@ from .helper_functions import (
     model_to_csv,
     policy_image,
     sort_data,
+    training_windows_dataloader,
     write_weather_csv,
 )
 from .plotting import (
@@ -50,5 +51,6 @@ __all__ = [
     "room_rmse",
     "save_model_record",
     "sort_data",
+    "training_windows_dataloader",
     "write_weather_csv",
 ]
