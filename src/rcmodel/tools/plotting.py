@@ -100,11 +100,16 @@ def best_records_over_time(record_dir, n=None):
 
 
 def _n_latent(record):
+    """Envelope (wall) nodes ahead of the rooms. Recorded explicitly since room mass nodes were added
+    after the rooms; older records have only envelope nodes and rooms."""
+    if "n_latent" in record:
+        return int(record["n_latent"])
     return record["states"].shape[1] - len(record["room_names"])
 
 
 def _predicted_rooms(record):
-    return record["states"][:, _n_latent(record) :]
+    start = _n_latent(record)
+    return record["states"][:, start : start + len(record["room_names"])]
 
 
 def _measured_at_prediction_times(record):

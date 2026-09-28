@@ -19,13 +19,41 @@ from xitorch.interpolate import Interp1D
 #   gain  - constant heat gain, W/m2 of floor area.
 #   solar - dimensionless fraction p of global horizontal irradiance reaching the room:
 #           solar gain (W) = p * GHI(t) (W/m2) * floor area (m2).
-PARAM_KEYS = ("C_rm", "C1", "C2", "R1", "R2", "R3", "Rin", "k_sa")
+#   C_rm_mass, R_rm_mass - the room's thermal mass node (J/K per m2 of floor) and its coupling to the
+#           room air (m2K/W per m2 of floor). Only used when the building has room_mass on; the air
+#           node's own capacity is then C_rm_air, computed from the room volume - see Building.
+#   T_set - cooling setpoint (degC), only used with cooling_mode="thermostat" - see RCModel.
+# The last three are OPTIONAL_PARAM_KEYS: a config without them gets a pinned [0, 0] range and the
+# value 0, which leaves the model exactly as it was before they existed.
+PARAM_KEYS = ("C_rm", "C1", "C2", "R1", "R2", "R3", "Rin", "k_sa", "C_rm_mass", "R_rm_mass", "T_set")
 LOAD_KEYS = ("cool", "gain", "solar")
 RC_PARAM_KEYS = PARAM_KEYS + LOAD_KEYS
+OPTIONAL_PARAM_KEYS = ("C_rm_mass", "R_rm_mass", "T_set")
 
 # Parameters allowed to be exactly zero. Every other PARAM_KEYS entry is a resistance or
-# capacitance and must be strictly positive, because A is built from 1/(R*C).
-NON_NEGATIVE_PARAM_KEYS = ("k_sa",)
+# capacitance and must be strictly positive, because A is built from 1/(R*C). C_rm_mass and
+# R_rm_mass are zero (unused) when room_mass is off; with it on they must be > 0 - see
+# RCModel._check_physically_valid.
+NON_NEGATIVE_PARAM_KEYS = ("k_sa", "C_rm_mass", "R_rm_mass")
+
+# Parameters with no sign constraint at all: a temperature.
+SIGNED_PARAM_KEYS = ("T_set",)
+
+COOLING_MODES = ("switch", "thermostat")
+
+
+def param_range(model_config, key):
+    """The [min, max] range configured for a parameter.
+
+    OPTIONAL_PARAM_KEYS default to a pinned [0, 0] when the config doesn't mention them, so configs
+    written before they existed still describe a complete model.
+    """
+    if key in model_config:
+        return model_config[key]
+    if key in OPTIONAL_PARAM_KEYS:
+        return [0.0, 0.0]
+    raise KeyError(f"model_config has no range for '{key}'")
+
 
 # External surface heat transfer coefficient used by the sol-air temperature, W/m2K. Fixed rather
 # than searched, since only k_sa / H_OUT is identifiable. 25 W/m2K is 1/Rse for BS EN ISO 6946's
@@ -56,9 +84,11 @@ def scaled_params_to_tensors(values, n_rooms):
     (params, loads) : (torch.Tensor, torch.Tensor)
         Shapes (len(PARAM_KEYS),) and (len(LOAD_KEYS), n_rooms).
     """
-    missing = [key for key in RC_PARAM_KEYS if key not in values]
+    missing = [key for key in RC_PARAM_KEYS if key not in values and key not in OPTIONAL_PARAM_KEYS]
     if missing:
         raise KeyError(f"Missing RC parameters: {missing}")
+    # An optional parameter left out sits at the bottom of its range (0 for the default [0, 0]).
+    values = {**dict.fromkeys(OPTIONAL_PARAM_KEYS, 0.0), **values}
 
     def as_scalar(value):
         return float(np.asarray(value).item())
@@ -113,6 +143,13 @@ class RCModel(nn.Module):
         room, in W, at absolute times: shape (n_rooms, len(t)). It is added on top of the modelled loads.
         For driving the model with measured forcing - e.g. an EnergyPlus run's HVAC output - not something
         the search fits. None (the default) means no such input.
+    cooling_mode - what action 1 means:
+        "switch" (default): a fixed cooling of `cool` W/m2 in every room while the action is on.
+        "thermostat": cooling is AVAILABLE while the action is on. Every data row, each room gets the
+            cooling that brings its air down to T_set, and no more, up to `cool` W/m2 - an ideal-loads
+            thermostat, as EnergyPlus's ZoneHVAC:IdealLoadsAirSystem with LimitCapacity. A room below
+            T_set gets none (it never heats). The policy then only has to learn when cooling is
+            available; the modulation comes from the physics. See _integrate_thermostat().
     """
 
     def __init__(
@@ -124,10 +161,17 @@ class RCModel(nn.Module):
         cooling_policy=None,
         ghi_continuous=None,
         heat_input_continuous=None,
+        cooling_mode="switch",
     ):
 
         super().__init__()
+        if cooling_mode not in COOLING_MODES:
+            raise ValueError(f"cooling_mode must be one of {COOLING_MODES}, got {cooling_mode!r}.")
         self.building = building
+        self.cooling_mode = cooling_mode
+        # Cooling delivered to each room at every row of the last forward() call, W (<= 0). Read by
+        # the environment for model records; see _cooling_trajectory().
+        self.last_cooling_w = None
 
         self.transform = transform  # transform performed on parameters e.g. sigmoid
         self.scaling = scaling  # InputScaling class (helper class to go between machine (0-1) and physical values)
@@ -212,16 +256,21 @@ class RCModel(nn.Module):
         physical_params = self.scaling.physical_param_scaling(theta).flatten()
         physical_loads = self.scaling.physical_loads_scaling(self.transform(loads) if self.transform else loads)
 
+        # With the room mass node on, its capacitance and coupling resistance enter A as 1/(R*C).
+        strictly_positive = {key for key in PARAM_KEYS if key not in NON_NEGATIVE_PARAM_KEYS + SIGNED_PARAM_KEYS}
+        if getattr(self.building, "room_mass", False):
+            strictly_positive |= {"C_rm_mass", "R_rm_mass"}
+        values = dict(zip(PARAM_KEYS, physical_params.tolist(), strict=False))  # an older pickle may hold fewer
+
         problems = [
-            f"{key}={physical_params[i].item():g} (must be > 0)"
-            for i, key in enumerate(PARAM_KEYS)
-            if key not in NON_NEGATIVE_PARAM_KEYS and not physical_params[i].item() > 0
+            f"{key}={value:g} (must be > 0)" for key, value in values.items() if key in strictly_positive and not value > 0
         ]
         problems += [
-            f"{key}={physical_params[i].item():g} (must be >= 0)"
-            for i, key in enumerate(PARAM_KEYS)
-            if key in NON_NEGATIVE_PARAM_KEYS and not physical_params[i].item() >= 0
+            f"{key}={value:g} (must be >= 0)"
+            for key, value in values.items()
+            if key in NON_NEGATIVE_PARAM_KEYS and key not in strictly_positive and not value >= 0
         ]
+        problems += [f"{key}={value:g} (must be finite)" for key, value in values.items() if not np.isfinite(value)]
         problems += [
             f"{key}={physical_loads[i].tolist()} (must be >= 0)"
             for i, key in enumerate(LOAD_KEYS)
@@ -264,15 +313,26 @@ class RCModel(nn.Module):
         u = self._input_trajectory(t_eval)
         x0 = self.iv.reshape(-1).to(torch.float64).numpy()
         t_np = t_eval.to(torch.float64).numpy()
+        A = self.A.detach().to(torch.float64).numpy()
+        B = self.B.detach().to(torch.float64).numpy()
 
-        states = _integrate_states(
-            self.A.detach().to(torch.float64).numpy(),
-            self.B.detach().to(torch.float64).numpy(),
-            t_np,
-            u,
-            x0,
-            disc_cache=self._disc_cache,
-        )
+        if self._thermostat_on(action):
+            states, cooling = _integrate_thermostat(
+                A,
+                B,
+                t_np,
+                u,
+                x0,
+                room_rows=self._room_state_rows(),
+                q_cols=np.arange(1, 1 + len(self.building.rooms)),
+                t_set=self._t_set(),
+                q_max=self._cooling_capacity_watts(),
+                disc_cache=self._disc_cache,
+            )
+        else:
+            states = _integrate_states(A, B, t_np, u, x0, disc_cache=self._disc_cache)
+            cooling = self._switch_cooling_watts(len(t_np), action)
+        self.last_cooling_w = cooling
 
         self.iv = None  # Causes error if iv is not reset before next forward pass.
 
@@ -298,9 +358,36 @@ class RCModel(nn.Module):
             self.record_action.append([(t_eval[-1] - self.t0).item(), self.action])
 
         # Format iv.
-        self.iv = self.iv.reshape((2 + len(self.building.rooms), 1)).to(torch.float32)
+        self.iv = self.iv.reshape((self._n_states(), 1)).to(torch.float32)
 
         return t_eval
+
+    def _n_states(self):
+        n_states = getattr(self.building, "n_states", None)  # absent on buildings pickled before room mass
+        return n_states if n_states is not None else 2 + len(self.building.rooms)
+
+    def _thermostat_on(self, action):
+        return getattr(self, "cooling_mode", "switch") == "thermostat" and bool(action)
+
+    def _room_state_rows(self):
+        """Rows of the state vector holding the room (air) temperatures: after the two envelope nodes."""
+        return np.arange(2, 2 + len(self.building.rooms))
+
+    def _t_set(self):
+        theta, _ = self.get_physical_paramaters()
+        return float(theta.flatten()[PARAM_KEYS.index("T_set")])
+
+    def _cooling_capacity_watts(self):
+        """Cooling capacity of each room, W (>= 0): cool W/m2 times floor area."""
+        area = np.array([room.area for room in self.building.rooms], dtype=np.float64)
+        return self.cool_load.detach().to(torch.float64).numpy() * area
+
+    def _switch_cooling_watts(self, n_rows, action):
+        """(n_rows, n_rooms) cooling in W (<= 0) for switch mode, or zeros with the action off."""
+        n_rooms = len(self.building.rooms)
+        if getattr(self, "cooling_mode", "switch") != "switch" or not action:
+            return np.zeros((n_rows, n_rooms))
+        return np.broadcast_to(-self._cooling_capacity_watts() * float(action), (n_rows, n_rooms)).copy()
 
     def _input_trajectory(self, t_eval):
         """
@@ -327,7 +414,9 @@ class RCModel(nn.Module):
         (len(t), n_rooms) float64 array.
         """
         area = np.array([room.area for room in self.building.rooms], dtype=np.float64)
-        constant = (self.gain_load - self.cool_load * action).detach().to(torch.float64).numpy()
+        # In thermostat mode the cooling is not a fixed input: _integrate_thermostat works it out.
+        switched = 0 if getattr(self, "cooling_mode", "switch") == "thermostat" else action
+        constant = (self.gain_load - self.cool_load * switched).detach().to(torch.float64).numpy()
         q_area = np.broadcast_to(constant, (len(t), len(area))).copy()  # W/m2
 
         solar = self.solar_load
@@ -347,12 +436,14 @@ class RCModel(nn.Module):
     def sol_air_temperature(self, t):
         """
         Temperature driving the external envelope at absolute times t, as a float64 array:
-        T_sa = Tout + k_sa * GHI / H_OUT.
+        T_sa = Tout + k_sa * I / H_OUT (ASHRAE Handbook - Fundamentals, 2021, ch. 18).
 
         Sun absorbed on the external walls heats them as if the outdoor air were hotter by
-        k_sa * GHI / H_OUT. k_sa is an effective absorptance, and also soaks up the difference
-        between GHI and what actually falls on the (vertical) walls. With k_sa = 0, or no solar
-        data, this is exactly the outdoor temperature.
+        k_sa * I / H_OUT. I is the irradiance on the walls themselves when the model was built with
+        solar_geometry (see envelope_irradiance), otherwise GHI. k_sa is an effective absorptance; with
+        GHI it also soaks up the difference between GHI and what actually falls on the (vertical)
+        walls, and in both cases the difference between H_OUT and the real exterior coefficient. With
+        k_sa = 0, or no solar data, this is exactly the outdoor temperature.
 
         Requires the parameters to have been built - call setup() first.
         """
@@ -360,7 +451,18 @@ class RCModel(nn.Module):
         k_sa = getattr(self, "k_sa", None)  # absent on models pickled before the sol-air term
         if not k_sa:
             return tout
-        return tout + k_sa * self.ghi(t) / H_OUT
+        return tout + k_sa * self.envelope_irradiance(t) / H_OUT
+
+    def envelope_irradiance(self, t):
+        """Irradiance driving the sol-air temperature, W/m2, at absolute times t.
+
+        The area-weighted irradiance on the external walls when the model was built with solar_geometry
+        (see rcmodel.physical.solar), else global horizontal irradiance as before.
+        """
+        walls = getattr(self, "envelope_irradiance_continuous", None)
+        if walls is None:
+            return self.ghi(t)
+        return _sample(walls, t)
 
     def ghi(self, t):
         """Global horizontal irradiance (W/m2) at absolute times t, as a float64 array.
@@ -380,6 +482,8 @@ class RCModel(nn.Module):
         test_forward_matches_odeint) - it is not used in training, where it was far too slow
         for a population-based search: it re-interpolated Tout at every solver sub-step.
         """
+        if self._thermostat_on(action):
+            raise NotImplementedError("_forward_odeint has no thermostat; it is only a reference for switch mode.")
         t_eval = self._prepare_forward(t_eval, action)
         t_eval = t_eval - self.t0
 
@@ -416,7 +520,11 @@ class RCModel(nn.Module):
         theta = theta.flatten()
 
         # Produce matrix A and B from current parameters. update_inputs() reads only the R and C
-        # values; k_sa enters through the input (see sol_air_temperature), not A or B.
+        # values; k_sa enters through the input (see sol_air_temperature), not A or B. The room mass
+        # node's values go to the building first (older pickles hold no such parameters).
+        values = dict(zip(PARAM_KEYS, theta.tolist(), strict=False))  # an older pickle may hold fewer
+        if hasattr(self.building, "set_room_mass"):
+            self.building.set_room_mass(values.get("C_rm_mass", 0.0), values.get("R_rm_mass", 0.0))
         self.A = self.building.update_inputs(theta)
         self.B = self.building.input_matrix()
 
@@ -635,6 +743,81 @@ def _step_recurrence(Ad, Bd0, Bd1, u, x0):
     return X
 
 
+def _discretisation(A, B, dt, disc_cache):
+    """(Ad, Bd0, Bd1) for one step of length dt, from the cache when it holds one."""
+    cached = disc_cache.get(dt) if disc_cache is not None else None
+    if cached is None:
+        cached = _foh_discretize(A, B, dt)
+        if disc_cache is not None:
+            disc_cache[dt] = cached
+    return cached
+
+
+def _integrate_thermostat(A, B, t, u, x0, room_rows, q_cols, t_set, q_max, disc_cache=None):
+    """
+    Step dx/dt = A x + B u(t) across `t` with an ideal-loads cooling thermostat on every room.
+
+    Each step of length dt: the free next state x_free is the exact FOH step with no cooling. The
+    cooling q (W per room, <= 0) is held constant over the step - EnergyPlus's ideal loads likewise
+    deliver a constant rate over a zone timestep - so its effect on the next state is linear,
+    H q with H = (Bd0 + Bd1)[:, q_cols]. q is chosen so each room that would end the step above
+    t_set ends it exactly at t_set:
+
+        G q = t_set - x_free[rooms],   G = H[rooms, :]   (G is diagonally dominant: a room's own
+                                                          cooling moves it far more than a neighbour's)
+
+    solved over the rooms that need cooling, clipped to [-q_max, 0]. A room whose unconstrained
+    solution would heat is dropped from the set and the rest re-solved (at most n_rooms passes). A
+    room that hits its capacity limit then sits above t_set, as a real capped system does.
+
+    Parameters
+    ----------
+    room_rows : array of int      state rows of the room air nodes.
+    q_cols : array of int         input columns of the per-room heat inputs (u = [T_sa, Q_1..Q_n]).
+    t_set : float                 setpoint, degC.
+    q_max : array (n_rooms,)      cooling capacity per room, W (>= 0).
+
+    Returns
+    -------
+    states : (len(t), n_states)
+    cooling : (len(t), n_rooms)   cooling delivered over the step ENDING at each row, W (<= 0); row 0
+                                  repeats the first step's value so the array lines up with `t`.
+    """
+    n_steps, n_rooms = len(t), len(room_rows)
+    states = np.empty((n_steps, len(x0)))
+    cooling = np.zeros((n_steps, n_rooms))
+    states[0] = x = np.asarray(x0, dtype=np.float64)
+    q_max = np.asarray(q_max, dtype=np.float64)
+
+    for k in range(n_steps - 1):
+        Ad, Bd0, Bd1 = _discretisation(A, B, float(t[k + 1] - t[k]), disc_cache)
+        x_free = Ad @ x + Bd0 @ u[k] + Bd1 @ u[k + 1]
+        H = (Bd0 + Bd1)[:, q_cols]
+        G = H[room_rows, :]
+        need = t_set - x_free[room_rows]  # negative where the room would end the step too warm
+
+        q = np.zeros(n_rooms)
+        active = need < 0
+        for _ in range(n_rooms):
+            if not active.any():
+                break
+            idx = np.flatnonzero(active)
+            q_active = np.linalg.solve(G[np.ix_(idx, idx)], need[idx])
+            heating = q_active > 0
+            if not heating.any():
+                q[idx] = np.clip(q_active, -q_max[idx], 0.0)
+                break
+            active[idx[heating]] = False
+
+        x = x_free + H @ q
+        states[k + 1] = x
+        cooling[k + 1] = q
+
+    if n_steps > 1:
+        cooling[0] = cooling[1]
+    return states, cooling
+
+
 def _integrate_states(A, B, t, u, x0, disc_cache=None):
     """
     Propagate the exact FOH discretization of dx/dt = A x + B u(t) across every point in `t`.
@@ -840,12 +1023,31 @@ def get_iv_array(model, dataset):
         integrate = torch.tensor(X, dtype=torch.float32)
 
         # Add on inside temperature data to be used to initialise rooms at the correct temp.
-        iv_array = torch.empty(len(integrate), len(bl.rooms) + 2)
+        n_rooms = len(bl.rooms)
+        iv_array = torch.empty(len(integrate), model._n_states())
         iv_array[:, 0:2] = integrate
-        iv_array[:, 2:] = Tin_continuous(t_eval).T
+        iv_array[:, 2 : 2 + n_rooms] = Tin_continuous(t_eval).T
+        if getattr(bl, "room_mass", False):
+            iv_array[:, 2 + n_rooms :] = torch.tensor(_room_mass_history(bl, t_eval, temp_data[:, 0:n_rooms]))
         iv_array = Interp1D(t_eval, iv_array.T, method="linear")
 
     return iv_array
+
+
+def _room_mass_history(building, t_eval, room_temps):
+    """Each room's mass node temperature over the history, driven by the measured room air.
+
+    A mass node only exchanges heat with its room's air, so given the measured air temperature it is a
+    first-order low-pass filter of it, time constant r_rm_mass * c_rm_mass: integrated exactly (FOH)
+    like the envelope nodes. Starts equal to the first measured air temperature.
+    """
+    n_rooms = len(building.rooms)
+    rate = 1.0 / (building.r_rm_mass * building.c_rm_mass)
+    A = -rate * np.eye(n_rooms)
+    B = rate * np.eye(n_rooms)
+    T_air = np.asarray(room_temps, dtype=np.float64)
+    t = np.asarray(t_eval, dtype=np.float64).reshape(-1)
+    return _integrate_states(A, B, t, T_air, T_air[0].copy())
 
 
 def external_wall_weights(building):
@@ -877,6 +1079,9 @@ def steady_state_iv(model, temp_out, temp_in):
     v1 = temp_out - I * model.building.Re[0]
     v2 = v1 - I * model.building.Re[1]
 
-    iv = torch.tensor([[v1], [v2], [temp_in]], dtype=torch.float32)
+    rows = [[v1], [v2], [temp_in]]
+    if getattr(model.building, "room_mass", False):
+        rows.append([temp_in])  # in steady state the mass sits at the air temperature
+    iv = torch.tensor(rows, dtype=torch.float32)
 
     return iv

@@ -603,3 +603,161 @@ def test_model_pickled_before_sol_air_still_runs(get_model_config, fake_time):
 
 if __name__ == "__main__":
     pytest.main()
+
+
+# --------------------------------------------------------------------------- thermostat cooling
+
+
+def _thermostat_model(model_config, t_set=21.0, cool_w_m2=1e4, gain_w_m2=0.0, mode="thermostat"):
+    """A model whose cooling (thermostat or switch) has capacity cool_w_m2 and a constant gain."""
+    config = {
+        **model_config,
+        "cooling_mode": mode,
+        "T_set": [t_set, t_set],
+        "cool": [0, max(cool_w_m2, 1e-9)],
+        "gain": [0, max(gain_w_m2, 1e-9)],
+    }
+    return _model_with_parameters(config, cool=1.0 if cool_w_m2 else 0.0, gain=1.0 if gain_w_m2 else 0.0)
+
+
+def test_thermostat_holds_the_setpoint_with_ample_capacity(get_model_config, fake_time):
+    """With far more capacity than the load, every room ends every row exactly at T_set."""
+    model = _thermostat_model(get_model_config, t_set=21.0, cool_w_m2=1e5, gain_w_m2=500.0)
+    t_eval = torch.tensor(fake_time[:31], dtype=torch.float64)
+    rooms = _run(model, t_eval, action=1, start=24.0)[1:, 2:].numpy()
+
+    np.testing.assert_allclose(rooms, 21.0, atol=1e-4)
+    assert (model.last_cooling_w <= 0).all() and (model.last_cooling_w < 0).any()
+
+
+def test_thermostat_never_heats(get_model_config, fake_time):
+    """Rooms below the setpoint get no cooling - and certainly no heating - so the run is exactly
+    the action-off run."""
+    model = _thermostat_model(get_model_config, t_set=30.0)
+    t_eval = torch.tensor(fake_time[:31], dtype=torch.float64)
+    on = _run(model, t_eval, action=1, start=20.0)
+    assert np.all(model.last_cooling_w == 0)
+    off = _run(model, t_eval, action=0, start=20.0)
+    torch.testing.assert_close(on, off)
+
+
+def test_thermostat_with_no_capacity_is_action_off(get_model_config, fake_time):
+    model = _thermostat_model(get_model_config, t_set=21.0, cool_w_m2=0.0, gain_w_m2=500.0)
+    t_eval = torch.tensor(fake_time[:31], dtype=torch.float64)
+    torch.testing.assert_close(_run(model, t_eval, action=1), _run(model, t_eval, action=0))
+
+
+def test_saturated_thermostat_is_switch_mode(get_model_config, fake_time):
+    """When the load exceeds capacity at every row the thermostat delivers its full capacity
+    throughout - exactly what switch mode delivers - so the two must agree. This pins the
+    thermostat's per-row stepping to forward()'s exact discretisation."""
+    kwargs = dict(t_set=10.0, cool_w_m2=20.0, gain_w_m2=500.0)
+    thermostat = _thermostat_model(get_model_config, **kwargs)
+    switch = _thermostat_model(get_model_config, mode="switch", **kwargs)
+    t_eval = torch.tensor(fake_time[:31], dtype=torch.float64)
+
+    on = _run(thermostat, t_eval, action=1)
+    area = np.array([room.area for room in thermostat.building.rooms])
+    np.testing.assert_allclose(thermostat.last_cooling_w, -20.0 * area[None, :].repeat(31, 0), rtol=1e-9)
+    torch.testing.assert_close(on, _run(switch, t_eval, action=1), rtol=1e-6, atol=1e-5)
+
+
+def test_thermostat_cooling_is_capped(get_model_config, fake_time):
+    """A capped room that can't reach the setpoint sits above it at full capacity."""
+    model = _thermostat_model(get_model_config, t_set=21.0, cool_w_m2=20.0, gain_w_m2=500.0)
+    t_eval = torch.tensor(fake_time[:31], dtype=torch.float64)
+    rooms = _run(model, t_eval, action=1, start=24.0)[1:, 2:].numpy()
+    area = np.array([room.area for room in model.building.rooms])
+    assert (rooms > 21.0).all()
+    np.testing.assert_allclose(model.last_cooling_w.min(axis=0), -20.0 * area, rtol=1e-9)
+
+
+def test_switch_mode_reports_its_cooling(get_model_config, fake_time):
+    model = _thermostat_model(get_model_config, mode="switch", cool_w_m2=20.0)
+    t_eval = torch.tensor(fake_time[:31], dtype=torch.float64)
+    area = np.array([room.area for room in model.building.rooms])
+    _run(model, t_eval, action=1)
+    np.testing.assert_allclose(model.last_cooling_w, -20.0 * area[None, :].repeat(31, 0))
+    _run(model, t_eval, action=0)
+    assert np.all(model.last_cooling_w == 0)
+
+
+def test_thermostat_needs_a_setpoint_range(get_model_config):
+    config = {**get_model_config, "cooling_mode": "thermostat"}
+    with pytest.raises(AssertionError, match="T_set"):
+        model_creator(config)
+    with pytest.raises(AssertionError, match="cooling_mode"):
+        model_creator({**get_model_config, "cooling_mode": "pid"})
+
+
+# --------------------------------------------------------------------------- room mass node
+
+
+def _physical_model(model_config, dataset=None, **physical):
+    """model_creator() from PHYSICAL values: every parameter at the middle of its range unless given."""
+    from rcmodel import param_range
+    from rcmodel.optimisation.pbt import physical_to_scaled
+
+    values = {key: sum(param_range(model_config, key)) / 2 for key in RC_PARAM_KEYS}
+    values.update(physical)
+    model = model_creator({**model_config, "parameters": physical_to_scaled(model_config, values)})
+    model.setup(dataset)
+    return model
+
+
+def _mass_config(model_config):
+    return {**model_config, "room_mass": True, "C_rm": [1, 1], "C_rm_mass": [1e3, 1e6], "R_rm_mass": [1e-4, 1e6]}
+
+
+def _rooms_from(model, t_eval, start=24.0):
+    model.iv = start * torch.ones(model._n_states())
+    return model(t_eval, action=0).squeeze()[:, 2 : 2 + len(model.building.rooms)]
+
+
+def test_room_mass_node_decoupled_is_an_air_only_room(get_model_config, fake_time):
+    """R_rm_mass -> infinity: the mass node is cut off, leaving each room as its air alone."""
+    t_eval = torch.tensor(fake_time[:121], dtype=torch.float64)
+    split = _physical_model(_mass_config(get_model_config), C_rm_mass=5e4, R_rm_mass=1e6)
+    c_air = split.building.c_rm_air
+    lumped = _physical_model({**get_model_config, "C_rm": [c_air, c_air]}, C_rm=c_air)
+    torch.testing.assert_close(_rooms_from(split, t_eval), _rooms_from(lumped, t_eval), rtol=1e-4, atol=1e-4)
+
+
+def test_room_mass_node_tightly_coupled_is_the_lumped_room(get_model_config, fake_time):
+    """R_rm_mass -> 0: air and mass move together, as one node of capacity C_rm_air + C_rm_mass.
+
+    The air runs q x R_rm_mass above the mass for a heat input q (W/m2) into it, so the limit is only
+    exact as that product goes to zero: the direct inputs (gain, solar) are switched off here.
+    """
+    t_eval = torch.tensor(fake_time[:121], dtype=torch.float64)
+    no_input = {"gain": 0.0, "solar": 0.0}
+    split = _physical_model(_mass_config(get_model_config), C_rm_mass=5e4, R_rm_mass=1e-3, **no_input)
+    c_total = split.building.c_rm_air + 5e4
+    lumped = _physical_model({**get_model_config, "C_rm": [c_total, c_total]}, C_rm=c_total, **no_input)
+    torch.testing.assert_close(_rooms_from(split, t_eval), _rooms_from(lumped, t_eval), rtol=1e-4, atol=1e-3)
+
+
+def test_c_rm_air_is_the_room_air(get_model_config):
+    model = _physical_model({**_mass_config(get_model_config), "room_height": 2.4})
+    assert model.building.c_rm_air == pytest.approx(1.2 * 1005 * 2.4)
+    assert model.building.n_states == 2 + 2 * len(model.building.rooms)
+    override = _physical_model({**_mass_config(get_model_config), "C_rm_air": 5000.0})
+    assert override.building.c_rm_air == 5000.0
+
+
+def test_room_mass_iv_array_carries_the_mass_nodes(get_model_config, full_building_dataset):
+    model = _physical_model(_mass_config(get_model_config), dataset=full_building_dataset, C_rm_mass=5e4, R_rm_mass=0.5)
+    t, temps = full_building_dataset.get_all_data()
+    iv = model.iv_array(t[len(t) // 2])
+    assert iv.shape[0] == model._n_states()
+    n = len(model.building.rooms)
+    # A mass node lags its room but stays within the range the room's air has covered.
+    assert (iv[2 + n :] >= temps[:, :n].min(0).values - 1e-4).all()
+    assert (iv[2 + n :] <= temps[:, :n].max(0).values + 1e-4).all()
+
+
+def test_room_mass_config_is_checked(get_model_config):
+    with pytest.raises(AssertionError, match="C_rm_mass"):
+        model_creator({**get_model_config, "room_mass": True, "C_rm": [1, 1]})
+    with pytest.raises(AssertionError, match="pin it"):
+        model_creator({**_mass_config(get_model_config), "C_rm": [1e3, 1e5]})

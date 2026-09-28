@@ -22,6 +22,7 @@ import torch
 from rcmodel import (
     LOAD_KEYS,
     NON_NEGATIVE_PARAM_KEYS,
+    OPTIONAL_PARAM_KEYS,
     PARAM_KEYS,
     RC_PARAM_KEYS,
     env_creator,
@@ -37,16 +38,24 @@ from rcmodel.optimisation.pbt import (
     PPO_DEFAULTS,
     TRIAL_STATE_FILE,
     RCPolicyTrainable,
+    _sample,
     build_pbt_scheduler,
     build_tuner,
     learner_diagnostics,
     physical_to_scaled,
+    pinned_parameters,
     ppo_search_space,
     ppo_settings,
     sample_plausible_population,
     search_space,
     slowest_time_constant_days,
 )
+
+
+def _searched(model_config):
+    """The parameters PBT searches: everything not pinned."""
+    return [key for key in RC_PARAM_KEYS if key not in pinned_parameters(model_config)]
+
 
 torch.set_num_threads(1)
 
@@ -151,22 +160,24 @@ def test_out_of_range_values_pass_through_unclipped(get_model_config):
     says - if anything clips on the way in, the logged config and the model disagree, and two
     trials reporting different values silently run the same model.
     """
-    above = {key: get_model_config[key][1] * 1.5 for key in RC_PARAM_KEYS}
-    below = {key: get_model_config[key][0] * 0.5 for key in PARAM_KEYS}
+    # The optional parameters are pinned at [0, 0] in this config (off), so they have no range to leave.
+    searched = [key for key in RC_PARAM_KEYS if key not in OPTIONAL_PARAM_KEYS]
+    above = {key: get_model_config[key][1] * 1.5 for key in searched}
+    below = {key: get_model_config[key][0] * 0.5 for key in searched if key in PARAM_KEYS}
     # k_sa's and the loads' configured floor is 0 - there is no physically valid value below it.
-    floored_at_zero = (*NON_NEGATIVE_PARAM_KEYS, *LOAD_KEYS)
+    floored_at_zero = tuple(key for key in (*NON_NEGATIVE_PARAM_KEYS, *LOAD_KEYS) if key in searched)
     below.update({key: sum(get_model_config[key]) / 2 for key in floored_at_zero})
 
     scaled_above = physical_to_scaled(get_model_config, above)
     scaled_below = physical_to_scaled(get_model_config, below)
     # Guard against the test passing vacuously: these really are outside machine space's [0, 1].
-    assert all(scaled_above[key] > 1 for key in RC_PARAM_KEYS)
-    assert all(scaled_below[key] < 0 for key in PARAM_KEYS if key not in floored_at_zero)
+    assert all(scaled_above[key] > 1 for key in searched)
+    assert all(scaled_below[key] < 0 for key in searched if key in PARAM_KEYS and key not in floored_at_zero)
 
     for physical, scaled in ((above, scaled_above), (below, scaled_below)):
         model = model_creator({**get_model_config, "parameters": scaled})
         running = _physical_values(model)
-        for key in RC_PARAM_KEYS:
+        for key in searched:
             np.testing.assert_allclose(running[key], physical[key], rtol=1e-5, err_msg=f"'{key}' was not run as given")
 
 
@@ -211,7 +222,9 @@ def test_physical_to_scaled_round_trips(get_model_config, physical_params):
     quarter, _ = physical_params
     scaled = physical_to_scaled(get_model_config, quarter)
     for key in RC_PARAM_KEYS:
-        np.testing.assert_allclose(np.asarray(scaled[key]), 0.25, rtol=1e-6)
+        # A pinned range (the optional keys default to [0, 0]) has no fraction to sit at: it maps to 0.
+        expected = 0.0 if key in OPTIONAL_PARAM_KEYS else 0.25
+        np.testing.assert_allclose(np.asarray(scaled[key]), expected, rtol=1e-6)
 
 
 # --------------------------------------------------------------------------- initial population
@@ -228,8 +241,7 @@ def restrictive_threshold(model_config, quantile=0.25, n=20, seed=0):
     try:
         space = search_space(model_config)
         taus = [
-            slowest_time_constant_days(model_config, {key: float(space[key].sample()) for key in RC_PARAM_KEYS})
-            for _ in range(n)
+            slowest_time_constant_days(model_config, {key: _sample(space[key]) for key in RC_PARAM_KEYS}) for _ in range(n)
         ]
     finally:
         np.random.set_state(rng_state)
@@ -353,13 +365,13 @@ def test_scheduler_takes_the_exploration_knobs(get_model_config):
     assert scheduler._burn_in_period == 30
     assert scheduler._resample_probability == 0.1
     assert scheduler._quantile_fraction == 0.3
-    assert set(scheduler._hyperparam_mutations) == {*RC_PARAM_KEYS, "ppo"}
+    assert set(scheduler._hyperparam_mutations) == {*_searched(get_model_config), "ppo"}
     assert set(scheduler._hyperparam_mutations["ppo"]) == {"lr"}
 
 
 def test_scheduler_without_ppo_mutations_only_touches_rc_parameters(get_model_config):
     scheduler = build_pbt_scheduler(get_model_config)
-    assert set(scheduler._hyperparam_mutations) == set(RC_PARAM_KEYS)
+    assert set(scheduler._hyperparam_mutations) == set(_searched(get_model_config))
 
 
 def test_build_tuner_rejects_an_unknown_ppo_key(get_model_config, env_config):
@@ -585,7 +597,7 @@ def test_checkpoint_does_not_carry_rc_params(get_model_config, env_config, physi
 
         # ---- the parameters did NOT ----
         assert_parameters_close(trial_b.rc_scaled, scaled_high)
-        for key in RC_PARAM_KEYS:
+        for key in (key for key in RC_PARAM_KEYS if key not in OPTIONAL_PARAM_KEYS):  # optional ones are pinned
             assert not np.allclose(np.asarray(scaled_high[key]), np.asarray(scaled_low[key])), (
                 f"fixture error: '{key}' is the same in both parameter sets, so this test proves nothing"
             )
@@ -895,3 +907,25 @@ def test_initial_population_is_plausible(get_model_config, env_config, tmp_path,
 
 if __name__ == "__main__":
     pytest.main()
+
+
+def test_trial_config_from_before_the_optional_parameters_still_loads(get_model_config):
+    """A trial config written before C_rm_mass / R_rm_mass / T_set existed (a checkpoint of an older run)
+    has no such keys; they take the bottom of their range, which is where they sat before."""
+    from rcmodel.optimisation.pbt import config_physical
+
+    old = {key: 1.0 for key in RC_PARAM_KEYS if key not in OPTIONAL_PARAM_KEYS}
+    old["model_config"] = get_model_config
+    physical = config_physical(old)
+    assert set(physical) == set(RC_PARAM_KEYS)
+    assert all(physical[key] == 0.0 for key in OPTIONAL_PARAM_KEYS)
+
+
+def test_perturbation_never_carries_the_setpoint_out_of_its_range(get_model_config):
+    """PBT multiplies by 0.8 / 1.2, which compounds on a temperature: T_set must be clipped back."""
+    config = {**get_model_config, "cooling_mode": "thermostat", "T_set": [18.0, 26.0]}
+    scheduler = build_pbt_scheduler(config)
+    explore = scheduler._custom_explore_fn
+    assert explore({"T_set": 22.0 * 1.2**4, "R1": 99.0})["T_set"] == 26.0
+    assert explore({"T_set": 10.0})["T_set"] == 18.0
+    assert explore({"T_set": 21.0, "R1": 99.0})["R1"] == 99.0  # scale quantities still wander freely

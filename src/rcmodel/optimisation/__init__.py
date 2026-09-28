@@ -1,5 +1,6 @@
 from .environment import LSIEnv, PreprocessEnv, preprocess_observation
 from .evaluation import evaluate, make_update_env_fn
+from .identification import ENVELOPE_KEYS, fit_free_float, free_float_segments, narrow_ranges
 from .pbt import (
     METRIC,
     MODE,
@@ -12,6 +13,7 @@ from .pbt import (
     build_tuner,
     learner_diagnostics,
     physical_to_scaled,
+    pinned_parameters,
     ppo_search_space,
     ppo_settings,
     sample_plausible_population,
@@ -21,6 +23,7 @@ from .pbt import (
 from .prior_cooling_policy import PriorCoolingPolicy
 
 __all__ = [
+    "ENVELOPE_KEYS",
     "METRIC",
     "MODE",
     "PPO_DEFAULTS",
@@ -34,9 +37,13 @@ __all__ = [
     "build_pbt_scheduler",
     "build_tuner",
     "evaluate",
+    "fit_free_float",
+    "free_float_segments",
     "learner_diagnostics",
     "make_update_env_fn",
+    "narrow_ranges",
     "physical_to_scaled",
+    "pinned_parameters",
     "ppo_search_space",
     "ppo_settings",
     "preprocess_observation",

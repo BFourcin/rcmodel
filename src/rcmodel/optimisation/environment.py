@@ -79,8 +79,10 @@ class LSIEnv(gym.Env):
         time_low = [0]
         time_high = [np.float32(np.inf)]
 
-        temp_low = [-np.float32(np.inf)] * (self.n_rooms + 2)  # +2 accounts for the latent nodes
-        temp_high = [np.float32(np.inf)] * (self.n_rooms + 2)
+        # Every model state: the latent envelope nodes, the rooms, and any room mass nodes.
+        n_states = getattr(self.RC.building, "n_states", self.n_rooms + 2)
+        temp_low = [-np.float32(np.inf)] * n_states
+        temp_high = [np.float32(np.inf)] * n_states
 
         low = np.array([time_low + temp_low] * self.step_size)  # extend the vector by the number of timesteps
         high = np.array([time_high + temp_high] * self.step_size)
@@ -145,15 +147,24 @@ class LSIEnv(gym.Env):
 
             pred = self.RC(t_eval, action).squeeze()
 
-            # negative so reward can be maximised.
-            reward = -self.loss_fn(pred[:, 2:], temperature_sample)
+            # negative so reward can be maximised. Room air nodes follow the two envelope nodes; any
+            # room mass nodes come after them and are not measured.
+            reward = -self.loss_fn(pred[:, 2 : 2 + self.n_rooms], temperature_sample)
+
+            # Cooling the model delivered at each row, W per room (<= 0) - fixed in switch mode, worked
+            # out by the thermostat otherwise. Kept alongside the observation for model records.
+            cooling = getattr(self.RC, "last_cooling_w", None)
+            if cooling is None:
+                cooling = np.zeros((len(t_eval), self.n_rooms))
 
             # remove first observation as this was the iv from the previous step
             # TODO: Tidy this up, there must be a better way.
             if self.t_index == 0:
                 self.observation = torch.concat((t_eval.unsqueeze(0).T, pred.clone()), dim=1)
+                self.cooling_w = np.array(cooling)
             else:
                 self.observation = torch.concat((t_eval[1:].unsqueeze(0).T, pred[1:, :].clone()), dim=1)
+                self.cooling_w = np.array(cooling[1:])
 
             # Check for done condition:
             if t_eval[-1] == self.time_data[-1]:
@@ -355,7 +366,8 @@ class PreprocessEnv(gym.ObservationWrapper):
             The modified observation
         """
         unix_time = observation[-1, 0]
-        x = observation[-1, 3:]  # remove the latent nodes
+        n_rooms = self.env.unwrapped.n_rooms
+        x = observation[-1, 3 : 3 + n_rooms]  # the rooms only: drop time, the latent nodes and any mass nodes
 
         return preprocess_observation(x, unix_time, self.mu, self.std_dev)
 

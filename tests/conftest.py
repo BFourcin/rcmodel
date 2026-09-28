@@ -5,7 +5,16 @@ import pandas as pd
 import pytest
 import torch
 
-from rcmodel import RC_PARAM_KEYS, Building, BuildingTemperatureDataset, InputScaling, RandomSampleDataset, RCModel, Room
+from rcmodel import (
+    RC_PARAM_KEYS,
+    Building,
+    BuildingTemperatureDataset,
+    InputScaling,
+    RandomSampleDataset,
+    RCModel,
+    Room,
+    param_range,
+)
 
 T_ORIGIN = 1_600_000_000  # realistic unix-epoch-scale start time (2020-09-13), deliberately not 0.
 # get_iv_array() once had a bug where it queried an Interp1D built over absolute (epoch-scale)
@@ -294,7 +303,7 @@ def physical_params(get_model_config):
     def at_fraction(fraction):
         values = {}
         for key in RC_PARAM_KEYS:
-            low, high = get_model_config[key]
+            low, high = param_range(get_model_config, key)
             values[key] = low + fraction * (high - low)
         return values
 
