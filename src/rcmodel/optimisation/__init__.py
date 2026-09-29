@@ -1,5 +1,14 @@
-from .environment import LSIEnv, PreprocessEnv, preprocess_observation
+from .environment import (
+    DEFAULT_OBSERVATION_FEATURES,
+    OBSERVATION_FEATURES,
+    LSIEnv,
+    PreprocessEnv,
+    is_weekday,
+    observation_features,
+    preprocess_observation,
+)
 from .evaluation import evaluate, make_update_env_fn
+from .identification import ENVELOPE_KEYS, fit_free_float, free_float_segments, narrow_ranges
 from .pbt import (
     METRIC,
     MODE,
@@ -12,6 +21,7 @@ from .pbt import (
     build_tuner,
     learner_diagnostics,
     physical_to_scaled,
+    pinned_parameters,
     ppo_search_space,
     ppo_settings,
     sample_plausible_population,
@@ -19,10 +29,14 @@ from .pbt import (
     slowest_time_constant_days,
 )
 from .prior_cooling_policy import PriorCoolingPolicy
+from .schedule_policy import SchedulePolicy, schedule_available
 
 __all__ = [
+    "DEFAULT_OBSERVATION_FEATURES",
+    "ENVELOPE_KEYS",
     "METRIC",
     "MODE",
+    "OBSERVATION_FEATURES",
     "PPO_DEFAULTS",
     "PPO_RUNNER_DEFAULTS",
     "TRIAL_STATE_FILE",
@@ -30,17 +44,25 @@ __all__ = [
     "PreprocessEnv",
     "PriorCoolingPolicy",
     "RCPolicyTrainable",
+    "SchedulePolicy",
     "best_parameters",
     "build_pbt_scheduler",
     "build_tuner",
     "evaluate",
+    "fit_free_float",
+    "free_float_segments",
+    "is_weekday",
     "learner_diagnostics",
     "make_update_env_fn",
+    "narrow_ranges",
+    "observation_features",
     "physical_to_scaled",
+    "pinned_parameters",
     "ppo_search_space",
     "ppo_settings",
     "preprocess_observation",
     "sample_plausible_population",
+    "schedule_available",
     "search_space",
     "slowest_time_constant_days",
 ]

@@ -2,16 +2,35 @@ import numpy as np
 import torch
 from xitorch.interpolate import Interp1D
 
+# Volumetric heat capacity of room air, J/m3K: density 1.2 kg/m3 x specific heat 1005 J/kgK, standard
+# properties of dry air at about 20 degC (e.g. CIBSE Guide C). EnergyPlus evaluates both
+# psychrometrically each timestep; the difference is ~1 %.
+RHO_CP_AIR = 1.2 * 1005.0
+
 
 class Building:
     """
     A class containing all the rooms of a building (2D)
+
+    room_mass - False (default): each room is ONE node of capacity C_rm per m2 of floor, which has to
+        stand for the air and everything in thermal contact with it.
+        True: each room is an AIR node plus a MASS node (floor screed, furniture, internal linings),
+        coupled through a resistance R_rm_mass (m2K/W per m2 of floor) - the air/mass split of
+        ISO 13790:2008's simple hourly method, succeeded by ISO 52016-1:2017. The air node's capacity
+        is C_rm_air per m2 of floor, NOT searched: it is known from the room volume. The mass node's
+        C_rm_mass is searched. All heat inputs (gains, solar, cooling) enter the air node.
+    c_rm_air - air capacity per m2 of floor, J/m2K. None (default) computes RHO_CP_AIR * height, the
+        capacity of the air in a room of this height. Only used with room_mass.
     """
 
-    def __init__(self, rooms, height=1):
+    def __init__(self, rooms, height=1, room_mass=False, c_rm_air=None):
 
         self.rooms = rooms  # list of Room classes within the building
         self.height = height  # height of all Rooms in the building
+        self.room_mass = bool(room_mass)
+        self.c_rm_air = float(RHO_CP_AIR * height if c_rm_air is None else c_rm_air)
+        self.c_rm_mass = 0.0  # J/m2K, set by set_room_mass()
+        self.r_rm_mass = 0.0  # m2K/W, set by set_room_mass()
 
         #  Parameters to be properly initialised later in self.update_inputs()
         self.Re = [0, 0, 0]  # external resistance
@@ -156,7 +175,67 @@ class Building:
                 A[row + off, col + off] = A[row + off, col + off] + K / c
                 A[row + off, row + off] = A[row + off, row + off] - K / c
 
+        if getattr(self, "room_mass", False):
+            A = self._add_room_mass(A)
+
         return A
+
+    def external_wall_orientations(self, north_axis_deg=0.0):
+        """Outward azimuth (degrees clockwise from north) and area (m2) of every external wall.
+
+        Room coordinates are taken with +y pointing to plan north; north_axis_deg rotates that, as
+        EnergyPlus's Building "North Axis" does (the angle, clockwise, from true north to plan +y). A
+        wall's outward normal is the one of its two normals that leaves its room: a point just past the
+        wall's midpoint along it is outside the room polygon.
+
+        Returns (azimuths, areas) as float64 arrays, one entry per external wall.
+        """
+        azimuths, areas = [], []
+        for wall_idx, wall in enumerate(self.Walls):
+            if not wall.is_external:
+                continue
+            room = next(rm for rm in self.rooms if wall_idx in rm.walls)
+            (x0, y0), (x1, y1) = (np.asarray(p, dtype=np.float64) for p in wall.coordinates)
+            normal = np.array([y1 - y0, -(x1 - x0)])
+            normal /= np.linalg.norm(normal)
+            midpoint = np.array([(x0 + x1) / 2, (y0 + y1) / 2])
+            step = 1e-3 * max(np.hypot(x1 - x0, y1 - y0), 1.0)
+            if room.points_in_room([midpoint + step * normal])[0]:
+                normal = -normal
+            azimuths.append((np.degrees(np.arctan2(normal[0], normal[1])) + north_axis_deg) % 360.0)
+            areas.append(float(wall.area))
+        return np.array(azimuths), np.array(areas)
+
+    @property
+    def n_states(self):
+        """Length of the state vector: two envelope nodes, one air node per room, and one mass node per
+        room when room_mass is on - in that order."""
+        return 2 + len(self.rooms) * (2 if getattr(self, "room_mass", False) else 1)
+
+    def set_room_mass(self, c_rm_mass, r_rm_mass):
+        """The mass node's capacity (J/m2K of floor) and its coupling to the air (m2K/W of floor)."""
+        self.c_rm_mass = float(c_rm_mass)
+        self.r_rm_mass = float(r_rm_mass)
+
+    def _add_room_mass(self, A):
+        """Extend A with one mass node per room, appended after the air nodes.
+
+        Per room of floor area a: air capacity C_air (already on the room), mass capacity c_rm_mass * a,
+        and a conductance a / r_rm_mass between them.
+        """
+        n_rooms = len(self.rooms)
+        first_air = A.shape[0] - n_rooms
+        A_full = torch.zeros((A.shape[0] + n_rooms, A.shape[1] + n_rooms), dtype=A.dtype)
+        A_full[: A.shape[0], : A.shape[1]] = A
+        for i, room in enumerate(self.rooms):
+            air, mass = first_air + i, A.shape[0] + i
+            K = room.area / self.r_rm_mass  # W/K
+            c_air, c_mass = room.capacitance, self.c_rm_mass * room.area
+            A_full[air, air] -= K / c_air
+            A_full[air, mass] += K / c_air
+            A_full[mass, mass] -= K / c_mass
+            A_full[mass, air] += K / c_mass
+        return A_full
 
     def sort_walls(self):
         """
@@ -273,7 +352,8 @@ class Building:
         off = len(self.Ce)  # offset needed for external nodes
         num_inputs = len(self.rooms) + 1
 
-        B = torch.zeros((off + len(self.rooms), num_inputs))
+        # Mass nodes (room_mass on) take no input directly: every heat input enters the air.
+        B = torch.zeros((self.n_states, num_inputs))
 
         # Set Tout input:
         B[0, 0] = self.surf_area / (self.Re[0] * self.Ce[0])
@@ -367,9 +447,11 @@ class Building:
 
         rm_cap, ex_cap, ex_r, wl_r = self.categorise_theta(theta)
 
-        # update room capacitance
+        # update room capacitance. With room_mass on the room node is the air alone, whose capacity is
+        # known from the room volume rather than searched.
+        per_m2 = self.c_rm_air if getattr(self, "room_mass", False) else rm_cap[0]
         for i in range(len(self.rooms)):
-            self.rooms[i].capacitance = rm_cap[0] * self.rooms[i].area
+            self.rooms[i].capacitance = per_m2 * self.rooms[i].area
 
         # update external capacitance
         self.Ce = ex_cap

@@ -79,8 +79,10 @@ class LSIEnv(gym.Env):
         time_low = [0]
         time_high = [np.float32(np.inf)]
 
-        temp_low = [-np.float32(np.inf)] * (self.n_rooms + 2)  # +2 accounts for the latent nodes
-        temp_high = [np.float32(np.inf)] * (self.n_rooms + 2)
+        # Every model state: the latent envelope nodes, the rooms, and any room mass nodes.
+        n_states = getattr(self.RC.building, "n_states", self.n_rooms + 2)
+        temp_low = [-np.float32(np.inf)] * n_states
+        temp_high = [np.float32(np.inf)] * n_states
 
         low = np.array([time_low + temp_low] * self.step_size)  # extend the vector by the number of timesteps
         high = np.array([time_high + temp_high] * self.step_size)
@@ -145,15 +147,24 @@ class LSIEnv(gym.Env):
 
             pred = self.RC(t_eval, action).squeeze()
 
-            # negative so reward can be maximised.
-            reward = -self.loss_fn(pred[:, 2:], temperature_sample)
+            # negative so reward can be maximised. Room air nodes follow the two envelope nodes; any
+            # room mass nodes come after them and are not measured.
+            reward = -self.loss_fn(pred[:, 2 : 2 + self.n_rooms], temperature_sample)
+
+            # Cooling the model delivered at each row, W per room (<= 0) - fixed in switch mode, worked
+            # out by the thermostat otherwise. Kept alongside the observation for model records.
+            cooling = getattr(self.RC, "last_cooling_w", None)
+            if cooling is None:
+                cooling = np.zeros((len(t_eval), self.n_rooms))
 
             # remove first observation as this was the iv from the previous step
             # TODO: Tidy this up, there must be a better way.
             if self.t_index == 0:
                 self.observation = torch.concat((t_eval.unsqueeze(0).T, pred.clone()), dim=1)
+                self.cooling_w = np.array(cooling)
             else:
                 self.observation = torch.concat((t_eval[1:].unsqueeze(0).T, pred[1:, :].clone()), dim=1)
+                self.cooling_w = np.array(cooling[1:])
 
             # Check for done condition:
             if t_eval[-1] == self.time_data[-1]:
@@ -305,19 +316,36 @@ class LSIEnv(gym.Env):
             self.RC.setup(self.dataloader.dataset)
 
 
+# Observation features PreprocessEnv can build, in the order they appear in the observation, and how many
+# values each contributes (n = number of rooms). The default is the original observation.
+DEFAULT_OBSERVATION_FEATURES = ("temperature", "time_of_day", "time_of_week")
+OBSERVATION_FEATURES = {
+    "temperature": lambda n: n,  # (T_room - mu) / std, per room
+    "time_of_day": lambda n: 2,  # sin, cos of the time of day (UTC)
+    "time_of_week": lambda n: 2,  # sin, cos of epoch time modulo a week (phase 0 = Thursday 00:00 UTC)
+    "weekday": lambda n: 1,  # 1.0 Monday-Friday, 0.0 at weekends, in local time (utc_offset_hours)
+    "t_set": lambda n: 1,  # (T_set - mu) / std: the model's thermostat setpoint
+    "t_minus_setpoint": lambda n: n,  # (T_room - T_set) / std, per room
+}
+_BOUNDED_FEATURES = ("time_of_day", "time_of_week", "weekday")  # in [-1, 1]; the rest are unbounded
+
+
 class PreprocessEnv(gym.ObservationWrapper):
     """
-    A gym observation wrapper that preprocesses the observations.
+    A gym observation wrapper that turns the raw model trajectory into the policy's observation.
 
-    This wrapper applies a normalization transformation to the observations by
-    subtracting the mean and dividing by the standard deviation.
-
-    Also sin(time) and cos(time) are added to the observations.
+    By default the observation is the room temperatures normalised by (mu, std_dev) plus sin/cos of the
+    time of day and of the week - the original observation. `features` picks from OBSERVATION_FEATURES
+    instead, in the order given. The extra features are for a policy that has to learn a building's
+    cooling schedule: with only sin/cos of an epoch-referenced week it has to discover where the weekend
+    falls, and without the setpoint it cannot tell a warm room the thermostat will cool from one it won't.
 
        Args:
            env (gym.Env): The environment to wrap and preprocess observations for.
            mu (float): Mean of the data used for normalization.
            std_dev (float): Standard deviation of the data used for normalization.
+           features (sequence of str or None): see OBSERVATION_FEATURES. None = DEFAULT_OBSERVATION_FEATURES.
+           utc_offset_hours (float): local time = UTC + offset, for "weekday".
 
        Attributes:
            mu (float): Mean of the data used for normalization.
@@ -326,24 +354,27 @@ class PreprocessEnv(gym.ObservationWrapper):
            preprocessing.
     """
 
-    def __init__(self, env, mu, std_dev):
+    def __init__(self, env, mu, std_dev, features=None, utc_offset_hours=0.0):
         super().__init__(env)
 
         self.mu = mu
         self.std_dev = std_dev
+        self.features = tuple(DEFAULT_OBSERVATION_FEATURES if features is None else features)
+        self.utc_offset_hours = float(utc_offset_hours)
+        unknown = [f for f in self.features if f not in OBSERVATION_FEATURES]
+        if unknown or len(set(self.features)) != len(self.features):
+            raise ValueError(
+                f"observation features must be distinct names from {sorted(OBSERVATION_FEATURES)}, got {list(self.features)}."
+            )
 
-        time_high = [1.0] * 4
-        time_low = [-1.0] * 4
+        low, high = [], []
+        for feature in self.features:
+            size = OBSERVATION_FEATURES[feature](env.n_rooms)
+            bound = 1.0 if feature in _BOUNDED_FEATURES else np.float32(np.inf)
+            low += [-bound] * size
+            high += [bound] * size
 
-        # This is normalised temperature so the limits are a guess.
-        temp_high = [np.float32(np.inf)] * env.n_rooms
-        temp_low = [-np.float32(np.inf)] * env.n_rooms
-
-        self.observation_space = spaces.Box(
-            np.array(temp_low + time_low),
-            np.array(temp_high + time_high),
-            dtype=np.float64,
-        )
+        self.observation_space = spaces.Box(np.array(low), np.array(high), dtype=np.float64)
 
     def observation(self, observation):
         """Returns a modified observation.
@@ -355,9 +386,45 @@ class PreprocessEnv(gym.ObservationWrapper):
             The modified observation
         """
         unix_time = observation[-1, 0]
-        x = observation[-1, 3:]  # remove the latent nodes
+        n_rooms = self.env.unwrapped.n_rooms
+        x = observation[-1, 3 : 3 + n_rooms]  # the rooms only: drop time, the latent nodes and any mass nodes
 
-        return preprocess_observation(x, unix_time, self.mu, self.std_dev)
+        if self.features == DEFAULT_OBSERVATION_FEATURES:
+            return preprocess_observation(x, unix_time, self.mu, self.std_dev)
+        t_set = self.env.unwrapped.RC._t_set() if {"t_set", "t_minus_setpoint"} & set(self.features) else None
+        return observation_features(
+            x, unix_time, self.mu, self.std_dev, self.features, t_set=t_set, utc_offset_hours=self.utc_offset_hours
+        )
+
+
+def is_weekday(unix_time, utc_offset_hours=0.0):
+    """True Monday-Friday in local time (UTC + offset). 1970-01-01 was a Thursday."""
+    day = np.floor((np.asarray(unix_time, dtype=np.float64) + 3600 * utc_offset_hours) / 86400).astype(np.int64)
+    return (day + 3) % 7 < 5
+
+
+def observation_features(x, unix_time, mu, std_dev, features, t_set=None, utc_offset_hours=0.0):
+    """The observation PreprocessEnv builds for `features` (see OBSERVATION_FEATURES), as a flat array.
+
+    x are the room temperatures, t_set the thermostat setpoint (needed only by "t_set" and
+    "t_minus_setpoint"). With DEFAULT_OBSERVATION_FEATURES this equals preprocess_observation().
+    """
+    x = np.asarray(x, dtype=np.float64)
+    unix_time = float(unix_time)
+    day = 24 * 60**2
+    week = 7 * day
+    parts = {
+        "temperature": lambda: ((x - mu) / std_dev).tolist(),
+        "time_of_day": lambda: [np.sin(unix_time * (2 * np.pi / day)), np.cos(unix_time * (2 * np.pi / day))],
+        "time_of_week": lambda: [np.sin(unix_time * (2 * np.pi / week)), np.cos(unix_time * (2 * np.pi / week))],
+        "weekday": lambda: [float(is_weekday(unix_time, utc_offset_hours))],
+        "t_set": lambda: [(t_set - mu) / std_dev],
+        "t_minus_setpoint": lambda: ((x - t_set) / std_dev).tolist(),
+    }
+    state = []
+    for feature in features:
+        state += parts[feature]()
+    return np.array(state)
 
 
 def preprocess_observation(x, unix_time, mu, std_dev):

@@ -1,27 +1,47 @@
 from . import optimisation, physical, rc_model, tools
 from .optimisation import (
+    DEFAULT_OBSERVATION_FEATURES,
+    ENVELOPE_KEYS,
     METRIC,
     MODE,
+    OBSERVATION_FEATURES,
     PPO_DEFAULTS,
     LSIEnv,
     PreprocessEnv,
     PriorCoolingPolicy,
     RCPolicyTrainable,
+    SchedulePolicy,
     best_parameters,
     build_pbt_scheduler,
     build_tuner,
     evaluate,
+    fit_free_float,
     learner_diagnostics,
     make_update_env_fn,
+    narrow_ranges,
     physical_to_scaled,
+    pinned_parameters,
     ppo_settings,
     preprocess_observation,
     sample_plausible_population,
+    schedule_available,
     search_space,
     slowest_time_constant_days,
 )
 from .physical import Building, InputScaling, Room
-from .rc_model import H_OUT, LOAD_KEYS, NON_NEGATIVE_PARAM_KEYS, PARAM_KEYS, RC_PARAM_KEYS, RCModel, scaled_params_to_tensors
+from .rc_model import (
+    COOLING_MODES,
+    H_OUT,
+    LOAD_KEYS,
+    NON_NEGATIVE_PARAM_KEYS,
+    OPTIONAL_PARAM_KEYS,
+    PARAM_KEYS,
+    RC_PARAM_KEYS,
+    SIGNED_PARAM_KEYS,
+    RCModel,
+    param_range,
+    scaled_params_to_tensors,
+)
 from .tools import (
     BuildingTemperatureDataset,
     InfiniteSampler,
@@ -32,7 +52,9 @@ from .tools import (
     env_create_and_setup,
     env_creator,
     exponential_smoothing,
+    free_float_mask,
     initialise_model,
+    interleaved_blocks,
     load_model_record,
     load_model_records,
     load_weather_csv,
@@ -45,16 +67,21 @@ from .tools import (
     room_rmse,
     save_model_record,
     sort_data,
+    training_windows_dataloader,
     write_weather_csv,
 )
 
 __all__ = [
+    "COOLING_MODES",
     "H_OUT",
     "LOAD_KEYS",
     "NON_NEGATIVE_PARAM_KEYS",
+    "OPTIONAL_PARAM_KEYS",
     "PARAM_KEYS",
     "RC_PARAM_KEYS",
+    "SIGNED_PARAM_KEYS",
     "RCModel",
+    "param_range",
     "scaled_params_to_tensors",
 ]
 __all__.extend(optimisation.__all__)

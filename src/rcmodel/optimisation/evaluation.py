@@ -118,7 +118,9 @@ def evaluate(env, rl_algorithm, dataloader, record_window=None):
                     if recording:
                         # The base env's observation is the raw (unnormalised) trajectory of
                         # this step, without the row it shares with the previous step.
-                        steps.append((int(action), step_start, reward, base_env.observation.clone()))
+                        cooling = getattr(base_env, "cooling_w", None)
+                        cooling = None if cooling is None else np.array(cooling)
+                        steps.append((int(action), step_start, reward, cooling, base_env.observation.clone()))
 
                 reward_list.append(episode_reward)
                 if recording:
@@ -146,9 +148,27 @@ def _build_record(base_env, steps, window_index, window_reward):
     ghi = model.ghi(time)
     area = np.array([room.area for room in rooms], dtype=np.float64)
 
+    # Cooling actually delivered at every row, W per room (<= 0). Steps are (action, start, reward,
+    # cooling, observation); a caller that records 4-tuples (no cooling) falls back to switch mode's
+    # action x capacity.
+    delivered = [step[3] if len(step) == 5 else None for step in steps]
+    thermostat = getattr(model, "cooling_mode", "switch") == "thermostat"
+    if thermostat and all(d is not None and len(d) == len(step[-1]) for d, step in zip(delivered, steps, strict=True)):
+        delivered_cooling_w = np.concatenate(delivered).astype(np.float64)
+    else:
+        delivered_cooling_w = -action_per_row[:, None] * cool_w[None, :]
+
+    n_latent = 2
+    state_names = ["Te1", "Te2"] + [room.name for room in rooms]
+    state_names += [f"{room.name} mass" for room in rooms][: trajectory.shape[1] - 1 - len(state_names)]
+
     return {
         "time": time.numpy(),
         "states": trajectory[:, 1:].numpy(),
+        "state_names": np.array(state_names),
+        "n_latent": n_latent,
+        "cooling_mode": getattr(model, "cooling_mode", "switch"),
+        "delivered_cooling_w": delivered_cooling_w,
         "measured_time": base_env.time_data.to(torch.float64).numpy(),
         "measured": base_env.temp_data[:, : base_env.n_rooms].numpy(),
         "outdoor": torch.as_tensor(model.Tout_continuous(time)).flatten().to(torch.float64).numpy(),
@@ -156,10 +176,10 @@ def _build_record(base_env, steps, window_index, window_reward):
         "action": np.array([action for action, *_ in steps], dtype=np.int64),
         "action_start": np.array([start for _, start, *_ in steps], dtype=np.float64),
         "action_end": np.array([observation[-1, 0].item() for *_, observation in steps], dtype=np.float64),
-        "step_reward": np.array([reward for _, _, reward, _ in steps], dtype=np.float64),
+        "step_reward": np.array([step[2] for step in steps], dtype=np.float64),
         "ghi": ghi,
         "solar_w": ghi * float(np.sum(solar.numpy().astype(np.float64) * area)),
-        "net_heat_w": heat_without_cooling - action_per_row * cool_w.sum(),
+        "net_heat_w": heat_without_cooling + delivered_cooling_w.sum(axis=1),
         "room_names": np.array([room.name for room in rooms]),
         "room_area": np.array([room.area for room in rooms], dtype=np.float64),
         "cool_w_m2": cool.numpy().astype(np.float64),

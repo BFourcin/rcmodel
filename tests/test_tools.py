@@ -5,7 +5,16 @@ import numpy as np
 import pytest
 import torch
 
-from rcmodel import LOAD_KEYS, PARAM_KEYS, InputScaling, RCModel, load_weather_csv, model_creator, write_weather_csv
+from rcmodel import (
+    LOAD_KEYS,
+    PARAM_KEYS,
+    InputScaling,
+    RCModel,
+    load_weather_csv,
+    model_creator,
+    param_range,
+    write_weather_csv,
+)
 
 
 @pytest.fixture
@@ -71,8 +80,8 @@ def test_solar_range_defaults_to_zero_to_one():
 def expected_physical(model_config, key, n_rooms=1):
     """Physical value of a 0-1 config parameter, straight from its [min, max] range.
     A single value is broadcast to every room, a per-room array must already match."""
-    lo, hi = model_config[key]
-    scaled = np.broadcast_to(np.asarray(model_config["parameters"][key], dtype=float).flatten(), (n_rooms,))
+    lo, hi = param_range(model_config, key)
+    scaled = np.broadcast_to(np.asarray(model_config["parameters"].get(key, 0.0), dtype=float).flatten(), (n_rooms,))
     return torch.tensor(lo + scaled * (hi - lo), dtype=torch.float32)
 
 

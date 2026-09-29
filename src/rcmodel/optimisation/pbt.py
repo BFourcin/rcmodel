@@ -28,6 +28,7 @@ included. test_checkpoint_does_not_carry_rc_params pins the invariant down.
 """
 
 import copy
+import functools
 import json
 import logging
 import pickle
@@ -42,7 +43,7 @@ from ray.tune.schedulers import PopulationBasedTraining
 from ray.tune.search.basic_variant import BasicVariantGenerator
 
 import rcmodel.tools
-from rcmodel.rc_model import LOAD_KEYS, PARAM_KEYS, RC_PARAM_KEYS
+from rcmodel.rc_model import LOAD_KEYS, OPTIONAL_PARAM_KEYS, PARAM_KEYS, RC_PARAM_KEYS, SIGNED_PARAM_KEYS, param_range
 
 from .evaluation import evaluate, make_update_env_fn
 
@@ -166,8 +167,9 @@ def physical_to_scaled(model_config, physical):
     """
     scaled = {}
     for key in RC_PARAM_KEYS:
-        low, high = model_config[key]
-        values = np.asarray(physical[key], dtype=float)
+        low, high = param_range(model_config, key)
+        # An optional parameter left out of `physical` sits at the bottom of its range.
+        values = np.asarray(physical[key] if key in physical or key not in OPTIONAL_PARAM_KEYS else low, dtype=float)
         # A degenerate range (min == max) means the parameter is pinned, not searched.
         span = high - low
         normalised = (values - low) / span if span > 0 else np.zeros_like(values)
@@ -199,19 +201,58 @@ def search_space(model_config, log_uniform=True):
     -------
     dict
         {name: tune Domain}, usable both as param_space entries and as PBT
-        hyperparam_mutations.
+        hyperparam_mutations. A PINNED parameter (see pinned_parameters) is a plain float instead:
+        every trial gets that value and PBT never mutates it.
     """
+    pinned = pinned_parameters(model_config)
     space = {}
     for key in PARAM_KEYS:
-        low, high = model_config[key]
-        if log_uniform and low > 0:
+        low, high = param_range(model_config, key)
+        if key in pinned:
+            space[key] = pinned[key]
+        elif log_uniform and low > 0:
             space[key] = tune.loguniform(low, high)
         else:
             space[key] = tune.uniform(low, high)
     for key in LOAD_KEYS:
-        low, high = model_config[key]
-        space[key] = tune.uniform(low, high)
+        low, high = param_range(model_config, key)
+        space[key] = pinned[key] if key in pinned else tune.uniform(low, high)
     return space
+
+
+def config_physical(config):
+    """The physical RC parameters in a trial config. A config written before an OPTIONAL_PARAM_KEYS
+    parameter existed (e.g. a checkpointed trial restored from an older run) doesn't hold it; it takes the
+    bottom of its range, which is where that parameter sat before it existed."""
+    model_config = config.get("model_config", {})
+    return {
+        key: config[key] if key in config else float(param_range(model_config, key)[0])
+        for key in RC_PARAM_KEYS
+        if key in config or key in OPTIONAL_PARAM_KEYS
+    }
+
+
+def pinned_parameters(model_config):
+    """{name: value} of the parameters that are fixed rather than searched.
+
+    * A degenerate range [v, v] - including the optional parameters a config leaves out - is pinned at v.
+    * Rin is pinned at the bottom of its range when the building has a single room: there are no internal
+      walls for it to act on, so searching it only adds a dimension that can't affect the score.
+    Every free parameter is somewhere for a structural error to hide, so pinning what is known matters.
+    """
+    pinned = {}
+    for key in RC_PARAM_KEYS:
+        low, high = param_range(model_config, key)
+        if low == high:
+            pinned[key] = float(low)
+    if len(model_config.get("room_names", ())) == 1:
+        pinned.setdefault("Rin", float(param_range(model_config, "Rin")[0]))
+    return pinned
+
+
+def _sample(domain):
+    """A draw from a search_space() entry: a tune Domain, or a pinned constant."""
+    return float(domain.sample()) if hasattr(domain, "sample") else float(domain)
 
 
 def slowest_time_constant_days(model_config, physical_params):
@@ -267,7 +308,7 @@ def sample_plausible_population(model_config, num_samples, max_time_constant_day
     draws = 0
     while len(population) < num_samples and draws < max_draws:
         draws += 1
-        candidate = {key: float(space[key].sample()) for key in RC_PARAM_KEYS}
+        candidate = {key: _sample(space[key]) for key in RC_PARAM_KEYS}
         if slowest_time_constant_days(model_config, candidate) <= max_time_constant_days:
             population.append(candidate)
 
@@ -404,7 +445,7 @@ class RCPolicyTrainable(tune.Trainable):
         from reset_config() after a PBT exploit.
         """
         self.model_config = copy.deepcopy(config["model_config"])
-        self.rc_physical = {key: config[key] for key in RC_PARAM_KEYS}
+        self.rc_physical = config_physical(config)
         self.rc_scaled = physical_to_scaled(self.model_config, self.rc_physical)
         self.model_config["parameters"] = self.rc_scaled
 
@@ -774,7 +815,10 @@ def build_pbt_scheduler(
     ppo_mutations: {name: [min, max]} of PPO_DEFAULTS keys to mutate as well, e.g.
     {"lr": [1e-5, 1e-3]}. See ppo_search_space().
     """
-    hyperparam_mutations = search_space(model_config, log_uniform=log_uniform)
+    # Pinned parameters are constants in the search space, and PBT must not mutate them.
+    hyperparam_mutations = {
+        key: domain for key, domain in search_space(model_config, log_uniform=log_uniform).items() if hasattr(domain, "sample")
+    }
     if ppo_mutations:
         hyperparam_mutations["ppo"] = ppo_search_space(ppo_mutations)
     return PopulationBasedTraining(
@@ -785,7 +829,26 @@ def build_pbt_scheduler(
         perturbation_factors=tuple(perturbation_factors),
         hyperparam_mutations=hyperparam_mutations,
         burn_in_period=burn_in_period,
+        custom_explore_fn=functools.partial(clip_to_range, _clip_ranges(model_config)),
     )
+
+
+def _clip_ranges(model_config):
+    """{name: (min, max)} of the searched parameters a perturbation must not carry out of range: the
+    SIGNED_PARAM_KEYS (T_set). PBT perturbs by MULTIPLYING (x 0.8 / 1.2), which suits the scale quantities
+    - a capacitance or resistance may legitimately wander past its prior range - but not a temperature:
+    repeated steps compound (22 -> 26 -> 32 ...), and a setpoint above the room's temperature silently
+    switches the thermostat off. A 600-iteration run drifted T_set to 39-71 degC this way."""
+    pinned = pinned_parameters(model_config)
+    return {key: tuple(param_range(model_config, key)) for key in SIGNED_PARAM_KEYS if key not in pinned}
+
+
+def clip_to_range(ranges, config):
+    """PBT custom_explore_fn: after a perturbation, clip each parameter in `ranges` to its range."""
+    for key, (low, high) in ranges.items():
+        if key in config:
+            config[key] = float(np.clip(config[key], low, high))
+    return config
 
 
 def build_tuner(
@@ -924,7 +987,7 @@ def best_parameters(results):
     model_config["parameters"].
     """
     best = results.get_best_result(metric=METRIC, mode=MODE)
-    physical = {key: best.config[key] for key in RC_PARAM_KEYS}
+    physical = config_physical(best.config)
     return physical, physical_to_scaled(best.config["model_config"], physical)
 
 
@@ -942,6 +1005,7 @@ __all__ = [
     "build_tuner",
     "learner_diagnostics",
     "physical_to_scaled",
+    "pinned_parameters",
     "ppo_search_space",
     "ppo_settings",
     "sample_plausible_population",

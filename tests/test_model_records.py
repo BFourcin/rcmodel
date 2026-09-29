@@ -217,3 +217,51 @@ def test_best_records_over_time(tmp_path):
 
     thinned = best_records_over_time(tmp_path, n=2)
     assert [(r["trial_id"], r["timestamp"]) for r in thinned] == [("a", 1.0), ("a", 4.0)]
+
+
+def test_thermostat_record_carries_the_cooling_it_delivered(get_model_config, data_config, env_config):
+    """In thermostat mode the cooling is worked out row by row, so the record must carry what was
+    actually delivered - never more than capacity, never heating, only while the action is on -
+    and net heat must include exactly that."""
+    config = {**get_model_config, "cooling_mode": "thermostat", "T_set": [21, 21], "gain": [0, 200]}
+    env = env_creator({**env_config, "model_config": config})
+    _, eval_dataloader = make_dataloaders(data_config)
+    _, record = evaluate(env, AlternatingPolicy(), eval_dataloader, record_window=0)
+
+    delivered = record["delivered_cooling_w"]
+    assert record["cooling_mode"] == "thermostat"
+    assert delivered.shape == (len(record["time"]), len(record["room_names"]))
+    assert (delivered <= 0).all() and (delivered >= -record["cool_w"][None, :] * (1 + 1e-6)).all()
+
+    step = np.searchsorted(record["action_end"], record["time"], side="left")
+    action = record["action"][np.minimum(step, len(record["action"]) - 1)]
+    assert np.all(delivered[action == 0] == 0)
+    assert (delivered[action == 1] < 0).any(), "the fixture should need some cooling"
+    np.testing.assert_allclose(
+        record["net_heat_w"], np.sum(record["gain_w"]) + record["solar_w"] + delivered.sum(axis=1), rtol=1e-6
+    )
+    assert list(record["state_names"][: record["n_latent"]]) == ["Te1", "Te2"]
+    assert list(record["state_names"][record["n_latent"] :]) == list(record["room_names"])
+
+
+def test_room_mass_env_scores_and_records_only_the_rooms(get_model_config, data_config, env_config):
+    """With mass nodes after the rooms, the reward and the policy's observation must still be the
+    rooms, and the record must name every state."""
+    config = {**get_model_config, "room_mass": True, "C_rm": [1, 1], "C_rm_mass": [1e3, 1e5], "R_rm_mass": [0.1, 5]}
+    env = env_creator({**env_config, "model_config": config})
+    n_rooms = len(config["room_names"])
+    obs, _ = env.reset()
+    assert len(obs) == n_rooms + 4  # rooms + sin/cos of day and week
+    _, eval_dataloader = make_dataloaders(data_config)
+    _, record = evaluate(env, AlternatingPolicy(), eval_dataloader, record_window=0)
+
+    assert record["states"].shape[1] == 2 + 2 * n_rooms
+    names = list(record["state_names"])
+    assert names[2 : 2 + n_rooms] == list(record["room_names"])
+    assert names[2 + n_rooms :] == [f"{room} mass" for room in record["room_names"]]
+    # The residuals the plots draw are room-by-room, not mass nodes.
+    from rcmodel.tools.plotting import room_rmse
+
+    assert room_rmse(record).shape == (n_rooms,)
+    plot_model_record(record)
+    plt.close("all")

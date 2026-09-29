@@ -1,4 +1,5 @@
 import functools
+import hashlib
 import os
 import warnings
 
@@ -10,9 +11,18 @@ from xitorch.interpolate import Interp1D
 
 import rcmodel.optimisation
 from rcmodel.physical import Building, InputScaling, Room
-from rcmodel.rc_model import LOAD_KEYS, PARAM_KEYS, RC_PARAM_KEYS, RCModel
+from rcmodel.rc_model import (
+    COOLING_MODES,
+    DEFAULT_WARMUP_CYCLES,
+    LOAD_KEYS,
+    OPTIONAL_PARAM_KEYS,
+    PARAM_KEYS,
+    RC_PARAM_KEYS,
+    RCModel,
+    param_range,
+)
 
-from .rcmodel_dataset import BuildingTemperatureDataset, InfiniteSampler, RandomSampleDataset
+from .rcmodel_dataset import BuildingTemperatureDataset, InfiniteSampler, RandomSampleDataset, interleaved_blocks
 
 # Normalisation constants for PreprocessEnv. These were hardcoded at the point of use; they
 # are defaults now so a different building can override them via env_config without editing
@@ -135,6 +145,18 @@ def model_creator(model_config):
         "cooling_policy": None,
         "load_model_path_policy": None,  # './prior_policy.pt',  # or None
         "load_model_path_physical": None,  # or None
+        # ---- optional structure, all off by default (see RCModel, Building, rcmodel.physical.solar) ----
+        "cooling_mode": "switch",  # or "thermostat": action 1 makes cooling AVAILABLE, the model holds T_set
+        "T_set": [18, 26],  # degC, thermostat setpoint range (needed with cooling_mode="thermostat")
+        "room_mass": False,  # True: each room is an air node + a mass node
+        "C_rm_air": None,  # J/m2K of floor for the air node; None = 1.2 * 1005 * room_height
+        "C_rm_mass": [1e3, 2e5],  # J/m2K of floor, the mass node (needed with room_mass)
+        "R_rm_mass": [0.05, 10],  # m2K/W of floor, air <-> mass (needed with room_mass); pin C_rm then
+        "solar_geometry": {"latitude": 51.25, "longitude": -2.14},  # sol-air from the irradiance on each
+        #     external wall, derived from GHI (pvlib); optional "north_axis_deg", "albedo", "sky_model"
+        "hvac_schedule": {"weekdays": [0, 1, 2, 3, 4], "start": "07:00", "end": "19:00"},  # for
+        #     fit_free_float(): when the building can't have been conditioned
+        "warmup_cycles": 5,  # spin-up of the wall/mass nodes over the file's first window (see get_iv_array)
         "parameters": {  # scaled 0-1, or None to initialise randomly
             "C_rm": np.random.rand(1),
             "C1": np.random.rand(1),
@@ -157,11 +179,11 @@ def model_creator(model_config):
         # Initialise scaling class. Ranges are [min, max]: C_rm in J/K per m2 of floor, C1/C2 in
         # J/K, R1/R2/R3/Rin in K.m2/W, k_sa dimensionless, cool/gain in W/m2 of floor, solar a
         # dimensionless fraction. Passed by name - the key names are InputScaling's argument names.
-        return InputScaling(**{key: model_config[key] for key in range_keys})
+        return InputScaling(**{key: param_range(model_config, key) for key in range_keys})
 
     def model_sanity_checks():
         """Check the config is self-consistent before anything is built."""
-        missing_ranges = [key for key in range_keys if key not in model_config]
+        missing_ranges = [key for key in range_keys if key not in model_config and key not in OPTIONAL_PARAM_KEYS]
         assert not missing_ranges, (
             f"model_config is missing ranges for {missing_ranges}. Every one of {list(range_keys)} needs a "
             f"[min, max] - 'solar' is the fraction of GHI reaching the room, e.g. [0, 0.2], and 'k_sa' the "
@@ -188,12 +210,40 @@ def model_creator(model_config):
 
         # InputScaling checks min <= max, here we only check the shape of each range.
         for key in range_keys:
-            assert len(model_config[key]) == 2, f"Range for '{key}' should be [min, max], got: {model_config[key]}"
+            key_range = param_range(model_config, key)
+            assert len(key_range) == 2, f"Range for '{key}' should be [min, max], got: {key_range}"
+
+        cooling_mode = model_config.get("cooling_mode", "switch")
+        assert cooling_mode in COOLING_MODES, f"cooling_mode must be one of {COOLING_MODES}, got {cooling_mode!r}."
+        if cooling_mode == "thermostat":
+            assert "T_set" in model_config, (
+                "cooling_mode='thermostat' needs a setpoint range: model_config['T_set'] = [min, max] in degC "
+                "(pin it with min == max if the setpoint is known)."
+            )
+
+        geometry = model_config.get("solar_geometry")
+        if geometry is not None:
+            missing_site = [key for key in ("latitude", "longitude") if key not in geometry]
+            assert not missing_site, f"solar_geometry needs {missing_site} (degrees, north and east positive)."
+            unknown = set(geometry) - {"latitude", "longitude", "north_axis_deg", "albedo", "sky_model"}
+            assert not unknown, f"solar_geometry has unknown keys {sorted(unknown)}."
+
+        if model_config.get("room_mass"):
+            for key in ("C_rm_mass", "R_rm_mass"):
+                assert key in model_config and param_range(model_config, key)[0] > 0, (
+                    f"room_mass=True needs a range for '{key}' with a positive minimum - the mass node's "
+                    f"capacity and coupling resistance enter A as 1/(R*C)."
+                )
+            low, high = param_range(model_config, "C_rm")
+            assert low == high, (
+                "room_mass=True replaces the lumped room capacity C_rm with C_rm_air (computed from the room "
+                "volume) plus the searched C_rm_mass, so C_rm is unused: pin it (e.g. [1, 1]) rather than search it."
+            )
 
         # Starting parameters are optional, but if given they must be complete.
         # Their lengths are checked where the tensors are built, as a single value is allowed for every room.
         if model_config.get("parameters") is not None:
-            missing = [key for key in range_keys if key not in model_config["parameters"]]
+            missing = [key for key in range_keys if key not in model_config["parameters"] and key not in OPTIONAL_PARAM_KEYS]
             assert not missing, f"model_config['parameters'] is missing: {missing}"
 
         return
@@ -214,7 +264,18 @@ def model_creator(model_config):
         model_config["room_coordinates"],
         model_config.get("room_height", 1),
         weather_data_ghi=ghi,
+        cooling_mode=model_config.get("cooling_mode", "switch"),
+        room_mass=model_config.get("room_mass", False),
+        c_rm_air=model_config.get("C_rm_air"),
     )
+
+    model.warmup_cycles = int(model_config.get("warmup_cycles", DEFAULT_WARMUP_CYCLES))
+    assert model.warmup_cycles >= 0, f"warmup_cycles must be >= 0, got {model.warmup_cycles}."
+
+    if model_config.get("solar_geometry") is not None and ghi is not None:
+        model.envelope_irradiance_continuous = _envelope_irradiance_interp(
+            model.building, weather_time, ghi, model_config["solar_geometry"]
+        )
 
     # NOTE: the old "load_model_path_policy" branch has been removed. RCModel.load is a
     # staticmethod, so `model.load(path)` built a model and threw it away - the branch only
@@ -263,6 +324,60 @@ def model_creator(model_config):
     return model
 
 
+def _envelope_irradiance_interp(building, weather_time, ghi, geometry):
+    """Interp1D of the area-weighted external-wall irradiance (see rcmodel.physical.solar) on the weather
+    grid, for RCModel.sol_air_temperature. Cached: every trial and every plausibility probe builds a
+    model from the same weather and geometry, and the solar calculation is the slow part."""
+    azimuths, areas = building.external_wall_orientations(geometry.get("north_axis_deg", 0.0))
+    key = (
+        hashlib.sha1(np.ascontiguousarray(weather_time).tobytes() + np.ascontiguousarray(ghi).tobytes()).hexdigest(),
+        tuple(np.round(azimuths, 6)),
+        tuple(np.round(areas, 6)),
+        float(geometry["latitude"]),
+        float(geometry["longitude"]),
+        float(geometry.get("albedo", 0.2)),
+        geometry.get("sky_model", "perez"),
+    )
+    irradiance = _envelope_irradiance_cached(key, weather_time, ghi)
+    t = torch.tensor(np.asarray(weather_time, dtype=np.float64))
+    return Interp1D(t, torch.tensor(irradiance), method="linear")
+
+
+_ENVELOPE_CACHE = {}
+
+
+def _envelope_irradiance_cached(key, weather_time, ghi):
+    if key not in _ENVELOPE_CACHE:
+        from rcmodel.physical.solar import envelope_irradiance
+
+        _, azimuths, areas, latitude, longitude, albedo, sky_model = key
+        if len(_ENVELOPE_CACHE) > 8:  # a handful of weather files per process at most
+            _ENVELOPE_CACHE.clear()
+        _ENVELOPE_CACHE[key] = envelope_irradiance(
+            weather_time, ghi, azimuths, areas, latitude, longitude, albedo=albedo, sky_model=sky_model
+        )
+    return _ENVELOPE_CACHE[key]
+
+
+def free_float_mask(time, schedule):
+    """True at every time the HVAC is NOT available, from a schedule in model_config["hvac_schedule"].
+
+    schedule = {"weekdays": [0, 1, 2, 3, 4],   # Monday = 0
+                "start": "07:00", "end": "19:00", # available from start (inclusive) to end (exclusive)
+                "utc_offset_hours": 0}            # local time = UTC + offset; optional, default 0
+
+    This is building-management knowledge, not measured data: it says when the building CAN'T have been
+    conditioned, which is what separating the envelope from the cooling needs.
+    """
+    local = pd.to_datetime(np.asarray(time, dtype=np.float64) + 3600 * schedule.get("utc_offset_hours", 0), unit="s")
+    start_h, start_m = (int(x) for x in schedule["start"].split(":"))
+    end_h, end_m = (int(x) for x in schedule["end"].split(":"))
+    minutes = local.hour * 60 + local.minute
+    in_hours = (minutes >= start_h * 60 + start_m) & (minutes < end_h * 60 + end_m)
+    available = np.isin(local.dayofweek, schedule["weekdays"]) & in_hours
+    return ~np.asarray(available)
+
+
 def env_creator(env_config):
     """
     Creates a Reinforcement Learning environment for use with the Ray RLlib library.
@@ -293,6 +408,8 @@ def env_creator(env_config):
                 model, the route a PBT exploit uses.
             - "update_state_dict": Optional RCModel state_dict applied on top of the model.
             - "observation_mu" / "observation_std_dev": Optional normalisation constants.
+            - "observation_features" / "utc_offset_hours": Optional, what the policy observes - see
+                PreprocessEnv. Default: the original observation.
 
     Returns:
         env (gym.Env): A Reinforcement Learning environment that is ready for use with RLlib.
@@ -331,6 +448,8 @@ def env_creator(env_config):
             env,
             mu=env_config.get("observation_mu", DEFAULT_OBSERVATION_MU),
             std_dev=env_config.get("observation_std_dev", DEFAULT_OBSERVATION_STD_DEV),
+            features=env_config.get("observation_features"),
+            utc_offset_hours=env_config.get("utc_offset_hours", 0.0),
         )
     return env
 
@@ -367,6 +486,15 @@ def make_dataloaders(data_config):
         "sample_size" : rows of data per episode
         "warmup_size" : rows reserved at the start for warming up the latent nodes (default 0)
         "dt"          : timestep the data is resampled to, seconds (default 30)
+        "eval_split"  : "tail" (default) - the last 20 % of the rows, as above - or
+                        {"mode": "interleaved", "every": k} - every k-th sample_size block of the whole
+                        record is held out for evaluation and the training windows are drawn from the
+                        rest, never overlapping a held-out block. See interleaved_blocks(). Or
+                        {"mode": "blocks", "train": [...], "eval": [...]} - explicit sample_size block
+                        indices for each; blocks in neither list are unused (e.g. periods to exclude).
+        "skip_start_windows" : the first N sample_size blocks of the file are never trained or scored on
+                        (default 1). They still feed the history the model's wall nodes are warmed up over
+                        (get_iv_array); the file's first window is the one whose walls have the least behind them.
 
     NOTE: the two dataset classes compute their test split the same way only when
     warmup_size is 0 (RandomSampleDataset subtracts the warmup twice - see its
@@ -386,12 +514,55 @@ def make_dataloaders(data_config):
             "train and evaluation splits would overlap. Fix that split before using a warmup here."
         )
 
+    eval_split = data_config.get("eval_split", "tail")
+    skip = _skip_start_windows(data_config)
     path_sorted = sort_data(str(csv_path), dt)
     with FileLock(f"{os.path.dirname(os.path.abspath(path_sorted))}.lock"):
-        train_dataset = RandomSampleDataset(
-            path_sorted, sample_size, warmup_size, train=True, test=False, epoch_length=data_config.get("epoch_length")
-        )
-        eval_dataset = BuildingTemperatureDataset(path_sorted, sample_size, all=False, train=False, test=True)
+        if eval_split == "tail":
+            train_dataset = RandomSampleDataset(
+                path_sorted,
+                sample_size,
+                warmup_size,
+                train=True,
+                test=False,
+                epoch_length=data_config.get("epoch_length"),
+                exclude_blocks=list(range(skip)),
+            )
+            eval_dataset = BuildingTemperatureDataset(path_sorted, sample_size, all=False, train=False, test=True)
+        elif isinstance(eval_split, dict) and eval_split.get("mode") == "interleaved":
+            n_rows = len(pd.read_csv(path_sorted, usecols=[1]))
+            blocks = interleaved_blocks(n_rows, int(sample_size), int(eval_split["every"]))
+            eval_blocks = [b for b in blocks if b >= skip]
+            if not eval_blocks:
+                raise ValueError(f"No held-out blocks left after skipping the first {skip}.")
+            train_dataset = RandomSampleDataset(
+                path_sorted,
+                sample_size,
+                warmup_size,
+                all=True,
+                epoch_length=data_config.get("epoch_length"),
+                exclude_blocks=sorted(set(blocks) | set(range(skip))),
+            )
+            eval_dataset = BuildingTemperatureDataset(path_sorted, sample_size, all=True, block_indices=eval_blocks)
+        elif isinstance(eval_split, dict) and eval_split.get("mode") == "blocks":
+            n_rows = len(pd.read_csv(path_sorted, usecols=[1]))
+            train_blocks, eval_blocks = _explicit_blocks(eval_split, n_rows, int(sample_size), skip)
+            # Random training windows may start anywhere that doesn't overlap a block outside the training set.
+            not_train = [i for i in range(n_rows // int(sample_size)) if i not in set(train_blocks)]
+            train_dataset = RandomSampleDataset(
+                path_sorted,
+                sample_size,
+                warmup_size,
+                all=True,
+                epoch_length=data_config.get("epoch_length"),
+                exclude_blocks=not_train,
+            )
+            eval_dataset = BuildingTemperatureDataset(path_sorted, sample_size, all=True, block_indices=eval_blocks)
+        else:
+            raise ValueError(
+                f"eval_split must be 'tail', {{'mode': 'interleaved', 'every': k}} or "
+                f"{{'mode': 'blocks', 'train': [...], 'eval': [...]}}, got {eval_split!r}."
+            )
 
     train_dataloader = torch.utils.data.DataLoader(
         train_dataset,
@@ -402,6 +573,71 @@ def make_dataloaders(data_config):
     eval_dataloader = torch.utils.data.DataLoader(eval_dataset, batch_size=1, shuffle=False)
 
     return train_dataloader, eval_dataloader
+
+
+def training_windows_dataloader(data_config):
+    """The TRAINING split of make_dataloaders() as consecutive, deterministic windows, walked once.
+
+    For fitting by a deterministic objective (e.g. a parametric controller searched jointly with the RC
+    parameters): the loss over the training data has to be the same number every time it is evaluated, which
+    make_dataloaders' random training windows are not. Same split as make_dataloaders - the first 80 % of
+    rows ("tail"), or every block not held out ("interleaved") - so a fit on these windows never sees the
+    evaluation split. The first skip_start_windows blocks are left out, as make_dataloaders.
+    """
+    sample_size = int(data_config["sample_size"])
+    if data_config.get("warmup_size", 0):
+        raise NotImplementedError("training_windows_dataloader only supports warmup_size=0, as make_dataloaders.")
+    eval_split = data_config.get("eval_split", "tail")
+    skip = _skip_start_windows(data_config)
+    path_sorted = sort_data(str(data_config["csv_path"]), data_config.get("dt", 30))
+    with FileLock(f"{os.path.dirname(os.path.abspath(path_sorted))}.lock"):
+        if eval_split == "tail":
+            # The training split's windows are blocks 0.. of the file (the split starts at its first row).
+            n_train = len(BuildingTemperatureDataset(path_sorted, sample_size, all=False, train=True, test=False))
+            blocks = list(range(skip, n_train))
+            if not blocks:
+                raise ValueError(f"No training windows left after skipping the first {skip}.")
+            dataset = BuildingTemperatureDataset(path_sorted, sample_size, all=True, block_indices=blocks)
+        elif isinstance(eval_split, dict) and eval_split.get("mode") == "interleaved":
+            n_rows = len(pd.read_csv(path_sorted, usecols=[1]))
+            held_out = set(interleaved_blocks(n_rows, sample_size, int(eval_split["every"])))
+            blocks = [i for i in range(skip, n_rows // sample_size) if i not in held_out]
+            dataset = BuildingTemperatureDataset(path_sorted, sample_size, all=True, block_indices=blocks)
+        elif isinstance(eval_split, dict) and eval_split.get("mode") == "blocks":
+            n_rows = len(pd.read_csv(path_sorted, usecols=[1]))
+            train_blocks, _ = _explicit_blocks(eval_split, n_rows, sample_size, skip)
+            dataset = BuildingTemperatureDataset(path_sorted, sample_size, all=True, block_indices=train_blocks)
+        else:
+            raise ValueError(
+                f"eval_split must be 'tail', {{'mode': 'interleaved', 'every': k}} or "
+                f"{{'mode': 'blocks', 'train': [...], 'eval': [...]}}, got {eval_split!r}."
+            )
+    return torch.utils.data.DataLoader(dataset, batch_size=1, shuffle=False)
+
+
+def _explicit_blocks(eval_split, n_rows, sample_size, skip=0):
+    """(train, eval) block lists of an eval_split {"mode": "blocks", "train": [...], "eval": [...]}: the caller
+    chooses exactly which sample_size blocks are trained and scored on (e.g. only periods without heating), and
+    blocks in neither list are not used at all. The two lists must not overlap. Blocks before `skip`
+    (skip_start_windows) are dropped from both."""
+    n_blocks = n_rows // sample_size
+    train, evaluate = sorted(int(b) for b in eval_split["train"]), sorted(int(b) for b in eval_split["eval"])
+    if set(train) & set(evaluate):
+        raise ValueError(f"train and eval blocks overlap: {sorted(set(train) & set(evaluate))}.")
+    if not train or not evaluate or min(train + evaluate) < 0 or max(train + evaluate) >= n_blocks:
+        raise ValueError(f"train and eval blocks must be non-empty and within 0..{n_blocks - 1}.")
+    train, evaluate = [b for b in train if b >= skip], [b for b in evaluate if b >= skip]
+    if not train or not evaluate:
+        raise ValueError(f"No train or eval blocks left after skipping the first {skip}.")
+    return train, evaluate
+
+
+def _skip_start_windows(data_config):
+    """data_config["skip_start_windows"] (default 1): leading sample_size blocks never trained or scored on."""
+    skip = int(data_config.get("skip_start_windows", 1))
+    if skip < 0:
+        raise ValueError(f"skip_start_windows must be >= 0, got {skip}.")
+    return skip
 
 
 def change_origin(room_coordinates):
@@ -432,9 +668,15 @@ def initialise_model(
     room_coordinates,
     room_height=1,
     weather_data_ghi=None,
+    cooling_mode="switch",
+    room_mass=False,
+    c_rm_air=None,
 ):
     """
     Build an RCModel for the given rooms and weather.
+
+    cooling_mode: what the cooling action means - see RCModel.
+    room_mass, c_rm_air: split each room into an air node and a mass node - see Building.
 
     The weather series are wrapped in linear interpolators over weather_data_UTC_time (unix
     epoch seconds). weather_data_ghi, global horizontal irradiance in W/m2 on the same time grid,
@@ -449,7 +691,7 @@ def initialise_model(
     # Initialise Building. room_height (m) sets the external wall area: Wall.area is
     # length * height, so leaving it at 1 makes surf_area the external perimeter rather than
     # the real wall area, and R1/R2/R3 absorb the difference.
-    bld = Building(rooms, room_height)
+    bld = Building(rooms, room_height, room_mass=room_mass, c_rm_air=c_rm_air)
 
     t = torch.tensor(np.asarray(weather_data_UTC_time, dtype=np.float64))
     Tout = torch.tensor(np.asarray(weather_data_outdoor_temperature, dtype=np.float64))
@@ -465,7 +707,13 @@ def initialise_model(
     # behaved; the search supplies bounded parameters directly, so it would only obscure
     # what a perturbation actually does.
     model = RCModel(
-        bld, scaling, Tout_continuous, transform=None, cooling_policy=cooling_policy, ghi_continuous=ghi_continuous
+        bld,
+        scaling,
+        Tout_continuous,
+        transform=None,
+        cooling_policy=cooling_policy,
+        ghi_continuous=ghi_continuous,
+        cooling_mode=cooling_mode,
     )
 
     return model

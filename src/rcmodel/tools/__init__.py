@@ -4,6 +4,7 @@ from .helper_functions import (
     env_create_and_setup,
     env_creator,
     exponential_smoothing,
+    free_float_mask,
     initialise_model,
     load_weather_csv,
     make_dataloaders,
@@ -11,6 +12,7 @@ from .helper_functions import (
     model_to_csv,
     policy_image,
     sort_data,
+    training_windows_dataloader,
     write_weather_csv,
 )
 from .plotting import (
@@ -22,7 +24,7 @@ from .plotting import (
     room_rmse,
     save_model_record,
 )
-from .rcmodel_dataset import BuildingTemperatureDataset, InfiniteSampler, RandomSampleDataset
+from .rcmodel_dataset import BuildingTemperatureDataset, InfiniteSampler, RandomSampleDataset, interleaved_blocks
 
 __all__ = [
     "BuildingTemperatureDataset",
@@ -34,7 +36,9 @@ __all__ = [
     "env_create_and_setup",
     "env_creator",
     "exponential_smoothing",
+    "free_float_mask",
     "initialise_model",
+    "interleaved_blocks",
     "load_model_record",
     "load_model_records",
     "load_weather_csv",
@@ -47,5 +51,6 @@ __all__ = [
     "room_rmse",
     "save_model_record",
     "sort_data",
+    "training_windows_dataloader",
     "write_weather_csv",
 ]
