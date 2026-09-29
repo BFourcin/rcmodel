@@ -11,7 +11,16 @@ from xitorch.interpolate import Interp1D
 
 import rcmodel.optimisation
 from rcmodel.physical import Building, InputScaling, Room
-from rcmodel.rc_model import COOLING_MODES, LOAD_KEYS, OPTIONAL_PARAM_KEYS, PARAM_KEYS, RC_PARAM_KEYS, RCModel, param_range
+from rcmodel.rc_model import (
+    COOLING_MODES,
+    DEFAULT_WARMUP_CYCLES,
+    LOAD_KEYS,
+    OPTIONAL_PARAM_KEYS,
+    PARAM_KEYS,
+    RC_PARAM_KEYS,
+    RCModel,
+    param_range,
+)
 
 from .rcmodel_dataset import BuildingTemperatureDataset, InfiniteSampler, RandomSampleDataset, interleaved_blocks
 
@@ -147,6 +156,7 @@ def model_creator(model_config):
         #     external wall, derived from GHI (pvlib); optional "north_axis_deg", "albedo", "sky_model"
         "hvac_schedule": {"weekdays": [0, 1, 2, 3, 4], "start": "07:00", "end": "19:00"},  # for
         #     fit_free_float(): when the building can't have been conditioned
+        "warmup_cycles": 5,  # spin-up of the wall/mass nodes over the file's first window (see get_iv_array)
         "parameters": {  # scaled 0-1, or None to initialise randomly
             "C_rm": np.random.rand(1),
             "C1": np.random.rand(1),
@@ -258,6 +268,9 @@ def model_creator(model_config):
         room_mass=model_config.get("room_mass", False),
         c_rm_air=model_config.get("C_rm_air"),
     )
+
+    model.warmup_cycles = int(model_config.get("warmup_cycles", DEFAULT_WARMUP_CYCLES))
+    assert model.warmup_cycles >= 0, f"warmup_cycles must be >= 0, got {model.warmup_cycles}."
 
     if model_config.get("solar_geometry") is not None and ghi is not None:
         model.envelope_irradiance_continuous = _envelope_irradiance_interp(
@@ -479,6 +492,9 @@ def make_dataloaders(data_config):
                         rest, never overlapping a held-out block. See interleaved_blocks(). Or
                         {"mode": "blocks", "train": [...], "eval": [...]} - explicit sample_size block
                         indices for each; blocks in neither list are unused (e.g. periods to exclude).
+        "skip_start_windows" : the first N sample_size blocks of the file are never trained or scored on
+                        (default 1). They still feed the history the model's wall nodes are warmed up over
+                        (get_iv_array); the file's first window is the one whose walls have the least behind them.
 
     NOTE: the two dataset classes compute their test split the same way only when
     warmup_size is 0 (RandomSampleDataset subtracts the warmup twice - see its
@@ -499,28 +515,38 @@ def make_dataloaders(data_config):
         )
 
     eval_split = data_config.get("eval_split", "tail")
+    skip = _skip_start_windows(data_config)
     path_sorted = sort_data(str(csv_path), dt)
     with FileLock(f"{os.path.dirname(os.path.abspath(path_sorted))}.lock"):
         if eval_split == "tail":
             train_dataset = RandomSampleDataset(
-                path_sorted, sample_size, warmup_size, train=True, test=False, epoch_length=data_config.get("epoch_length")
+                path_sorted,
+                sample_size,
+                warmup_size,
+                train=True,
+                test=False,
+                epoch_length=data_config.get("epoch_length"),
+                exclude_blocks=list(range(skip)),
             )
             eval_dataset = BuildingTemperatureDataset(path_sorted, sample_size, all=False, train=False, test=True)
         elif isinstance(eval_split, dict) and eval_split.get("mode") == "interleaved":
             n_rows = len(pd.read_csv(path_sorted, usecols=[1]))
             blocks = interleaved_blocks(n_rows, int(sample_size), int(eval_split["every"]))
+            eval_blocks = [b for b in blocks if b >= skip]
+            if not eval_blocks:
+                raise ValueError(f"No held-out blocks left after skipping the first {skip}.")
             train_dataset = RandomSampleDataset(
                 path_sorted,
                 sample_size,
                 warmup_size,
                 all=True,
                 epoch_length=data_config.get("epoch_length"),
-                exclude_blocks=blocks,
+                exclude_blocks=sorted(set(blocks) | set(range(skip))),
             )
-            eval_dataset = BuildingTemperatureDataset(path_sorted, sample_size, all=True, block_indices=blocks)
+            eval_dataset = BuildingTemperatureDataset(path_sorted, sample_size, all=True, block_indices=eval_blocks)
         elif isinstance(eval_split, dict) and eval_split.get("mode") == "blocks":
             n_rows = len(pd.read_csv(path_sorted, usecols=[1]))
-            train_blocks, eval_blocks = _explicit_blocks(eval_split, n_rows, int(sample_size))
+            train_blocks, eval_blocks = _explicit_blocks(eval_split, n_rows, int(sample_size), skip)
             # Random training windows may start anywhere that doesn't overlap a block outside the training set.
             not_train = [i for i in range(n_rows // int(sample_size)) if i not in set(train_blocks)]
             train_dataset = RandomSampleDataset(
@@ -556,24 +582,30 @@ def training_windows_dataloader(data_config):
     parameters): the loss over the training data has to be the same number every time it is evaluated, which
     make_dataloaders' random training windows are not. Same split as make_dataloaders - the first 80 % of
     rows ("tail"), or every block not held out ("interleaved") - so a fit on these windows never sees the
-    evaluation split.
+    evaluation split. The first skip_start_windows blocks are left out, as make_dataloaders.
     """
     sample_size = int(data_config["sample_size"])
     if data_config.get("warmup_size", 0):
         raise NotImplementedError("training_windows_dataloader only supports warmup_size=0, as make_dataloaders.")
     eval_split = data_config.get("eval_split", "tail")
+    skip = _skip_start_windows(data_config)
     path_sorted = sort_data(str(data_config["csv_path"]), data_config.get("dt", 30))
     with FileLock(f"{os.path.dirname(os.path.abspath(path_sorted))}.lock"):
         if eval_split == "tail":
-            dataset = BuildingTemperatureDataset(path_sorted, sample_size, all=False, train=True, test=False)
+            # The training split's windows are blocks 0.. of the file (the split starts at its first row).
+            n_train = len(BuildingTemperatureDataset(path_sorted, sample_size, all=False, train=True, test=False))
+            blocks = list(range(skip, n_train))
+            if not blocks:
+                raise ValueError(f"No training windows left after skipping the first {skip}.")
+            dataset = BuildingTemperatureDataset(path_sorted, sample_size, all=True, block_indices=blocks)
         elif isinstance(eval_split, dict) and eval_split.get("mode") == "interleaved":
             n_rows = len(pd.read_csv(path_sorted, usecols=[1]))
             held_out = set(interleaved_blocks(n_rows, sample_size, int(eval_split["every"])))
-            blocks = [i for i in range(n_rows // sample_size) if i not in held_out]
+            blocks = [i for i in range(skip, n_rows // sample_size) if i not in held_out]
             dataset = BuildingTemperatureDataset(path_sorted, sample_size, all=True, block_indices=blocks)
         elif isinstance(eval_split, dict) and eval_split.get("mode") == "blocks":
             n_rows = len(pd.read_csv(path_sorted, usecols=[1]))
-            train_blocks, _ = _explicit_blocks(eval_split, n_rows, sample_size)
+            train_blocks, _ = _explicit_blocks(eval_split, n_rows, sample_size, skip)
             dataset = BuildingTemperatureDataset(path_sorted, sample_size, all=True, block_indices=train_blocks)
         else:
             raise ValueError(
@@ -583,17 +615,29 @@ def training_windows_dataloader(data_config):
     return torch.utils.data.DataLoader(dataset, batch_size=1, shuffle=False)
 
 
-def _explicit_blocks(eval_split, n_rows, sample_size):
+def _explicit_blocks(eval_split, n_rows, sample_size, skip=0):
     """(train, eval) block lists of an eval_split {"mode": "blocks", "train": [...], "eval": [...]}: the caller
     chooses exactly which sample_size blocks are trained and scored on (e.g. only periods without heating), and
-    blocks in neither list are not used at all. The two lists must not overlap."""
+    blocks in neither list are not used at all. The two lists must not overlap. Blocks before `skip`
+    (skip_start_windows) are dropped from both."""
     n_blocks = n_rows // sample_size
     train, evaluate = sorted(int(b) for b in eval_split["train"]), sorted(int(b) for b in eval_split["eval"])
     if set(train) & set(evaluate):
         raise ValueError(f"train and eval blocks overlap: {sorted(set(train) & set(evaluate))}.")
     if not train or not evaluate or min(train + evaluate) < 0 or max(train + evaluate) >= n_blocks:
         raise ValueError(f"train and eval blocks must be non-empty and within 0..{n_blocks - 1}.")
+    train, evaluate = [b for b in train if b >= skip], [b for b in evaluate if b >= skip]
+    if not train or not evaluate:
+        raise ValueError(f"No train or eval blocks left after skipping the first {skip}.")
     return train, evaluate
+
+
+def _skip_start_windows(data_config):
+    """data_config["skip_start_windows"] (default 1): leading sample_size blocks never trained or scored on."""
+    skip = int(data_config.get("skip_start_windows", 1))
+    if skip < 0:
+        raise ValueError(f"skip_start_windows must be >= 0, got {skip}.")
+    return skip
 
 
 def change_origin(room_coordinates):

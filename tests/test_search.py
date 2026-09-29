@@ -54,8 +54,11 @@ def test_interleaved_split_holds_out_every_kth_block_and_training_never_overlaps
 
 
 def test_tail_split_is_unchanged(data_config):
+    """The tail split only loses the file's first window (skip_start_windows, default 1) from training."""
     train, evaluation = make_dataloaders(data_config)
     assert evaluation.dataset.block_indices is None
+    assert train.dataset.exclude_blocks == [0]
+    train, _ = make_dataloaders({**data_config, "skip_start_windows": 0})
     assert train.dataset.exclude_blocks == []
 
 
