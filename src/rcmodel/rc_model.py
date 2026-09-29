@@ -60,6 +60,13 @@ def param_range(model_config, key):
 # Rse = 0.04 m2K/W, the external film already counted inside R1.
 H_OUT = 25.0
 
+# Spin-up of the latent (wall and mass) nodes before get_iv_array() walks the file's history: the file's first
+# window is driven round this many times, starting from the steady-state guess, until the state at the end of a
+# cycle is within WARMUP_TOL degC of the state at its start. 5 cycles of a 72 h window take out ~e^-5 of the
+# starting error for time constants up to ~3 days. 0 = no spin-up (the history walk starts from the guess).
+DEFAULT_WARMUP_CYCLES = 5
+WARMUP_TOL = 0.01
+
 
 def scaled_params_to_tensors(values, n_rooms):
     """
@@ -198,6 +205,7 @@ class RCModel(nn.Module):
         self.B = None  # Input Matrix
         self.iv = None  # initial value
         self.iv_array = None  # Interp1D object of pre found initial values. Means we can get correct iv with just time.
+        self.warmup_cycles = DEFAULT_WARMUP_CYCLES  # spin-up cycles of get_iv_array() over the first window
 
         # Cache of exact discretisations keyed by timestep, populated lazily by _get_discretisation()
         # and thrown away by setup() whenever A/B change. Not part of state_dict - it is derived data.
@@ -961,8 +969,15 @@ def get_iv_array(model, dataset):
 
     The latent nodes are integrated over the dataset's history (every row from the start of its file to the end
     of its split - see BuildingTemperatureDataset.get_history), so a split that starts part-way through a file,
-    such as the evaluation split, starts from warmed-up wall states. The steady-state starting guess is made at
-    the file's first row, where its error has the longest to decay.
+    such as the evaluation split, starts from warmed-up wall states.
+
+    Before that, the latent nodes are spun up: the first window of the file (the dataset's sample_size rows, or
+    its first day) is driven round up to model.warmup_cycles times, starting from the steady-state guess for that
+    window's mean temperatures, and the end state of each cycle starts the next - as EnergyPlus repeats its first
+    day until the zone temperatures settle. The history walk then starts from the settled state rather than from
+    the guess, so even the file's first windows start from walls in equilibrium with the weather, and heavy
+    buildings (time constants of days) are warmed up within the file rather than only after several windows.
+    warmup_cycles = 0 skips it: the history walk starts from the steady-state guess for the whole history's means.
     Tout and Tin are exogenous inputs (not functions of T1/T2), and Q never enters this reduced system - so this is a
     linear time-invariant state-space system with known input trajectories, which is discretized exactly (see
     _foh_discretize) rather than numerically integrated with an ODE solver.
@@ -994,8 +1009,10 @@ def get_iv_array(model, dataset):
             t_eval = t_eval.squeeze(0)
 
         Tout_vals = torch.as_tensor(model.sol_air_temperature(t_eval))
-        avg_tout = Tout_vals.mean()
-        avg_tin = Tin_continuous(t_eval).mean()
+        cycles = int(getattr(model, "warmup_cycles", DEFAULT_WARMUP_CYCLES))
+        n_spin = _spin_up_rows(dataset, t_eval) if cycles > 0 else len(t_eval)
+        avg_tout = Tout_vals[:n_spin].mean()
+        avg_tin = Tin_continuous(t_eval[:n_spin]).mean()
 
         model.iv = steady_state_iv(model, avg_tout, avg_tin)  # Use avg temp as a good starting guess for iv.
 
@@ -1018,7 +1035,9 @@ def get_iv_array(model, dataset):
             axis=1,
         )
         x0 = model.iv[0:2].reshape(-1).numpy().astype(np.float64)
-        X = _integrate_latent(A.numpy().astype(np.float64), B.numpy().astype(np.float64), t_eval.numpy(), W, x0)
+        A_np, B_np, t_np = A.numpy().astype(np.float64), B.numpy().astype(np.float64), t_eval.numpy()
+        x0 = _spin_up(lambda x: _integrate_latent(A_np, B_np, t_np[:n_spin], W[:n_spin], x)[-1], x0, cycles)
+        X = _integrate_latent(A_np, B_np, t_np, W, x0)
 
         integrate = torch.tensor(X, dtype=torch.float32)
 
@@ -1028,18 +1047,21 @@ def get_iv_array(model, dataset):
         iv_array[:, 0:2] = integrate
         iv_array[:, 2 : 2 + n_rooms] = Tin_continuous(t_eval).T
         if getattr(bl, "room_mass", False):
-            iv_array[:, 2 + n_rooms :] = torch.tensor(_room_mass_history(bl, t_eval, temp_data[:, 0:n_rooms]))
+            iv_array[:, 2 + n_rooms :] = torch.tensor(
+                _room_mass_history(bl, t_eval, temp_data[:, 0:n_rooms], cycles=cycles, n_spin=n_spin)
+            )
         iv_array = Interp1D(t_eval, iv_array.T, method="linear")
 
     return iv_array
 
 
-def _room_mass_history(building, t_eval, room_temps):
+def _room_mass_history(building, t_eval, room_temps, cycles=0, n_spin=None):
     """Each room's mass node temperature over the history, driven by the measured room air.
 
     A mass node only exchanges heat with its room's air, so given the measured air temperature it is a
     first-order low-pass filter of it, time constant r_rm_mass * c_rm_mass: integrated exactly (FOH)
-    like the envelope nodes. Starts equal to the first measured air temperature.
+    like the envelope nodes. Starts from the first measured air temperature, spun up over the first n_spin
+    rows `cycles` times (see get_iv_array).
     """
     n_rooms = len(building.rooms)
     rate = 1.0 / (building.r_rm_mass * building.c_rm_mass)
@@ -1047,7 +1069,33 @@ def _room_mass_history(building, t_eval, room_temps):
     B = rate * np.eye(n_rooms)
     T_air = np.asarray(room_temps, dtype=np.float64)
     t = np.asarray(t_eval, dtype=np.float64).reshape(-1)
-    return _integrate_states(A, B, t, T_air, T_air[0].copy())
+    n_spin = len(t) if n_spin is None else n_spin
+    x0 = _spin_up(lambda x: _integrate_states(A, B, t[:n_spin], T_air[:n_spin], x)[-1], T_air[0].copy(), cycles)
+    return _integrate_states(A, B, t, T_air, x0)
+
+
+def _spin_up_rows(dataset, t_eval):
+    """Rows of the history the spin-up cycles over: the dataset's first window (sample_size rows), or, for a
+    dataset without one, its first day - whole days either way, so the weather's daily cycle lines up where
+    the end of one cycle meets the start of the next. At least 2 rows, at most the whole history."""
+    n = getattr(dataset, "sample_size", None)
+    if not n:
+        t = np.asarray(t_eval, dtype=np.float64).reshape(-1)
+        n = int(np.searchsorted(t, t[0] + 86400.0))
+    return int(min(max(int(n), 2), len(t_eval)))
+
+
+def _spin_up(cycle_end, x0, cycles, tol=WARMUP_TOL):
+    """Drive a state round the same forcing up to `cycles` times: x <- cycle_end(x), stopping early once a cycle
+    changes it by less than `tol` (degC) - a periodic steady state for that forcing. Returns the final state."""
+    x = np.asarray(x0, dtype=np.float64)
+    for _ in range(int(cycles)):
+        x_next = np.asarray(cycle_end(x), dtype=np.float64)
+        settled = np.max(np.abs(x_next - x)) < tol
+        x = x_next
+        if settled:
+            break
+    return x
 
 
 def external_wall_weights(building):
