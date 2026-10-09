@@ -244,6 +244,37 @@ def test_thermostat_record_carries_the_cooling_it_delivered(get_model_config, da
     assert list(record["state_names"][record["n_latent"] :]) == list(record["room_names"])
 
 
+def test_thermostat_record_carries_the_heating_it_delivered(get_model_config, data_config, env_config):
+    """With heating capacity, rooms below T_heat are heated while the action is on - within capacity -
+    and the record carries it, in net heat too."""
+    config = {
+        **get_model_config,
+        "cooling_mode": "thermostat",
+        "T_set": [30, 30],
+        "T_heat": [25, 25],
+        "heat": [50, 50],
+    }
+    env = env_creator({**env_config, "model_config": config})
+    _, eval_dataloader = make_dataloaders(data_config)
+    _, record = evaluate(env, AlternatingPolicy(), eval_dataloader, record_window=0)
+
+    heating = record["delivered_heating_w"]
+    area = record["room_area"]
+    assert heating.shape == (len(record["time"]), len(record["room_names"]))
+    assert (heating >= 0).all() and (heating <= 50 * area[None, :] * (1 + 1e-6)).all()
+
+    step = np.searchsorted(record["action_end"], record["time"], side="left")
+    action = record["action"][np.minimum(step, len(record["action"]) - 1)]
+    assert np.all(heating[action == 0] == 0)
+    assert (heating[action == 1] > 0).any(), "the fixture should need some heating"
+    assert np.all(record["delivered_cooling_w"] == 0)
+    np.testing.assert_allclose(
+        record["net_heat_w"], np.sum(record["gain_w"]) + record["solar_w"] + heating.sum(axis=1), rtol=1e-6
+    )
+    plot_model_record(record)
+    plt.close("all")
+
+
 def test_room_mass_env_scores_and_records_only_the_rooms(get_model_config, data_config, env_config):
     """With mass nodes after the rooms, the reward and the policy's observation must still be the
     rooms, and the record must name every state."""

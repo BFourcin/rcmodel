@@ -146,8 +146,11 @@ def model_creator(model_config):
         "load_model_path_policy": None,  # './prior_policy.pt',  # or None
         "load_model_path_physical": None,  # or None
         # ---- optional structure, all off by default (see RCModel, Building, rcmodel.physical.solar) ----
-        "cooling_mode": "switch",  # or "thermostat": action 1 makes cooling AVAILABLE, the model holds T_set
+        "cooling_mode": "switch",  # or "thermostat": action 1 makes cooling (and heating) AVAILABLE, the
+        #     model holds the room between T_heat and T_set
         "T_set": [18, 26],  # degC, thermostat setpoint range (needed with cooling_mode="thermostat")
+        "T_heat": [16, 20],  # degC, heating setpoint (thermostat only; ignored while heat is 0)
+        "heat": [0, 0],  # W/m2 of floor, heating capacity of every room; 0 (the default) never heats
         "room_mass": False,  # True: each room is an air node + a mass node
         "C_rm_air": None,  # J/m2K of floor for the air node; None = 1.2 * 1005 * room_height
         "C_rm_mass": [1e3, 2e5],  # J/m2K of floor, the mass node (needed with room_mass)
@@ -410,6 +413,8 @@ def env_creator(env_config):
             - "observation_mu" / "observation_std_dev": Optional normalisation constants.
             - "observation_features" / "utc_offset_hours": Optional, what the policy observes - see
                 PreprocessEnv. Default: the original observation.
+            - "unscored_windows": Optional windows (see schedule_available) whose rows are simulated but
+                left out of the reward, e.g. the HVAC schedule - see LSIEnv. utc_offset_hours applies.
 
     Returns:
         env (gym.Env): A Reinforcement Learning environment that is ready for use with RLlib.
@@ -439,6 +444,8 @@ def env_creator(env_config):
             "step_length": env_config["step_length"],
             "rc_parameters": env_config.get("rc_parameters"),
             "update_state_dict": env_config.get("update_state_dict"),
+            "unscored_windows": env_config.get("unscored_windows"),
+            "utc_offset_hours": env_config.get("utc_offset_hours", 0.0),
         }
 
         env = rcmodel.optimisation.LSIEnv(config)

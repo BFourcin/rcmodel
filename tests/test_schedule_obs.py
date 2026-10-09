@@ -168,3 +168,54 @@ def test_explicit_blocks_split(data_config):
         assert 1 - 1e-9 <= start <= 2 + 1e-9 or abs(start - 4) < 1e-9
     with pytest.raises(ValueError, match="overlap"):
         training_windows_dataloader({**config, "eval_split": {"mode": "blocks", "train": [1, 3], "eval": [3]}})
+
+
+# --------------------------------------------------------------------------- unscored windows
+
+
+def _first_step(env_config, model_config, data_config, **extra):
+    """Reset and take one step of the first evaluation window (deterministic, unlike the training loader's
+    random windows); returns (reward, info, per-row squared error (rows, rooms), step times)."""
+    _, eval_dataloader = make_dataloaders(data_config)
+    env = env_creator({**env_config, "model_config": copy.deepcopy(model_config), "dataloader": eval_dataloader, **extra})
+    env.reset()
+    _, reward, _, _, info = env.step(1)
+    base = env.unwrapped
+    rows = base.observation  # the first step keeps every row, its initial value included
+    measured = base.temp_data[: len(rows), : base.n_rooms]
+    squared = ((rows[:, 3 : 3 + base.n_rooms] - measured) ** 2).numpy()
+    return reward, info, squared, rows[:, 0].numpy()
+
+
+def _hour(t):
+    return (float(t) % 86400) / 3600
+
+
+def test_no_unscored_windows_is_the_plain_mse(env_config, get_model_config, data_config):
+    reward, info, squared, _ = _first_step(env_config, get_model_config, data_config)
+    assert reward == pytest.approx(-squared.mean(), rel=1e-5)
+    assert info["n_scored"] == squared.size
+    assert info["sse"] == pytest.approx(squared.sum(), rel=1e-5)
+
+
+def test_rows_inside_unscored_windows_are_left_out(env_config, get_model_config, data_config):
+    _, _, squared, t = _first_step(env_config, get_model_config, data_config)
+    # A window over the step's second half, every day of the week.
+    split = t[len(t) // 2]
+    window = {"weekdays": list(range(7)), "start": _hour(split), "end": 24}
+    reward, info, _, t_masked = _first_step(env_config, get_model_config, data_config, unscored_windows=[window])
+    assert np.array_equal(t_masked, t)
+
+    scored = ~schedule_available(t, [window])
+    assert 0 < scored.sum() < len(t)
+    assert info["n_scored"] == scored.sum() * squared.shape[1]
+    assert info["sse"] == pytest.approx(squared[scored].sum(), rel=1e-5)
+    # Divided by every row, so a step's reward still adds up to the plain MSE when nothing is masked.
+    assert reward == pytest.approx(-squared[scored].sum() / squared.size, rel=1e-5)
+
+
+def test_a_fully_unscored_step_scores_nothing(env_config, get_model_config, data_config):
+    always = {"weekdays": list(range(7)), "start": 0, "end": 24}
+    reward, info, _, _ = _first_step(env_config, get_model_config, data_config, unscored_windows=[always])
+    assert reward == 0.0
+    assert info == {"sse": 0.0, "n_scored": 0}

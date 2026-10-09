@@ -608,12 +608,15 @@ if __name__ == "__main__":
 # --------------------------------------------------------------------------- thermostat cooling
 
 
-def _thermostat_model(model_config, t_set=21.0, cool_w_m2=1e4, gain_w_m2=0.0, mode="thermostat"):
-    """A model whose cooling (thermostat or switch) has capacity cool_w_m2 and a constant gain."""
+def _thermostat_model(model_config, t_set=21.0, cool_w_m2=1e4, gain_w_m2=0.0, mode="thermostat", t_heat=0.0, heat_w_m2=0.0):
+    """A model whose cooling (thermostat or switch) has capacity cool_w_m2 and a constant gain, and whose
+    thermostat heats to t_heat with capacity heat_w_m2 (none by default)."""
     config = {
         **model_config,
         "cooling_mode": mode,
         "T_set": [t_set, t_set],
+        "T_heat": [t_heat, t_heat],
+        "heat": [heat_w_m2, heat_w_m2],
         "cool": [0, max(cool_w_m2, 1e-9)],
         "gain": [0, max(gain_w_m2, 1e-9)],
     }
@@ -680,6 +683,63 @@ def test_switch_mode_reports_its_cooling(get_model_config, fake_time):
     np.testing.assert_allclose(model.last_cooling_w, -20.0 * area[None, :].repeat(31, 0))
     _run(model, t_eval, action=0)
     assert np.all(model.last_cooling_w == 0)
+
+
+def test_thermostat_heats_to_its_heating_setpoint(get_model_config, fake_time):
+    """With ample heating capacity a cold room is brought up to T_heat - and no further - every row."""
+    model = _thermostat_model(get_model_config, t_set=26.0, t_heat=20.0, heat_w_m2=1e5)
+    t_eval = torch.tensor(fake_time[:31], dtype=torch.float64)
+    rooms = _run(model, t_eval, action=1, start=12.0)[1:, 2:].numpy()
+
+    np.testing.assert_allclose(rooms, 20.0, atol=1e-4)
+    assert (model.last_heating_w >= 0).all() and (model.last_heating_w > 0).any()
+    assert np.all(model.last_cooling_w == 0)
+
+
+def test_thermostat_heating_is_capped(get_model_config, fake_time):
+    """A capped room that can't reach T_heat sits below it, heated at full capacity."""
+    model = _thermostat_model(get_model_config, t_set=26.0, t_heat=20.0, heat_w_m2=1.0)
+    t_eval = torch.tensor(fake_time[:31], dtype=torch.float64)
+    rooms = _run(model, t_eval, action=1, start=12.0)[1:, 2:].numpy()
+    area = np.array([room.area for room in model.building.rooms])
+
+    assert (rooms < 20.0).all()
+    np.testing.assert_allclose(model.last_heating_w, 1.0 * area[None, :].repeat(31, 0), rtol=1e-9)
+
+
+def test_thermostat_heats_some_rooms_and_cools_others(get_model_config, fake_time):
+    """Over the first step, rooms that start hot are cooled to T_set while the ones that start cold are heated
+    to T_heat, each solved with its neighbours' conditioning taken into account. Afterwards the rooms pull
+    each other into the deadband, and with ample capacity none ever leaves it."""
+    model = _thermostat_model(get_model_config, t_set=24.0, cool_w_m2=1e5, t_heat=18.0, heat_w_m2=1e5)
+    t_eval = torch.tensor(fake_time[:31], dtype=torch.float64)
+    n_rooms = len(model.building.rooms)
+    hot = np.arange(n_rooms) % 2 == 0
+    model.iv = torch.tensor([15.0, 15.0, *np.where(hot, 30.0, 10.0)], dtype=torch.float32)
+    rooms = model(t_eval, action=1).squeeze()[1:, 2:].numpy()
+
+    np.testing.assert_allclose(rooms[0, hot], 24.0, atol=1e-4)
+    np.testing.assert_allclose(rooms[0, ~hot], 18.0, atol=1e-4)
+    first = 1  # row 1 holds the first step's conditioning
+    assert (model.last_cooling_w[first, hot] < 0).all() and np.all(model.last_cooling_w[first, ~hot] == 0)
+    assert (model.last_heating_w[first, ~hot] > 0).all() and np.all(model.last_heating_w[first, hot] == 0)
+    assert (rooms > 18.0 - 1e-4).all() and (rooms < 24.0 + 1e-4).all()
+
+
+def test_heating_with_action_off_is_action_off(get_model_config, fake_time):
+    """The heating is only available while the action is on, like the cooling."""
+    model = _thermostat_model(get_model_config, t_set=26.0, t_heat=20.0, heat_w_m2=1e5)
+    t_eval = torch.tensor(fake_time[:31], dtype=torch.float64)
+    rooms = _run(model, t_eval, action=0, start=12.0)[1:, 2:].numpy()
+    assert (rooms < 20.0).all()
+    assert np.all(model.last_heating_w == 0)
+
+
+def test_heating_setpoint_above_cooling_setpoint_is_rejected(get_model_config):
+    with pytest.raises(ValueError, match="T_heat"):
+        _thermostat_model(get_model_config, t_set=20.0, t_heat=22.0, heat_w_m2=10.0)
+    # Without heating capacity T_heat is unused, so it isn't checked.
+    _thermostat_model(get_model_config, t_set=20.0, t_heat=22.0, heat_w_m2=0.0)
 
 
 def test_thermostat_needs_a_setpoint_range(get_model_config):

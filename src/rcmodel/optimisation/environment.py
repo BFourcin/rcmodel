@@ -3,6 +3,8 @@ import numpy as np
 import torch
 from gymnasium import spaces
 
+from .schedule_policy import schedule_available
+
 # Keys of LSIEnv's config that may be changed after construction. Everything else is
 # structural (it changes the observation space or the episode shape) and needs a new env.
 UPDATABLE_KEYS = ("dataloader", "rc_parameters", "update_state_dict")
@@ -17,6 +19,8 @@ class LSIEnv(gym.Env):
     config = {"RC_model": rcmodel Class,
               "dataloader": torch.dataloader Object,
               "step_length": int (Minutes),
+              "unscored_windows": optional list of windows (see schedule_available), default None,
+              "utc_offset_hours": optional, local time = UTC + offset for unscored_windows, default 0,
               }
 
     A dataloader is used to provide batches of time and temperature data to the
@@ -36,6 +40,14 @@ class LSIEnv(gym.Env):
     parameters are NOT learned here - they are fixed for the life of a PBT trial and
     supplied through the config (see update_from_config).
 
+    unscored_windows leaves rows out of the error without leaving them out of the simulation: e.g. the
+    HVAC schedule, inside which the room is held at a setpoint by a controller taken as given, so only
+    the free-floating rows are scored. The model still runs through the windows, so the state it leaves
+    them with is carried on. A step's reward is then minus the squared error summed over its scored
+    rows, divided by ALL its rows (x rooms) - with no windows, exactly the MSE. step()'s info carries
+    "sse" (that sum) and "n_scored" (scored rows x rooms), from which a caller gets the RMSE over the
+    scored rows alone.
+
     ### Observation Space:
     [[unix_time, T_node1, T_node2, TRm1, TRm2, ...],    t0
     .                                                   t1
@@ -53,6 +65,8 @@ class LSIEnv(gym.Env):
         self.config = dict(config)  # Own a copy: the caller's dict must not be mutated.
         self.config.setdefault("update_state_dict", None)
         self.config.setdefault("rc_parameters", None)
+        self.unscored_windows = self.config.get("unscored_windows")
+        self.utc_offset_hours = float(self.config.get("utc_offset_hours", 0.0))
         self.RC = self.config["RC_model"]
         self.step_length = config["step_length"]
         self.dataloader = self.config["dataloader"]
@@ -73,7 +87,6 @@ class LSIEnv(gym.Env):
         self.dt = int((t[1] - t[0]).item())
 
         self.step_size = int((self.step_length * 60) / self.dt)  # num rows of data needed for step_length minutes.
-        self.loss_fn = torch.nn.MSELoss()
 
         # ----- GYM Stuff -----
         time_low = [0]
@@ -129,7 +142,8 @@ class LSIEnv(gym.Env):
         truncated: bool
             Always False in this environment.
         info: dict
-            A dictionary of information about the step.
+            "sse": squared error summed over the step's scored rows and rooms; "n_scored": how many
+            (row, room) values that sum covers.
         """
         with torch.no_grad():
             # solves an off by one issue caused by the iv technically being t0.
@@ -149,22 +163,34 @@ class LSIEnv(gym.Env):
 
             # negative so reward can be maximised. Room air nodes follow the two envelope nodes; any
             # room mass nodes come after them and are not measured.
-            reward = -self.loss_fn(pred[:, 2 : 2 + self.n_rooms], temperature_sample)
+            squared = (pred[:, 2 : 2 + self.n_rooms] - temperature_sample) ** 2
+            if getattr(self, "unscored_windows", None):
+                scored = ~schedule_available(t_eval.numpy(), self.unscored_windows, self.utc_offset_hours)
+                squared = squared[torch.as_tensor(scored)]
+            sse = float(squared.sum())
+            reward = -sse / (len(t_eval) * self.n_rooms)
+            info = {**self.info, "sse": sse, "n_scored": int(squared.numel())}
 
-            # Cooling the model delivered at each row, W per room (<= 0) - fixed in switch mode, worked
-            # out by the thermostat otherwise. Kept alongside the observation for model records.
+            # Cooling (W per room, <= 0) and heating (>= 0) the model delivered at each row - fixed in
+            # switch mode, worked out by the thermostat otherwise. Kept alongside the observation for
+            # model records.
             cooling = getattr(self.RC, "last_cooling_w", None)
             if cooling is None:
                 cooling = np.zeros((len(t_eval), self.n_rooms))
+            heating = getattr(self.RC, "last_heating_w", None)
+            if heating is None:
+                heating = np.zeros((len(t_eval), self.n_rooms))
 
             # remove first observation as this was the iv from the previous step
             # TODO: Tidy this up, there must be a better way.
             if self.t_index == 0:
                 self.observation = torch.concat((t_eval.unsqueeze(0).T, pred.clone()), dim=1)
                 self.cooling_w = np.array(cooling)
+                self.heating_w = np.array(heating)
             else:
                 self.observation = torch.concat((t_eval[1:].unsqueeze(0).T, pred[1:, :].clone()), dim=1)
                 self.cooling_w = np.array(cooling[1:])
+                self.heating_w = np.array(heating[1:])
 
             # Check for done condition:
             if t_eval[-1] == self.time_data[-1]:
@@ -175,7 +201,7 @@ class LSIEnv(gym.Env):
 
             truncated = False  # Not used in this environment.
 
-            return self.observation.numpy(), float(reward), self.terminated, truncated, self.info
+            return self.observation.numpy(), float(reward), self.terminated, truncated, info
 
     def reset(
         self,

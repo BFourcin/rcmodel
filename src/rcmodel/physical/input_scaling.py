@@ -15,9 +15,10 @@ class InputScaling(Building):
     InputScaling(C_rm, C1, C2, R1, R2, R3, Rin, cool, gain, solar, k_sa=k_sa)
 
     The physical ranges are in PARAM_KEYS order. k_sa is the dimensionless sol-air coefficient (see
-    RCModel.sol_air_temperature); C_rm_mass, R_rm_mass (the room mass node) and T_set (the thermostat
-    setpoint) follow it. All four are keywords that default to [0, 0] - pinned, and unused unless the
-    model turns the feature on - so older callers keep working.
+    RCModel.sol_air_temperature); C_rm_mass, R_rm_mass (the room mass node), T_set (the thermostat's
+    cooling setpoint), T_heat and heat (its heating setpoint and capacity, W/m2) follow it. All six are
+    keywords that default to [0, 0] - pinned, and unused unless the model turns the feature on - so older
+    callers keep working.
 
     The energy (load) ranges are one row each, in LOAD_KEYS order: cool and gain in W/m2 of
     floor area, and solar as the dimensionless fraction p of global horizontal irradiance that
@@ -41,9 +42,25 @@ class InputScaling(Building):
         C_rm_mass=(0, 0),
         R_rm_mass=(0, 0),
         T_set=(0, 0),
+        T_heat=(0, 0),
+        heat=(0, 0),
     ):
 
-        self.phys_param_range = [C_rm, C1, C2, R1, R2, R3, Rin, list(k_sa), list(C_rm_mass), list(R_rm_mass), list(T_set)]
+        self.phys_param_range = [
+            C_rm,
+            C1,
+            C2,
+            R1,
+            R2,
+            R3,
+            Rin,
+            list(k_sa),
+            list(C_rm_mass),
+            list(R_rm_mass),
+            list(T_set),
+            list(T_heat),
+            list(heat),
+        ]
         self.energy_param_range = [cool, gain, list(solar)]
 
         # check if the ranges are in the correct format. i.e. [lb, ub]

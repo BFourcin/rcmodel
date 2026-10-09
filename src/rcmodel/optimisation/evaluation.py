@@ -81,7 +81,8 @@ def evaluate(env, rl_algorithm, dataloader, record_window=None):
         ghi             (T,)          global horizontal irradiance at ``time``, W/m2
         solar_w         (T,)          solar gain into all rooms at ``time``, W
         net_heat_w      (T,)          net heat input into all rooms at ``time``, W:
-                                      gain + solar - cooling, with the action in force
+                                      gain + solar - cooling + heating, with the action in force
+        delivered_cooling_w, delivered_heating_w  (T, n_rooms)  W per room, <= 0 and >= 0
         room_names, room_area, cool_w, gain_w   (n_rooms,)  per room; loads in W
         cool_w_m2, gain_w_m2                    (n_rooms,)  loads in W/m2
         solar_p                                 (n_rooms,)  fraction of GHI reaching each room
@@ -120,7 +121,9 @@ def evaluate(env, rl_algorithm, dataloader, record_window=None):
                         # this step, without the row it shares with the previous step.
                         cooling = getattr(base_env, "cooling_w", None)
                         cooling = None if cooling is None else np.array(cooling)
-                        steps.append((int(action), step_start, reward, cooling, base_env.observation.clone()))
+                        heating = getattr(base_env, "heating_w", None)
+                        heating = None if heating is None else np.array(heating)
+                        steps.append((int(action), step_start, reward, cooling, heating, base_env.observation.clone()))
 
                 reward_list.append(episode_reward)
                 if recording:
@@ -148,15 +151,23 @@ def _build_record(base_env, steps, window_index, window_reward):
     ghi = model.ghi(time)
     area = np.array([room.area for room in rooms], dtype=np.float64)
 
-    # Cooling actually delivered at every row, W per room (<= 0). Steps are (action, start, reward,
-    # cooling, observation); a caller that records 4-tuples (no cooling) falls back to switch mode's
-    # action x capacity.
-    delivered = [step[3] if len(step) == 5 else None for step in steps]
+    # Cooling (W per room, <= 0) and heating (>= 0) actually delivered at every row. Steps are (action,
+    # start, reward, cooling, heating, observation); a caller that records 4-tuples (no cooling) falls
+    # back to switch mode's action x capacity, and one that records 5-tuples (no heating) to no heating.
+    def delivered(position):
+        # The observation is always last, so a step holds an entry at `position` only if it is longer.
+        values = [step[position] if len(step) > position + 1 else None for step in steps]
+        if all(v is not None and len(v) == len(step[-1]) for v, step in zip(values, steps, strict=True)):
+            return np.concatenate(values).astype(np.float64)
+        return None
+
     thermostat = getattr(model, "cooling_mode", "switch") == "thermostat"
-    if thermostat and all(d is not None and len(d) == len(step[-1]) for d, step in zip(delivered, steps, strict=True)):
-        delivered_cooling_w = np.concatenate(delivered).astype(np.float64)
-    else:
+    delivered_cooling_w = delivered(3) if thermostat else None
+    if delivered_cooling_w is None:
         delivered_cooling_w = -action_per_row[:, None] * cool_w[None, :]
+    delivered_heating_w = delivered(4) if thermostat else None
+    if delivered_heating_w is None:
+        delivered_heating_w = np.zeros_like(delivered_cooling_w)
 
     n_latent = 2
     state_names = ["Te1", "Te2"] + [room.name for room in rooms]
@@ -169,6 +180,7 @@ def _build_record(base_env, steps, window_index, window_reward):
         "n_latent": n_latent,
         "cooling_mode": getattr(model, "cooling_mode", "switch"),
         "delivered_cooling_w": delivered_cooling_w,
+        "delivered_heating_w": delivered_heating_w,
         "measured_time": base_env.time_data.to(torch.float64).numpy(),
         "measured": base_env.temp_data[:, : base_env.n_rooms].numpy(),
         "outdoor": torch.as_tensor(model.Tout_continuous(time)).flatten().to(torch.float64).numpy(),
@@ -179,7 +191,7 @@ def _build_record(base_env, steps, window_index, window_reward):
         "step_reward": np.array([step[2] for step in steps], dtype=np.float64),
         "ghi": ghi,
         "solar_w": ghi * float(np.sum(solar.numpy().astype(np.float64) * area)),
-        "net_heat_w": heat_without_cooling + delivered_cooling_w.sum(axis=1),
+        "net_heat_w": heat_without_cooling + delivered_cooling_w.sum(axis=1) + delivered_heating_w.sum(axis=1),
         "room_names": np.array([room.name for room in rooms]),
         "room_area": np.array([room.area for room in rooms], dtype=np.float64),
         "cool_w_m2": cool.numpy().astype(np.float64),

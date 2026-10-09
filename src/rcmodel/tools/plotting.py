@@ -32,6 +32,7 @@ OUTDOOR_COLOR = "#eb6834"
 NODE_COLORS = ("#1baf7a", "#4a3aa7", "#e87ba4", "#eda100")
 COOLING_COLOR = "#8fc1f0"
 SOLAR_COLOR = "#eda100"
+HEATING_COLOR = "#e87ba4"
 
 
 # --------------------------------------------------------------------------- records
@@ -190,8 +191,8 @@ def plot_model_record(record, ncols=None):
       latent (wall) nodes - walls should lag and damp the outdoor swing, so this is the
       quickest check that the parameters are physical;
     * one panel per room: measured and predicted temperature, with the room's RMSE;
-    * bottom: net heat input into the building (gain + solar - cooling), in W, with the
-      solar part drawn on its own. Records written before the solar term have no solar
+    * bottom: net heat input into the building (gain + solar - cooling + heating), in W, with
+      the solar part (and any thermostat heating) drawn on its own. Records written before the solar term have no solar
       series and are drawn as the old per-step gain - cooling.
 
     The cooling action is one on/off for the whole building, so cooling-on periods are
@@ -250,8 +251,12 @@ def plot_model_record(record, ncols=None):
     if "net_heat_w" in record:
         ax_heat.plot(hours, record["net_heat_w"], color=MEASURED_COLOR, linewidth=1.2, label="net")
         ax_heat.plot(hours, record["solar_w"], color=SOLAR_COLOR, linewidth=1.2, label="solar")
-        ax_heat.legend(fontsize=8, loc="upper right", ncol=2)
         heat_title = "Net heat input, all rooms (gain + solar - cooling)"
+        heating = record.get("delivered_heating_w")
+        if heating is not None and np.any(heating > 0):
+            ax_heat.plot(hours, heating.sum(axis=1), color=HEATING_COLOR, linewidth=1.2, label="heating")
+            heat_title = "Net heat input, all rooms (gain + solar - cooling + heating)"
+        ax_heat.legend(fontsize=8, loc="upper right", ncol=3)
     else:
         net = np.sum(record["gain_w"]) - record["action"] * np.sum(record["cool_w"])
         edges = _hours(record, np.concatenate([record["action_start"][:1], record["action_end"]]))

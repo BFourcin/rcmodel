@@ -23,21 +23,23 @@ from xitorch.interpolate import Interp1D
 #           room air (m2K/W per m2 of floor). Only used when the building has room_mass on; the air
 #           node's own capacity is then C_rm_air, computed from the room volume - see Building.
 #   T_set - cooling setpoint (degC), only used with cooling_mode="thermostat" - see RCModel.
-# The last three are OPTIONAL_PARAM_KEYS: a config without them gets a pinned [0, 0] range and the
+#   T_heat, heat - heating setpoint (degC) and heating capacity (W/m2 of floor, every room), only used
+#           with cooling_mode="thermostat". heat = 0 (the default) means the thermostat never heats.
+# The last five are OPTIONAL_PARAM_KEYS: a config without them gets a pinned [0, 0] range and the
 # value 0, which leaves the model exactly as it was before they existed.
-PARAM_KEYS = ("C_rm", "C1", "C2", "R1", "R2", "R3", "Rin", "k_sa", "C_rm_mass", "R_rm_mass", "T_set")
+PARAM_KEYS = ("C_rm", "C1", "C2", "R1", "R2", "R3", "Rin", "k_sa", "C_rm_mass", "R_rm_mass", "T_set", "T_heat", "heat")
 LOAD_KEYS = ("cool", "gain", "solar")
 RC_PARAM_KEYS = PARAM_KEYS + LOAD_KEYS
-OPTIONAL_PARAM_KEYS = ("C_rm_mass", "R_rm_mass", "T_set")
+OPTIONAL_PARAM_KEYS = ("C_rm_mass", "R_rm_mass", "T_set", "T_heat", "heat")
 
 # Parameters allowed to be exactly zero. Every other PARAM_KEYS entry is a resistance or
 # capacitance and must be strictly positive, because A is built from 1/(R*C). C_rm_mass and
 # R_rm_mass are zero (unused) when room_mass is off; with it on they must be > 0 - see
 # RCModel._check_physically_valid.
-NON_NEGATIVE_PARAM_KEYS = ("k_sa", "C_rm_mass", "R_rm_mass")
+NON_NEGATIVE_PARAM_KEYS = ("k_sa", "C_rm_mass", "R_rm_mass", "heat")
 
-# Parameters with no sign constraint at all: a temperature.
-SIGNED_PARAM_KEYS = ("T_set",)
+# Parameters with no sign constraint at all: temperatures.
+SIGNED_PARAM_KEYS = ("T_set", "T_heat")
 
 COOLING_MODES = ("switch", "thermostat")
 
@@ -152,10 +154,12 @@ class RCModel(nn.Module):
         the search fits. None (the default) means no such input.
     cooling_mode - what action 1 means:
         "switch" (default): a fixed cooling of `cool` W/m2 in every room while the action is on.
-        "thermostat": cooling is AVAILABLE while the action is on. Every data row, each room gets the
-            cooling that brings its air down to T_set, and no more, up to `cool` W/m2 - an ideal-loads
-            thermostat, as EnergyPlus's ZoneHVAC:IdealLoadsAirSystem with LimitCapacity. A room below
-            T_set gets none (it never heats). The policy then only has to learn when cooling is
+        "thermostat": cooling (and heating, if `heat` > 0) is AVAILABLE while the action is on. Every
+            data row, each room gets the cooling that brings its air down to T_set, and no more, up to
+            `cool` W/m2 - an ideal-loads thermostat, as EnergyPlus's ZoneHVAC:IdealLoadsAirSystem with
+            LimitCapacity. Likewise a room below T_heat gets the heating that brings it up to T_heat, up
+            to `heat` W/m2 - a dual setpoint, with no conditioning between T_heat and T_set. With heat = 0
+            (the default) it never heats. The policy then only has to learn when the system is
             available; the modulation comes from the physics. See _integrate_thermostat().
     """
 
@@ -176,9 +180,10 @@ class RCModel(nn.Module):
             raise ValueError(f"cooling_mode must be one of {COOLING_MODES}, got {cooling_mode!r}.")
         self.building = building
         self.cooling_mode = cooling_mode
-        # Cooling delivered to each room at every row of the last forward() call, W (<= 0). Read by
-        # the environment for model records; see _cooling_trajectory().
+        # Cooling (W, <= 0) and heating (W, >= 0) delivered to each room at every row of the last
+        # forward() call. Read by the environment for model records.
         self.last_cooling_w = None
+        self.last_heating_w = None
 
         self.transform = transform  # transform performed on parameters e.g. sigmoid
         self.scaling = scaling  # InputScaling class (helper class to go between machine (0-1) and physical values)
@@ -279,6 +284,8 @@ class RCModel(nn.Module):
             if key in NON_NEGATIVE_PARAM_KEYS and key not in strictly_positive and not value >= 0
         ]
         problems += [f"{key}={value:g} (must be finite)" for key, value in values.items() if not np.isfinite(value)]
+        if values.get("heat", 0.0) > 0 and not values["T_heat"] <= values["T_set"]:
+            problems.append(f"T_heat={values['T_heat']:g} (must be <= T_set={values['T_set']:g} when heating)")
         problems += [
             f"{key}={physical_loads[i].tolist()} (must be >= 0)"
             for i, key in enumerate(LOAD_KEYS)
@@ -325,7 +332,7 @@ class RCModel(nn.Module):
         B = self.B.detach().to(torch.float64).numpy()
 
         if self._thermostat_on(action):
-            states, cooling = _integrate_thermostat(
+            states, hvac = _integrate_thermostat(
                 A,
                 B,
                 t_np,
@@ -336,11 +343,16 @@ class RCModel(nn.Module):
                 t_set=self._t_set(),
                 q_max=self._cooling_capacity_watts(),
                 disc_cache=self._disc_cache,
+                t_heat=self._t_heat(),
+                q_heat_max=self._heating_capacity_watts(),
             )
+            cooling, heating = np.minimum(hvac, 0.0), np.maximum(hvac, 0.0)
         else:
             states = _integrate_states(A, B, t_np, u, x0, disc_cache=self._disc_cache)
             cooling = self._switch_cooling_watts(len(t_np), action)
+            heating = np.zeros_like(cooling)
         self.last_cooling_w = cooling
+        self.last_heating_w = heating
 
         self.iv = None  # Causes error if iv is not reset before next forward pass.
 
@@ -382,13 +394,28 @@ class RCModel(nn.Module):
         return np.arange(2, 2 + len(self.building.rooms))
 
     def _t_set(self):
+        return self._physical_param("T_set")
+
+    def _t_heat(self):
+        return self._physical_param("T_heat")
+
+    def _physical_param(self, key):
+        """One physical parameter by name; 0 for a parameter an older pickle doesn't hold."""
         theta, _ = self.get_physical_paramaters()
-        return float(theta.flatten()[PARAM_KEYS.index("T_set")])
+        theta = theta.flatten()
+        index = PARAM_KEYS.index(key)
+        return float(theta[index]) if len(theta) > index else 0.0
+
+    def _room_areas(self):
+        return np.array([room.area for room in self.building.rooms], dtype=np.float64)
 
     def _cooling_capacity_watts(self):
         """Cooling capacity of each room, W (>= 0): cool W/m2 times floor area."""
-        area = np.array([room.area for room in self.building.rooms], dtype=np.float64)
-        return self.cool_load.detach().to(torch.float64).numpy() * area
+        return self.cool_load.detach().to(torch.float64).numpy() * self._room_areas()
+
+    def _heating_capacity_watts(self):
+        """Heating capacity of each room, W (>= 0): heat W/m2 times floor area. Zero unless heat is set."""
+        return self._physical_param("heat") * self._room_areas()
 
     def _switch_cooling_watts(self, n_rows, action):
         """(n_rows, n_rooms) cooling in W (<= 0) for switch mode, or zeros with the action off."""
@@ -761,69 +788,80 @@ def _discretisation(A, B, dt, disc_cache):
     return cached
 
 
-def _integrate_thermostat(A, B, t, u, x0, room_rows, q_cols, t_set, q_max, disc_cache=None):
+def _integrate_thermostat(A, B, t, u, x0, room_rows, q_cols, t_set, q_max, disc_cache=None, t_heat=None, q_heat_max=None):
     """
-    Step dx/dt = A x + B u(t) across `t` with an ideal-loads cooling thermostat on every room.
+    Step dx/dt = A x + B u(t) across `t` with an ideal-loads dual-setpoint thermostat on every room.
 
-    Each step of length dt: the free next state x_free is the exact FOH step with no cooling. The
-    cooling q (W per room, <= 0) is held constant over the step - EnergyPlus's ideal loads likewise
-    deliver a constant rate over a zone timestep - so its effect on the next state is linear,
-    H q with H = (Bd0 + Bd1)[:, q_cols]. q is chosen so each room that would end the step above
-    t_set ends it exactly at t_set:
+    Each step of length dt: the free next state x_free is the exact FOH step with no conditioning. The
+    heat input q (W per room: > 0 heating, < 0 cooling) is held constant over the step - EnergyPlus's
+    ideal loads likewise deliver a constant rate over a zone timestep - so its effect on the next state
+    is linear, H q with H = (Bd0 + Bd1)[:, q_cols]. q is chosen so each room that would end the step
+    above t_set ends it exactly at t_set, and each room that would end it below t_heat ends it exactly
+    at t_heat:
 
-        G q = t_set - x_free[rooms],   G = H[rooms, :]   (G is diagonally dominant: a room's own
-                                                          cooling moves it far more than a neighbour's)
+        G q = target - x_free[rooms],   target = clip(x_free[rooms], t_heat, t_set),   G = H[rooms, :]
+                                        (G is diagonally dominant: a room's own input moves it far
+                                         more than a neighbour's)
 
-    solved over the rooms that need cooling, clipped to [-q_max, 0]. A room whose unconstrained
-    solution would heat is dropped from the set and the rest re-solved (at most n_rooms passes). A
-    room that hits its capacity limit then sits above t_set, as a real capped system does.
+    solved over the rooms outside the deadband, clipped to [-q_max, q_heat_max]. A room whose solution
+    has the opposite sign to its need (a neighbour's conditioning already carries it past its setpoint)
+    is dropped from the set and the rest re-solved (at most n_rooms passes). A room that hits its
+    capacity limit then sits beyond its setpoint, as a real capped system does.
 
     Parameters
     ----------
     room_rows : array of int      state rows of the room air nodes.
     q_cols : array of int         input columns of the per-room heat inputs (u = [T_sa, Q_1..Q_n]).
-    t_set : float                 setpoint, degC.
+    t_set : float                 cooling setpoint, degC.
     q_max : array (n_rooms,)      cooling capacity per room, W (>= 0).
+    t_heat : float or None        heating setpoint, degC. Unused when there is no heating capacity.
+    q_heat_max : array or None    heating capacity per room, W (>= 0). None or zeros: never heats.
 
     Returns
     -------
     states : (len(t), n_states)
-    cooling : (len(t), n_rooms)   cooling delivered over the step ENDING at each row, W (<= 0); row 0
-                                  repeats the first step's value so the array lines up with `t`.
+    hvac : (len(t), n_rooms)      heat delivered over the step ENDING at each row, W (< 0 cooling,
+                                  > 0 heating); row 0 repeats the first step's value so the array lines
+                                  up with `t`.
     """
     n_steps, n_rooms = len(t), len(room_rows)
     states = np.empty((n_steps, len(x0)))
-    cooling = np.zeros((n_steps, n_rooms))
+    hvac = np.zeros((n_steps, n_rooms))
     states[0] = x = np.asarray(x0, dtype=np.float64)
     q_max = np.asarray(q_max, dtype=np.float64)
+    q_heat_max = np.zeros(n_rooms) if q_heat_max is None else np.asarray(q_heat_max, dtype=np.float64)
+    heats = bool(np.any(q_heat_max > 0))
+    lower = float(t_heat) if heats else -np.inf
 
     for k in range(n_steps - 1):
         Ad, Bd0, Bd1 = _discretisation(A, B, float(t[k + 1] - t[k]), disc_cache)
         x_free = Ad @ x + Bd0 @ u[k] + Bd1 @ u[k + 1]
         H = (Bd0 + Bd1)[:, q_cols]
         G = H[room_rows, :]
-        need = t_set - x_free[room_rows]  # negative where the room would end the step too warm
+        free_rooms = x_free[room_rows]
+        # negative where the room would end the step too warm, positive where too cold
+        need = np.clip(free_rooms, lower, t_set) - free_rooms
 
         q = np.zeros(n_rooms)
-        active = need < 0
+        active = need != 0
         for _ in range(n_rooms):
             if not active.any():
                 break
             idx = np.flatnonzero(active)
             q_active = np.linalg.solve(G[np.ix_(idx, idx)], need[idx])
-            heating = q_active > 0
-            if not heating.any():
-                q[idx] = np.clip(q_active, -q_max[idx], 0.0)
+            wrong_way = q_active * need[idx] < 0
+            if not wrong_way.any():
+                q[idx] = np.clip(q_active, -q_max[idx], q_heat_max[idx])
                 break
-            active[idx[heating]] = False
+            active[idx[wrong_way]] = False
 
         x = x_free + H @ q
         states[k + 1] = x
-        cooling[k + 1] = q
+        hvac[k + 1] = q
 
     if n_steps > 1:
-        cooling[0] = cooling[1]
-    return states, cooling
+        hvac[0] = hvac[1]
+    return states, hvac
 
 
 def _integrate_states(A, B, t, u, x0, disc_cache=None):
