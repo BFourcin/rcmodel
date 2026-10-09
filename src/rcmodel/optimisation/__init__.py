@@ -9,6 +9,14 @@ from .environment import (
 )
 from .evaluation import evaluate, make_update_env_fn
 from .identification import ENVELOPE_KEYS, fit_free_float, free_float_segments, narrow_ranges
+from .parameter_space import (
+    ENVELOPE_PHYSICAL_KEYS,
+    RATIO_KEYS,
+    ParameterSpace,
+    envelope_from_ratios,
+    envelope_ranges,
+    ratios_from_envelope,
+)
 from .pbt import (
     METRIC,
     MODE,
@@ -34,13 +42,16 @@ from .schedule_policy import SchedulePolicy, schedule_available
 __all__ = [
     "DEFAULT_OBSERVATION_FEATURES",
     "ENVELOPE_KEYS",
+    "ENVELOPE_PHYSICAL_KEYS",
     "METRIC",
     "MODE",
     "OBSERVATION_FEATURES",
     "PPO_DEFAULTS",
     "PPO_RUNNER_DEFAULTS",
+    "RATIO_KEYS",
     "TRIAL_STATE_FILE",
     "LSIEnv",
+    "ParameterSpace",
     "PreprocessEnv",
     "PriorCoolingPolicy",
     "RCPolicyTrainable",
@@ -48,6 +59,8 @@ __all__ = [
     "best_parameters",
     "build_pbt_scheduler",
     "build_tuner",
+    "envelope_from_ratios",
+    "envelope_ranges",
     "evaluate",
     "fit_free_float",
     "free_float_segments",
@@ -61,6 +74,7 @@ __all__ = [
     "ppo_search_space",
     "ppo_settings",
     "preprocess_observation",
+    "ratios_from_envelope",
     "sample_plausible_population",
     "schedule_available",
     "search_space",
