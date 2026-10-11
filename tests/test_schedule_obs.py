@@ -61,6 +61,35 @@ def test_schedule_windows_combine_and_collapse():
     assert not schedule_available(time, []).any()
 
 
+def test_time_zone_follows_daylight_saving():
+    """A time zone name puts the window on the local wall clock: 07:00 London is 06:00 UTC in summer (BST) and
+    07:00 UTC in winter (GMT). 2022-03-27 and 2022-10-30 are the change days (01:00 UTC)."""
+    window = {"weekdays": WEEKDAYS, "start": 7, "end": 19}
+    summer = [_unix("2022-06-06 05:59"), _unix("2022-06-06 06:00"), _unix("2022-06-06 17:59"), _unix("2022-06-06 18:00")]
+    winter = [_unix("2022-01-10 06:59"), _unix("2022-01-10 07:00"), _unix("2022-01-10 18:59"), _unix("2022-01-10 19:00")]
+    assert schedule_available(summer, window, "Europe/London").tolist() == [False, True, True, False]
+    assert schedule_available(winter, window, "Europe/London").tolist() == [False, True, True, False]
+    # Around the changes: 00:59 UTC Sunday 27 March is still 00:59 GMT; 01:00 UTC is 02:00 BST.
+    from rcmodel.optimisation.schedule_policy import local_seconds
+
+    hours = (local_seconds([_unix("2022-03-27 00:59"), _unix("2022-03-27 01:00")], "Europe/London") % 86400) / 3600
+    assert np.allclose(hours, [59 / 60, 2.0])
+    hours = (local_seconds([_unix("2022-10-30 00:59"), _unix("2022-10-30 01:00")], "Europe/London") % 86400) / 3600
+    assert np.allclose(hours, [1 + 59 / 60, 1.0])
+    # The day boundary is local too: Friday 23:30 UTC in June is Saturday 00:30 BST.
+    assert not is_weekday(_unix("2022-06-10 23:30"), utc_offset_hours="Europe/London")
+    assert is_weekday(_unix("2022-01-14 23:30"), utc_offset_hours="Europe/London")
+    # free_float_mask agrees, and numbers still mean a fixed offset.
+    time = np.arange(_unix("2022-03-20"), _unix("2022-04-10"), 600.0)
+    schedule = {"weekdays": WEEKDAYS, "start": "07:00", "end": "19:00", "utc_offset_hours": "Europe/London"}
+    assert np.array_equal(schedule_available(time, window, "Europe/London"), ~free_float_mask(time, schedule))
+    assert np.array_equal(schedule_available(time, window, 1), schedule_available(time + 3600, window, 0))
+    from zoneinfo import ZoneInfoNotFoundError
+
+    with pytest.raises(ZoneInfoNotFoundError):
+        schedule_available(time, window, "Not/AZone")
+
+
 class _FakeEnv:
     def __init__(self, time, room):
         import torch

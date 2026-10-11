@@ -367,12 +367,15 @@ def free_float_mask(time, schedule):
 
     schedule = {"weekdays": [0, 1, 2, 3, 4],   # Monday = 0
                 "start": "07:00", "end": "19:00", # available from start (inclusive) to end (exclusive)
-                "utc_offset_hours": 0}            # local time = UTC + offset; optional, default 0
+                "utc_offset_hours": 0}            # local time = UTC + offset (or a time zone name such as
+                                                  # "Europe/London"); optional, default 0
 
     This is building-management knowledge, not measured data: it says when the building CAN'T have been
     conditioned, which is what separating the envelope from the cooling needs.
     """
-    local = pd.to_datetime(np.asarray(time, dtype=np.float64) + 3600 * schedule.get("utc_offset_hours", 0), unit="s")
+    from rcmodel.optimisation.schedule_policy import local_seconds
+
+    local = pd.to_datetime(local_seconds(time, schedule.get("utc_offset_hours", 0)), unit="s")
     start_h, start_m = (int(x) for x in schedule["start"].split(":"))
     end_h, end_m = (int(x) for x in schedule["end"].split(":"))
     minutes = local.hour * 60 + local.minute

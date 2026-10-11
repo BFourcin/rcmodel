@@ -3,7 +3,7 @@ import numpy as np
 import torch
 from gymnasium import spaces
 
-from .schedule_policy import schedule_available
+from .schedule_policy import local_seconds, schedule_available, utc_offset
 
 # Keys of LSIEnv's config that may be changed after construction. Everything else is
 # structural (it changes the observation space or the episode shape) and needs a new env.
@@ -66,7 +66,7 @@ class LSIEnv(gym.Env):
         self.config.setdefault("update_state_dict", None)
         self.config.setdefault("rc_parameters", None)
         self.unscored_windows = self.config.get("unscored_windows")
-        self.utc_offset_hours = float(self.config.get("utc_offset_hours", 0.0))
+        self.utc_offset_hours = utc_offset(self.config.get("utc_offset_hours", 0.0))
         self.RC = self.config["RC_model"]
         self.step_length = config["step_length"]
         self.dataloader = self.config["dataloader"]
@@ -386,7 +386,7 @@ class PreprocessEnv(gym.ObservationWrapper):
         self.mu = mu
         self.std_dev = std_dev
         self.features = tuple(DEFAULT_OBSERVATION_FEATURES if features is None else features)
-        self.utc_offset_hours = float(utc_offset_hours)
+        self.utc_offset_hours = utc_offset(utc_offset_hours)
         unknown = [f for f in self.features if f not in OBSERVATION_FEATURES]
         if unknown or len(set(self.features)) != len(self.features):
             raise ValueError(
@@ -424,8 +424,8 @@ class PreprocessEnv(gym.ObservationWrapper):
 
 
 def is_weekday(unix_time, utc_offset_hours=0.0):
-    """True Monday-Friday in local time (UTC + offset). 1970-01-01 was a Thursday."""
-    day = np.floor((np.asarray(unix_time, dtype=np.float64) + 3600 * utc_offset_hours) / 86400).astype(np.int64)
+    """True Monday-Friday in local time (UTC + offset, or a time zone name). 1970-01-01 was a Thursday."""
+    day = np.floor(local_seconds(unix_time, utc_offset_hours) / 86400).astype(np.int64)
     return (day + 3) % 7 < 5
 
 
