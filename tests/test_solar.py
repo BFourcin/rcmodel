@@ -101,3 +101,29 @@ def test_solar_geometry_config_is_checked(get_model_config):
         model_creator({**get_model_config, "solar_geometry": {"latitude": 51.0}})
     with pytest.raises(AssertionError, match="unknown"):
         model_creator({**get_model_config, "solar_geometry": {**SITE, "tilt": 90}})
+
+
+def test_facades_and_solar_on_facades(get_model_config, fake_time, fake_ghi):
+    """ "facades" replaces the model's own external walls with an explicit list (plan azimuth, area), rotated by
+    north_axis_deg; "solar_on_facades" moves the room's solar gain from GHI onto that facade irradiance."""
+    t = torch.tensor(fake_time, dtype=torch.float64)
+    south = {**SITE, "facades": [[180.0, 10.0]]}
+    model = model_creator({**get_model_config, "solar_geometry": south})
+    model.setup()
+    expected = envelope_irradiance(fake_time, fake_ghi, [180.0], [10.0], SITE["latitude"], SITE["longitude"])
+    np.testing.assert_allclose(model.envelope_irradiance(t), expected, rtol=1e-6, atol=1e-6)
+    rotated = model_creator(
+        {**get_model_config, "solar_geometry": {**SITE, "facades": [[90.0, 10.0]], "north_axis_deg": 90.0}}
+    )
+    rotated.setup()
+    np.testing.assert_allclose(rotated.envelope_irradiance(t), expected, rtol=1e-6, atol=1e-6)
+
+    on = model_creator({**get_model_config, "solar_geometry": {**south, "solar_on_facades": True}})
+    on.set_parameters(model.get_parameters())
+    on.setup()
+    model.setup()
+    solar = float(model.solar_load.detach().reshape(-1)[0])
+    assert solar > 0
+    area = np.array([room.area for room in model.building.rooms])
+    difference = on._heat_input_watts(t, 0) - model._heat_input_watts(t, 0)
+    np.testing.assert_allclose(difference, solar * (expected - fake_ghi)[:, None] * area[None, :], rtol=1e-6, atol=1e-6)

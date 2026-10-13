@@ -156,7 +156,10 @@ def model_creator(model_config):
         "C_rm_mass": [1e3, 2e5],  # J/m2K of floor, the mass node (needed with room_mass)
         "R_rm_mass": [0.05, 10],  # m2K/W of floor, air <-> mass (needed with room_mass); pin C_rm then
         "solar_geometry": {"latitude": 51.25, "longitude": -2.14},  # sol-air from the irradiance on each
-        #     external wall, derived from GHI (pvlib); optional "north_axis_deg", "albedo", "sky_model"
+        #     external wall, derived from GHI (pvlib); optional "north_axis_deg", "albedo", "sky_model",
+        #     "facades" ([[plan azimuth deg, area m2], ...]: the external facades to use instead of every
+        #     external wall of the model, e.g. when a one-room model's perimeter includes internal walls) and
+        #     "solar_on_facades" (True: the solar load is that fraction of the facade irradiance, not of GHI)
         "hvac_schedule": {"weekdays": [0, 1, 2, 3, 4], "start": "07:00", "end": "19:00"},  # for
         #     fit_free_float(): when the building can't have been conditioned
         "warmup_cycles": 5,  # spin-up of the wall/mass nodes over the file's first window (see get_iv_array)
@@ -228,7 +231,15 @@ def model_creator(model_config):
         if geometry is not None:
             missing_site = [key for key in ("latitude", "longitude") if key not in geometry]
             assert not missing_site, f"solar_geometry needs {missing_site} (degrees, north and east positive)."
-            unknown = set(geometry) - {"latitude", "longitude", "north_axis_deg", "albedo", "sky_model"}
+            unknown = set(geometry) - {
+                "latitude",
+                "longitude",
+                "north_axis_deg",
+                "albedo",
+                "sky_model",
+                "facades",
+                "solar_on_facades",
+            }
             assert not unknown, f"solar_geometry has unknown keys {sorted(unknown)}."
 
         if model_config.get("room_mass"):
@@ -279,6 +290,7 @@ def model_creator(model_config):
         model.envelope_irradiance_continuous = _envelope_irradiance_interp(
             model.building, weather_time, ghi, model_config["solar_geometry"]
         )
+        model.solar_on_facades = bool(model_config["solar_geometry"].get("solar_on_facades", False))
 
     # NOTE: the old "load_model_path_policy" branch has been removed. RCModel.load is a
     # staticmethod, so `model.load(path)` built a model and threw it away - the branch only
@@ -331,7 +343,12 @@ def _envelope_irradiance_interp(building, weather_time, ghi, geometry):
     """Interp1D of the area-weighted external-wall irradiance (see rcmodel.physical.solar) on the weather
     grid, for RCModel.sol_air_temperature. Cached: every trial and every plausibility probe builds a
     model from the same weather and geometry, and the solar calculation is the slow part."""
-    azimuths, areas = building.external_wall_orientations(geometry.get("north_axis_deg", 0.0))
+    if geometry.get("facades"):
+        facades = np.asarray(geometry["facades"], dtype=np.float64)
+        azimuths = (facades[:, 0] + geometry.get("north_axis_deg", 0.0)) % 360.0
+        areas = facades[:, 1]
+    else:
+        azimuths, areas = building.external_wall_orientations(geometry.get("north_axis_deg", 0.0))
     key = (
         hashlib.sha1(np.ascontiguousarray(weather_time).tobytes() + np.ascontiguousarray(ghi).tobytes()).hexdigest(),
         tuple(np.round(azimuths, 6)),

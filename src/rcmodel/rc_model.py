@@ -446,7 +446,8 @@ class RCModel(nn.Module):
         """
         Heat input into each room, in W, at every time in t: floor area * (gain - cool *
         action + solar * GHI(t)), plus the measured heat input if one is attached. Returns a
-        (len(t), n_rooms) float64 array.
+        (len(t), n_rooms) float64 array. With solar_geometry's "solar_on_facades" the solar term
+        uses the facade irradiance (envelope_irradiance) in place of GHI.
         """
         area = np.array([room.area for room in self.building.rooms], dtype=np.float64)
         # In thermostat mode the cooling is not a fixed input: _integrate_thermostat works it out.
@@ -458,7 +459,8 @@ class RCModel(nn.Module):
         if solar is not None:
             solar = solar.detach().to(torch.float64).numpy()
             if np.any(solar != 0):
-                q_area += self.ghi(t)[:, None] * solar[None, :]
+                irradiance = self.envelope_irradiance(t) if getattr(self, "solar_on_facades", False) else self.ghi(t)
+                q_area += irradiance[:, None] * solar[None, :]
 
         q_watts = q_area * area[None, :]
 

@@ -65,13 +65,32 @@ def _hours(value):
     return float(value)
 
 
+def _month_day(value):
+    """ "MM-DD" (or MM*100 + DD) -> "MM-DD", checked."""
+    if not isinstance(value, str):
+        value = f"{int(value) // 100:02d}-{int(value) % 100:02d}"
+    month, day = (int(x) for x in value.split("-"))
+    if not (1 <= month <= 12 and 1 <= day <= 31):
+        raise ValueError(f"season date must be MM-DD, got {value!r}")
+    return f"{month:02d}-{day:02d}"
+
+
 def normalise_windows(windows):
-    """[{weekdays, start, end}] with start/end as float hours; accepts one hvac_schedule-style dict too."""
+    """[{weekdays, start, end[, months][, season]}] with start/end as float hours; accepts one hvac_schedule-style
+    dict too. "months" (optional, January = 1) restricts a window to those local calendar months; "season" (optional,
+    ["MM-DD", "MM-DD"]) to the local dates from the first (inclusive) to the second (exclusive), wrapping over the new
+    year when the first is later. Absent means all year."""
     if isinstance(windows, dict):
         windows = [windows]
-    return [
-        {"weekdays": [int(d) for d in w["weekdays"]], "start": _hours(w["start"]), "end": _hours(w["end"])} for w in windows
-    ]
+    out = []
+    for w in windows:
+        window = {"weekdays": [int(d) for d in w["weekdays"]], "start": _hours(w["start"]), "end": _hours(w["end"])}
+        if w.get("months") is not None:
+            window["months"] = [int(m) for m in w["months"]]
+        if w.get("season") is not None:
+            window["season"] = [_month_day(d) for d in w["season"]]
+        out.append(window)
+    return out
 
 
 def schedule_available(time, windows, utc_offset_hours=0.0):
@@ -81,13 +100,29 @@ def schedule_available(time, windows, utc_offset_hours=0.0):
     (exclusive), local time = UTC + utc_offset_hours, a number of hours or a time zone name such as
     "Europe/London" (daylight saving followed). start >= end is an empty window, so a search can switch
     a window off by collapsing it. Same convention as free_float_mask (which is its complement for one window).
+    An optional "months" list (January = 1) limits the window to those local calendar months, and an optional
+    "season" ["MM-DD", "MM-DD"] to a range of local dates (start inclusive, end exclusive, wrapping over the new year),
+    e.g. a heating season.
     """
     local = local_seconds(time, utc_offset_hours)
-    weekday = (np.floor(local / SECONDS_PER_DAY).astype(np.int64) + 3) % 7  # 1970-01-01 was a Thursday
+    days = np.floor(local / SECONDS_PER_DAY).astype(np.int64)
+    weekday = (days + 3) % 7  # 1970-01-01 was a Thursday
     hour = (local % SECONDS_PER_DAY) / 3600
+    month = month_day = None
     available = np.zeros(np.shape(local), dtype=bool)
     for window in normalise_windows(windows):
-        available |= np.isin(weekday, window["weekdays"]) & (hour >= window["start"]) & (hour < window["end"])
+        on = np.isin(weekday, window["weekdays"]) & (hour >= window["start"]) & (hour < window["end"])
+        if ("months" in window or "season" in window) and month is None:
+            d = days.astype("datetime64[D]")
+            first = d.astype("datetime64[M]")
+            month = first.astype(np.int64) % 12 + 1
+            month_day = month * 100 + (d - first.astype("datetime64[D]")).astype(np.int64) + 1
+        if "months" in window:
+            on &= np.isin(month, window["months"])
+        if "season" in window:
+            lo, hi = (int(v.replace("-", "")) for v in window["season"])
+            on &= ((month_day >= lo) & (month_day < hi)) if lo <= hi else ((month_day >= lo) | (month_day < hi))
+        available |= on
     return available
 
 

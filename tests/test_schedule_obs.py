@@ -21,6 +21,7 @@ from rcmodel import (
     training_windows_dataloader,
 )
 from rcmodel.optimisation import is_weekday, observation_features
+from rcmodel.optimisation.schedule_policy import normalise_windows
 
 WEEKDAYS = [0, 1, 2, 3, 4]
 
@@ -88,6 +89,46 @@ def test_time_zone_follows_daylight_saving():
 
     with pytest.raises(ZoneInfoNotFoundError):
         schedule_available(time, window, "Not/AZone")
+
+
+def test_months_restrict_window_to_local_season():
+    """A "months" list limits a window to those local calendar months; the month boundary is local too (31 Oct
+    23:30 UTC is still October in London after the clocks go back, 30 Apr 23:30 UTC is 1 May 00:30 BST)."""
+    window = {"weekdays": list(range(7)), "start": 0, "end": 24, "months": [11, 12, 1, 2, 3, 4]}
+    time = [
+        _unix("2022-01-10 12:00"),
+        _unix("2022-07-11 12:00"),
+        _unix("2021-10-31 23:30"),
+        _unix("2021-11-01 00:30"),
+        _unix("2022-04-30 22:30"),
+        _unix("2022-04-30 23:30"),
+    ]
+    assert schedule_available(time, window, "Europe/London").tolist() == [True, False, False, True, True, False]
+    all_year = {k: v for k, v in window.items() if k != "months"}
+    assert schedule_available(time, all_year, "Europe/London").all()
+    assert normalise_windows(window)[0]["months"] == [11, 12, 1, 2, 3, 4]
+    assert "months" not in normalise_windows(all_year)[0]
+
+
+def test_season_restricts_window_to_local_dates():
+    """A "season" ["MM-DD", "MM-DD"] limits a window to those local dates, end exclusive, wrapping over the new year;
+    the date is local (21 Oct 23:30 UTC is 22 Oct 00:30 BST)."""
+    window = {"weekdays": list(range(7)), "start": 0, "end": 24, "season": ["10-22", "05-25"]}
+    time = [
+        _unix("2021-10-21 22:30"),
+        _unix("2021-10-21 23:30"),
+        _unix("2022-01-10 12:00"),
+        _unix("2022-05-24 12:00"),
+        _unix("2022-05-24 23:30"),
+        _unix("2022-07-11 12:00"),
+    ]
+    assert schedule_available(time, window, "Europe/London").tolist() == [False, True, True, True, False, False]
+    inside = {**window, "season": ["03-01", "03-31"]}
+    march = [_unix("2022-02-28 12:00"), _unix("2022-03-01 12:00"), _unix("2022-03-30 12:00"), _unix("2022-03-31 12:00")]
+    assert schedule_available(march, inside, 0).tolist() == [False, True, True, False]
+    assert normalise_windows({**window, "season": [1022, 525]})[0]["season"] == ["10-22", "05-25"]
+    with pytest.raises(ValueError):
+        normalise_windows({**window, "season": ["13-01", "05-25"]})
 
 
 class _FakeEnv:
