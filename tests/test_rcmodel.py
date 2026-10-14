@@ -821,3 +821,117 @@ def test_room_mass_config_is_checked(get_model_config):
         model_creator({**get_model_config, "room_mass": True, "C_rm": [1, 1]})
     with pytest.raises(AssertionError, match="pin it"):
         model_creator({**_mass_config(get_model_config), "C_rm": [1e3, 1e5]})
+
+
+# --------------------------------------------------------------------------- 1R2C mass and the solar split
+
+
+def _two_node_config(model_config, f=0.0):
+    return {
+        **_mass_config(model_config),
+        "room_mass": "two_node",
+        "C_rm_deep": [1e3, 1e6],
+        "R_rm_deep": [1e-4, 1e6],
+        "solar_mass_fraction": f,
+    }
+
+
+def test_two_node_state_layout(get_model_config):
+    model = _physical_model(_two_node_config(get_model_config), C_rm_mass=2e4, R_rm_mass=0.4, C_rm_deep=4e5, R_rm_deep=0.05)
+    n = len(model.building.rooms)
+    assert model.building.n_states == 2 + 3 * n
+    assert model.A.shape == (2 + 3 * n, 2 + 3 * n)
+    assert model.B.shape == (2 + 3 * n, 1 + 2 * n)
+    # The deep nodes couple only to their own surface node, and take no input.
+    deep = slice(2 + 2 * n, 2 + 3 * n)
+    assert torch.count_nonzero(model.B[deep]) == 0
+    assert torch.count_nonzero(model.A[deep, : 2 + n]) == 0
+
+
+def test_two_node_deep_tied_to_surface_is_the_one_node_mass(get_model_config, fake_time):
+    """R_rm_deep -> 0: surface and deep move together, as one mass node of capacity C_rm_mass + C_rm_deep."""
+    t_eval = torch.tensor(fake_time[:121], dtype=torch.float64)
+    two = _physical_model(_two_node_config(get_model_config), C_rm_mass=2e4, R_rm_mass=0.4, C_rm_deep=8e4, R_rm_deep=1e-4)
+    one = _physical_model(_mass_config(get_model_config), C_rm_mass=1e5, R_rm_mass=0.4)
+    torch.testing.assert_close(_rooms_from(two, t_eval), _rooms_from(one, t_eval), rtol=1e-4, atol=1e-3)
+
+
+def test_two_node_deep_cut_off_is_the_surface_alone(get_model_config, fake_time):
+    t_eval = torch.tensor(fake_time[:121], dtype=torch.float64)
+    two = _physical_model(_two_node_config(get_model_config), C_rm_mass=2e4, R_rm_mass=0.4, C_rm_deep=8e4, R_rm_deep=1e6)
+    one = _physical_model(_mass_config(get_model_config), C_rm_mass=2e4, R_rm_mass=0.4)
+    torch.testing.assert_close(_rooms_from(two, t_eval), _rooms_from(one, t_eval), rtol=1e-4, atol=1e-4)
+
+
+@pytest.mark.parametrize("f", [0.0, 0.5, 1.0])
+def test_solar_mass_fraction_splits_only_the_solar(get_model_config, fake_time, f):
+    """f of the solar load goes onto the mass columns, the rest (and all the gain) into the air; the total is
+    what it was."""
+    t = torch.tensor(fake_time[:50], dtype=torch.float64)
+    config = _mass_config(get_model_config)
+    model = _physical_model({**config, "solar_mass_fraction": f}, C_rm_mass=5e4, R_rm_mass=0.4, gain=2.0, solar=0.1)
+    no_sun = _physical_model(config, C_rm_mass=5e4, R_rm_mass=0.4, gain=2.0, solar=0.0)
+    n = len(model.building.rooms)
+    model.action = 0
+    u = model._input_trajectory(t)
+    solar = model._heat_input_watts(t, 0) - no_sun._heat_input_watts(t, 0)
+    assert solar.max() > 0
+    np.testing.assert_allclose(u[:, 1 + n :], f * solar, rtol=1e-6, atol=1e-9)
+    np.testing.assert_allclose(u[:, 1 : 1 + n], no_sun._heat_input_watts(t, 0) + (1 - f) * solar, rtol=1e-6, atol=1e-9)
+
+
+def test_solar_on_the_mass_warms_the_air_later(get_model_config, fake_time):
+    """The same sun on the mass instead of the air: the air warms less at first, and the mass more."""
+    t_eval = torch.tensor(fake_time[:241], dtype=torch.float64)
+    common = dict(C_rm_mass=5e4, R_rm_mass=0.4, C_rm_deep=4e5, R_rm_deep=0.05, solar=0.2, gain=0.0, k_sa=0.0)
+    air = _physical_model(_two_node_config(get_model_config, 0.0), **common)
+    mass = _physical_model(_two_node_config(get_model_config, 1.0), **common)
+    n = len(air.building.rooms)
+    out = {}
+    for name, model in (("air", air), ("mass", mass)):
+        model.iv = 20.0 * torch.ones(model._n_states())
+        out[name] = model(t_eval, action=0).squeeze()
+    assert (out["air"][-1, 2 : 2 + n] > out["mass"][-1, 2 : 2 + n]).all()
+    assert (out["mass"][-1, 2 + n : 2 + 2 * n] > out["air"][-1, 2 + n : 2 + 2 * n]).all()
+
+
+def test_two_node_forward_matches_odeint(get_model_config, fake_time):
+    """The reference path carries the mass inputs too."""
+    config = _two_node_config(get_model_config, 0.5)
+    model = _physical_model(config, C_rm_mass=2e4, R_rm_mass=0.4, C_rm_deep=4e5, R_rm_deep=0.05, solar=0.1)
+    t_eval = torch.tensor(fake_time[:31], dtype=torch.float64)
+    start = 24 * torch.ones(model._n_states())
+    model.iv = start.clone()
+    fast = model(t_eval, action=1).squeeze()
+    model.iv = start.clone()
+    reference = model._forward_odeint(t_eval, action=1).squeeze()
+    torch.testing.assert_close(fast, reference, rtol=1e-5, atol=1e-5)
+
+
+def test_two_node_iv_array_carries_both_mass_nodes(get_model_config, full_building_dataset):
+    model = _physical_model(
+        _two_node_config(get_model_config, 0.5),
+        dataset=full_building_dataset,
+        C_rm_mass=2e4,
+        R_rm_mass=0.4,
+        C_rm_deep=4e5,
+        R_rm_deep=0.05,
+        solar=0.0,
+    )
+    t, temps = full_building_dataset.get_all_data()
+    iv = model.iv_array(t[len(t) // 2])
+    n = len(model.building.rooms)
+    assert iv.shape[0] == 2 + 3 * n
+    # With no sun, both mass nodes stay within the range the room's air has covered.
+    for rows in (slice(2 + n, 2 + 2 * n), slice(2 + 2 * n, 2 + 3 * n)):
+        assert (iv[rows] >= temps[:, :n].min(0).values - 1e-4).all()
+        assert (iv[rows] <= temps[:, :n].max(0).values + 1e-4).all()
+
+
+def test_two_node_config_is_checked(get_model_config):
+    with pytest.raises(AssertionError, match="C_rm_deep"):
+        model_creator({**_mass_config(get_model_config), "room_mass": "two_node"})
+    with pytest.raises(AssertionError, match="needs room_mass"):
+        model_creator({**get_model_config, "solar_mass_fraction": 0.5})
+    with pytest.raises(AssertionError, match=r"\[0, 1\]"):
+        model_creator({**_mass_config(get_model_config), "solar_mass_fraction": 1.5})

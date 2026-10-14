@@ -18,19 +18,34 @@ class Building:
         coupled through a resistance R_rm_mass (m2K/W per m2 of floor) - the air/mass split of
         ISO 13790:2008's simple hourly method, succeeded by ISO 52016-1:2017. The air node's capacity
         is C_rm_air per m2 of floor, NOT searched: it is known from the room volume. The mass node's
-        C_rm_mass is searched. All heat inputs (gains, solar, cooling) enter the air node.
+        C_rm_mass is searched. Gains, heating and cooling enter the air node; solar too, unless
+        solar_mass_fraction moves part of it onto the mass.
+        "two_node": the mass is 1R2C - a SURFACE node (C_rm_mass, coupled to the air through R_rm_mass:
+        floor finish, furniture, linings) and a DEEP node behind it (C_rm_deep, coupled to the surface
+        through R_rm_deep: the slab). Only the surface node exchanges heat with the air.
     c_rm_air - air capacity per m2 of floor, J/m2K. None (default) computes RHO_CP_AIR * height, the
         capacity of the air in a room of this height. Only used with room_mass.
+    solar_mass_fraction - f in [0, 1]: the share of each room's solar load that lands on its (surface) mass
+        node rather than the air, as ISO 13790 puts transmitted sun on surfaces. 0 (default) is all on the
+        air. Fixed, not searched. Only used with room_mass.
     """
 
-    def __init__(self, rooms, height=1, room_mass=False, c_rm_air=None):
+    def __init__(self, rooms, height=1, room_mass=False, c_rm_air=None, solar_mass_fraction=0.0):
 
         self.rooms = rooms  # list of Room classes within the building
         self.height = height  # height of all Rooms in the building
+        if room_mass not in (False, True, "two_node"):
+            raise ValueError(f"room_mass must be False, True or 'two_node', got {room_mass!r}.")
         self.room_mass = bool(room_mass)
+        self.mass_nodes = 2 if room_mass == "two_node" else int(self.room_mass)  # mass nodes per room
+        self.solar_mass_fraction = float(solar_mass_fraction)
+        if not 0.0 <= self.solar_mass_fraction <= 1.0:
+            raise ValueError(f"solar_mass_fraction must be in [0, 1], got {solar_mass_fraction}.")
         self.c_rm_air = float(RHO_CP_AIR * height if c_rm_air is None else c_rm_air)
         self.c_rm_mass = 0.0  # J/m2K, set by set_room_mass()
         self.r_rm_mass = 0.0  # m2K/W, set by set_room_mass()
+        self.c_rm_deep = 0.0  # J/m2K, two_node only, set by set_room_mass()
+        self.r_rm_deep = 0.0  # m2K/W, two_node only, set by set_room_mass()
 
         #  Parameters to be properly initialised later in self.update_inputs()
         self.Re = [0, 0, 0]  # external resistance
@@ -207,34 +222,57 @@ class Building:
         return np.array(azimuths), np.array(areas)
 
     @property
-    def n_states(self):
-        """Length of the state vector: two envelope nodes, one air node per room, and one mass node per
-        room when room_mass is on - in that order."""
-        return 2 + len(self.rooms) * (2 if getattr(self, "room_mass", False) else 1)
+    def n_mass_nodes(self):
+        """Mass nodes per room: 0 (room_mass off), 1, or 2 (two_node). Buildings pickled before two_node have 1."""
+        return getattr(self, "mass_nodes", int(getattr(self, "room_mass", False)))
 
-    def set_room_mass(self, c_rm_mass, r_rm_mass):
-        """The mass node's capacity (J/m2K of floor) and its coupling to the air (m2K/W of floor)."""
+    @property
+    def n_states(self):
+        """Length of the state vector: two envelope nodes, one air node per room, then (room_mass on) one mass
+        node per room - the surface node with two_node - and (two_node) one deep node per room, in that order."""
+        return 2 + len(self.rooms) * (1 + self.n_mass_nodes)
+
+    @property
+    def n_inputs(self):
+        """Length of the input vector: Tout, one heat input per room into its air, and (room_mass on) one per
+        room into its (surface) mass node - see input_vector()."""
+        return 1 + len(self.rooms) * (2 if getattr(self, "room_mass", False) else 1)
+
+    def set_room_mass(self, c_rm_mass, r_rm_mass, c_rm_deep=0.0, r_rm_deep=0.0):
+        """The mass (two_node: surface) node's capacity (J/m2K of floor) and its coupling to the air (m2K/W of
+        floor); with two_node also the deep node's capacity and its coupling to the surface node."""
         self.c_rm_mass = float(c_rm_mass)
         self.r_rm_mass = float(r_rm_mass)
+        self.c_rm_deep = float(c_rm_deep)
+        self.r_rm_deep = float(r_rm_deep)
 
     def _add_room_mass(self, A):
-        """Extend A with one mass node per room, appended after the air nodes.
+        """Extend A with one mass node per room (and, two_node, one deep node per room), after the air nodes.
 
         Per room of floor area a: air capacity C_air (already on the room), mass capacity c_rm_mass * a,
-        and a conductance a / r_rm_mass between them.
+        and a conductance a / r_rm_mass between them. two_node adds a deep node of capacity c_rm_deep * a
+        behind the mass (surface) node, through a conductance a / r_rm_deep.
         """
         n_rooms = len(self.rooms)
+        n_mass = self.n_mass_nodes
         first_air = A.shape[0] - n_rooms
-        A_full = torch.zeros((A.shape[0] + n_rooms, A.shape[1] + n_rooms), dtype=A.dtype)
+        first_mass = A.shape[0]
+        size = A.shape[0] + n_mass * n_rooms
+        A_full = torch.zeros((size, size), dtype=A.dtype)
         A_full[: A.shape[0], : A.shape[1]] = A
+
+        def couple(a, b, K, c_a, c_b):
+            A_full[a, a] -= K / c_a
+            A_full[a, b] += K / c_a
+            A_full[b, b] -= K / c_b
+            A_full[b, a] += K / c_b
+
         for i, room in enumerate(self.rooms):
-            air, mass = first_air + i, A.shape[0] + i
-            K = room.area / self.r_rm_mass  # W/K
-            c_air, c_mass = room.capacitance, self.c_rm_mass * room.area
-            A_full[air, air] -= K / c_air
-            A_full[air, mass] += K / c_air
-            A_full[mass, mass] -= K / c_mass
-            A_full[mass, air] += K / c_mass
+            air, mass = first_air + i, first_mass + i
+            c_mass = self.c_rm_mass * room.area
+            couple(air, mass, room.area / self.r_rm_mass, room.capacitance, c_mass)
+            if n_mass == 2:
+                couple(mass, first_mass + n_rooms + i, room.area / self.r_rm_deep, c_mass, self.c_rm_deep * room.area)
         return A_full
 
     def sort_walls(self):
@@ -319,10 +357,12 @@ class Building:
 
         return Walls
 
-    def input_vector(self, Tout, Q):
+    def input_vector(self, Tout, Q, Q_mass=None):
         """
         Input vector in form:
-        u = [Tout, QA, QB, ... Qn]
+        u = [Tout, QA, QB, ... Qn]                          (room_mass off)
+        u = [Tout, QA, ... Qn, Q_mass_A, ... Q_mass_n]      (room_mass on: Q_mass, the heat onto each room's
+                                                             (surface) mass node, zeros when not given)
         """
         # Check and make 2d matrix if 1d.
         # add_dim = lambda x: torch.tensor([x]) if x.ndim == 1 else x
@@ -336,6 +376,9 @@ class Building:
         Tout = torch.reshape(Tout, (1, 1))
 
         if len(Q[0]) == len(self.rooms):
+            if getattr(self, "room_mass", False):
+                Q_mass = torch.zeros_like(Q) if Q_mass is None else torch.as_tensor(Q_mass, dtype=Q.dtype).reshape(Q.shape)
+                Q = torch.cat((Q, Q_mass), dim=1)
             u = torch.cat((Tout, Q), dim=1).T
 
             return u
@@ -350,10 +393,11 @@ class Building:
         # u = [[Tout, QA, QB,...]].T
 
         off = len(self.Ce)  # offset needed for external nodes
-        num_inputs = len(self.rooms) + 1
+        n_rooms = len(self.rooms)
 
-        # Mass nodes (room_mass on) take no input directly: every heat input enters the air.
-        B = torch.zeros((self.n_states, num_inputs))
+        # With room_mass on, the last n_rooms inputs heat each room's (surface) mass node directly - the share of
+        # the solar load that solar_mass_fraction puts there. Deep nodes (two_node) take no input.
+        B = torch.zeros((self.n_states, self.n_inputs))
 
         # Set Tout input:
         B[0, 0] = self.surf_area / (self.Re[0] * self.Ce[0])
@@ -361,6 +405,9 @@ class Building:
         # Set the Q inputs for each room
         for rm in range(len(self.rooms)):
             B[rm + off, rm + 1] = 1 / self.rooms[rm].capacitance
+        if getattr(self, "room_mass", False):
+            for rm in range(n_rooms):
+                B[off + n_rooms + rm, 1 + n_rooms + rm] = 1 / (self.c_rm_mass * self.rooms[rm].area)
 
         return B
 

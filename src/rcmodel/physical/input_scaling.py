@@ -16,7 +16,8 @@ class InputScaling(Building):
 
     The physical ranges are in PARAM_KEYS order. k_sa is the dimensionless sol-air coefficient (see
     RCModel.sol_air_temperature); C_rm_mass, R_rm_mass (the room mass node), T_set (the thermostat's
-    cooling setpoint), T_heat and heat (its heating setpoint and capacity, W/m2) follow it. All six are
+    cooling setpoint), T_heat and heat (its heating setpoint and capacity, W/m2), C_rm_deep and R_rm_deep
+    (the deep mass node of room_mass="two_node") follow it. All eight are
     keywords that default to [0, 0] - pinned, and unused unless the model turns the feature on - so older
     callers keep working.
 
@@ -44,6 +45,8 @@ class InputScaling(Building):
         T_set=(0, 0),
         T_heat=(0, 0),
         heat=(0, 0),
+        C_rm_deep=(0, 0),
+        R_rm_deep=(0, 0),
     ):
 
         self.phys_param_range = [
@@ -60,6 +63,8 @@ class InputScaling(Building):
             list(T_set),
             list(T_heat),
             list(heat),
+            list(C_rm_deep),
+            list(R_rm_deep),
         ]
         self.energy_param_range = [cool, gain, list(solar)]
 

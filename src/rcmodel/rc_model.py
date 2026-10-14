@@ -22,21 +22,40 @@ from xitorch.interpolate import Interp1D
 #   C_rm_mass, R_rm_mass - the room's thermal mass node (J/K per m2 of floor) and its coupling to the
 #           room air (m2K/W per m2 of floor). Only used when the building has room_mass on; the air
 #           node's own capacity is then C_rm_air, computed from the room volume - see Building.
+#           With room_mass="two_node" this is the SURFACE node of a 1R2C mass.
 #   T_set - cooling setpoint (degC), only used with cooling_mode="thermostat" - see RCModel.
 #   T_heat, heat - heating setpoint (degC) and heating capacity (W/m2 of floor, every room), only used
 #           with cooling_mode="thermostat". heat = 0 (the default) means the thermostat never heats.
-# The last five are OPTIONAL_PARAM_KEYS: a config without them gets a pinned [0, 0] range and the
+#   C_rm_deep, R_rm_deep - room_mass="two_node" only: the deep mass node behind the surface node (J/K per
+#           m2 of floor) and its coupling to the surface node (m2K/W per m2 of floor).
+# The last seven are OPTIONAL_PARAM_KEYS: a config without them gets a pinned [0, 0] range and the
 # value 0, which leaves the model exactly as it was before they existed.
-PARAM_KEYS = ("C_rm", "C1", "C2", "R1", "R2", "R3", "Rin", "k_sa", "C_rm_mass", "R_rm_mass", "T_set", "T_heat", "heat")
+PARAM_KEYS = (
+    "C_rm",
+    "C1",
+    "C2",
+    "R1",
+    "R2",
+    "R3",
+    "Rin",
+    "k_sa",
+    "C_rm_mass",
+    "R_rm_mass",
+    "T_set",
+    "T_heat",
+    "heat",
+    "C_rm_deep",
+    "R_rm_deep",
+)
 LOAD_KEYS = ("cool", "gain", "solar")
 RC_PARAM_KEYS = PARAM_KEYS + LOAD_KEYS
-OPTIONAL_PARAM_KEYS = ("C_rm_mass", "R_rm_mass", "T_set", "T_heat", "heat")
+OPTIONAL_PARAM_KEYS = ("C_rm_mass", "R_rm_mass", "T_set", "T_heat", "heat", "C_rm_deep", "R_rm_deep")
 
 # Parameters allowed to be exactly zero. Every other PARAM_KEYS entry is a resistance or
 # capacitance and must be strictly positive, because A is built from 1/(R*C). C_rm_mass and
-# R_rm_mass are zero (unused) when room_mass is off; with it on they must be > 0 - see
-# RCModel._check_physically_valid.
-NON_NEGATIVE_PARAM_KEYS = ("k_sa", "C_rm_mass", "R_rm_mass", "heat")
+# R_rm_mass are zero (unused) when room_mass is off; with it on they must be > 0, and likewise C_rm_deep and
+# R_rm_deep with room_mass="two_node" - see RCModel._check_physically_valid.
+NON_NEGATIVE_PARAM_KEYS = ("k_sa", "C_rm_mass", "R_rm_mass", "heat", "C_rm_deep", "R_rm_deep")
 
 # Parameters with no sign constraint at all: temperatures.
 SIGNED_PARAM_KEYS = ("T_set", "T_heat")
@@ -273,6 +292,8 @@ class RCModel(nn.Module):
         strictly_positive = {key for key in PARAM_KEYS if key not in NON_NEGATIVE_PARAM_KEYS + SIGNED_PARAM_KEYS}
         if getattr(self.building, "room_mass", False):
             strictly_positive |= {"C_rm_mass", "R_rm_mass"}
+        if getattr(self.building, "n_mass_nodes", 0) == 2:
+            strictly_positive |= {"C_rm_deep", "R_rm_deep"}
         values = dict(zip(PARAM_KEYS, physical_params.tolist(), strict=False))  # an older pickle may hold fewer
 
         problems = [
@@ -434,41 +455,56 @@ class RCModel(nn.Module):
         the whole window in ONE batched interpolation call rather than once per solver
         sub-step, which is where most of the old cost went.
 
-        Returns a (len(t_eval), n_rooms + 1) float64 array, matching Building.input_vector()'s
-        ordering.
+        Returns a (len(t_eval), n_inputs) float64 array, matching Building.input_vector()'s
+        ordering: with room_mass on, the room columns are followed by the heat onto each room's mass node.
         """
-        u = np.empty((len(t_eval), len(self.building.rooms) + 1), dtype=np.float64)
+        n_rooms = len(self.building.rooms)
+        u = np.zeros((len(t_eval), getattr(self.building, "n_inputs", n_rooms + 1)), dtype=np.float64)
         u[:, 0] = self.sol_air_temperature(t_eval)
-        u[:, 1:] = self._heat_input_watts(t_eval, self.action)
+        if u.shape[1] > n_rooms + 1:
+            u[:, 1 : 1 + n_rooms], u[:, 1 + n_rooms :] = self._heat_input_watts(t_eval, self.action, split=True)
+        else:
+            u[:, 1:] = self._heat_input_watts(t_eval, self.action)
         return u
 
-    def _heat_input_watts(self, t, action):
+    def _heat_input_watts(self, t, action, split=False):
         """
         Heat input into each room, in W, at every time in t: floor area * (gain - cool *
         action + solar * GHI(t)), plus the measured heat input if one is attached. Returns a
         (len(t), n_rooms) float64 array. With solar_geometry's "solar_on_facades" the solar term
         uses the facade irradiance (envelope_irradiance) in place of GHI.
+
+        split=True returns (into_air, into_mass) instead, two such arrays: the building's
+        solar_mass_fraction of the solar term goes onto the mass node, everything else into the air.
+        Their sum is the split=False result.
         """
         area = np.array([room.area for room in self.building.rooms], dtype=np.float64)
         # In thermostat mode the cooling is not a fixed input: _integrate_thermostat works it out.
         switched = 0 if getattr(self, "cooling_mode", "switch") == "thermostat" else action
         constant = (self.gain_load - self.cool_load * switched).detach().to(torch.float64).numpy()
         q_area = np.broadcast_to(constant, (len(t), len(area))).copy()  # W/m2
+        solar_area = np.zeros_like(q_area)  # W/m2
 
         solar = self.solar_load
         if solar is not None:
             solar = solar.detach().to(torch.float64).numpy()
             if np.any(solar != 0):
                 irradiance = self.envelope_irradiance(t) if getattr(self, "solar_on_facades", False) else self.ghi(t)
-                q_area += irradiance[:, None] * solar[None, :]
+                solar_area = irradiance[:, None] * solar[None, :]
 
-        q_watts = q_area * area[None, :]
+        f_mass = (
+            float(getattr(self.building, "solar_mass_fraction", 0.0)) if getattr(self.building, "room_mass", False) else 0.0
+        )
+        q_mass = f_mass * solar_area * area[None, :]
+        q_watts = (q_area + solar_area) * area[None, :] - q_mass
 
         heat_input_continuous = getattr(self, "heat_input_continuous", None)  # absent on older pickles
         if heat_input_continuous is not None:
             q_watts += _sample_rooms(heat_input_continuous, t, len(area))
 
-        return q_watts
+        if split:
+            return q_watts, q_mass
+        return q_watts + q_mass
 
     def sol_air_temperature(self, t):
         """
@@ -540,11 +576,12 @@ class RCModel(nn.Module):
         # Get energy input at timestep:
         t_abs = t.item() + self.t0
         t_query = torch.as_tensor(t_abs, dtype=torch.float64).reshape(1)
-        Q_watts = torch.tensor(self._heat_input_watts(t_query, self.action)[0], dtype=torch.float32)
+        q_air, q_mass = self._heat_input_watts(t_query, self.action, split=True)
+        Q_watts = torch.tensor(q_air[0], dtype=torch.float32)
 
         Tout = torch.as_tensor(self.sol_air_temperature(t_query)[0])
 
-        u = self.building.input_vector(Tout, Q_watts)
+        u = self.building.input_vector(Tout, Q_watts, torch.tensor(q_mass[0], dtype=torch.float32))
 
         return self.A @ x + self.B @ u
 
@@ -561,7 +598,12 @@ class RCModel(nn.Module):
         # node's values go to the building first (older pickles hold no such parameters).
         values = dict(zip(PARAM_KEYS, theta.tolist(), strict=False))  # an older pickle may hold fewer
         if hasattr(self.building, "set_room_mass"):
-            self.building.set_room_mass(values.get("C_rm_mass", 0.0), values.get("R_rm_mass", 0.0))
+            self.building.set_room_mass(
+                values.get("C_rm_mass", 0.0),
+                values.get("R_rm_mass", 0.0),
+                values.get("C_rm_deep", 0.0),
+                values.get("R_rm_deep", 0.0),
+            )
         self.A = self.building.update_inputs(theta)
         self.B = self.building.input_matrix()
 
@@ -1087,31 +1129,52 @@ def get_iv_array(model, dataset):
         iv_array[:, 0:2] = integrate
         iv_array[:, 2 : 2 + n_rooms] = Tin_continuous(t_eval).T
         if getattr(bl, "room_mass", False):
+            q_mass = None
+            if getattr(bl, "solar_mass_fraction", 0.0) > 0:
+                q_mass = model._heat_input_watts(t_eval, 0, split=True)[1]  # only the solar term: action-free
             iv_array[:, 2 + n_rooms :] = torch.tensor(
-                _room_mass_history(bl, t_eval, temp_data[:, 0:n_rooms], cycles=cycles, n_spin=n_spin)
+                _room_mass_history(bl, t_eval, temp_data[:, 0:n_rooms], cycles=cycles, n_spin=n_spin, q_mass=q_mass)
             )
         iv_array = Interp1D(t_eval, iv_array.T, method="linear")
 
     return iv_array
 
 
-def _room_mass_history(building, t_eval, room_temps, cycles=0, n_spin=None):
-    """Each room's mass node temperature over the history, driven by the measured room air.
+def _room_mass_history(building, t_eval, room_temps, cycles=0, n_spin=None, q_mass=None):
+    """Each room's mass node temperatures over the history, driven by the measured room air.
 
     A mass node only exchanges heat with its room's air, so given the measured air temperature it is a
     first-order low-pass filter of it, time constant r_rm_mass * c_rm_mass: integrated exactly (FOH)
-    like the envelope nodes. Starts from the first measured air temperature, spun up over the first n_spin
-    rows `cycles` times (see get_iv_array).
+    like the envelope nodes. With two_node the deep node sits behind it (a second-order filter), and
+    q_mass ((len(t), n_rooms) W, optional) is the heat put straight onto each surface node (its share of
+    the solar). Starts from the first measured air temperature, spun up over the first n_spin rows
+    `cycles` times (see get_iv_array). Returns (len(t), n_rooms * mass nodes): surface nodes, then deep.
     """
     n_rooms = len(building.rooms)
-    rate = 1.0 / (building.r_rm_mass * building.c_rm_mass)
-    A = -rate * np.eye(n_rooms)
-    B = rate * np.eye(n_rooms)
+    n_mass = getattr(building, "n_mass_nodes", 1)
+    area = np.array([getattr(room, "area", 1.0) for room in building.rooms], dtype=np.float64)
+    c_s, r_s = building.c_rm_mass, building.r_rm_mass
+    A = np.zeros((n_mass * n_rooms, n_mass * n_rooms))
+    B = np.zeros((n_mass * n_rooms, 2 * n_rooms))  # inputs: air temperatures, then W onto the surface nodes
+    for i in range(n_rooms):
+        A[i, i] = -1.0 / (r_s * c_s)
+        B[i, i] = 1.0 / (r_s * c_s)
+        B[i, n_rooms + i] = 1.0 / (c_s * area[i])
+        if n_mass == 2:
+            d = n_rooms + i
+            c_d, r_d = building.c_rm_deep, building.r_rm_deep
+            A[i, i] -= 1.0 / (r_d * c_s)
+            A[i, d] = 1.0 / (r_d * c_s)
+            A[d, d] = -1.0 / (r_d * c_d)
+            A[d, i] = 1.0 / (r_d * c_d)
     T_air = np.asarray(room_temps, dtype=np.float64)
+    q = np.zeros_like(T_air) if q_mass is None else np.asarray(q_mass, dtype=np.float64)
+    W = np.concatenate([T_air, q], axis=1)
     t = np.asarray(t_eval, dtype=np.float64).reshape(-1)
     n_spin = len(t) if n_spin is None else n_spin
-    x0 = _spin_up(lambda x: _integrate_states(A, B, t[:n_spin], T_air[:n_spin], x)[-1], T_air[0].copy(), cycles)
-    return _integrate_states(A, B, t, T_air, x0)
+    start = np.tile(T_air[0], n_mass)
+    x0 = _spin_up(lambda x: _integrate_states(A, B, t[:n_spin], W[:n_spin], x)[-1], start, cycles)
+    return _integrate_states(A, B, t, W, x0)
 
 
 def _spin_up_rows(dataset, t_eval):
@@ -1168,7 +1231,7 @@ def steady_state_iv(model, temp_out, temp_in):
     v2 = v1 - I * model.building.Re[1]
 
     rows = [[v1], [v2], [temp_in]]
-    if getattr(model.building, "room_mass", False):
+    for _ in range(getattr(model.building, "n_mass_nodes", int(getattr(model.building, "room_mass", False)))):
         rows.append([temp_in])  # in steady state the mass sits at the air temperature
     iv = torch.tensor(rows, dtype=torch.float32)
 

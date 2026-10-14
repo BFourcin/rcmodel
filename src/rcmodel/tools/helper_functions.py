@@ -151,10 +151,13 @@ def model_creator(model_config):
         "T_set": [18, 26],  # degC, thermostat setpoint range (needed with cooling_mode="thermostat")
         "T_heat": [16, 20],  # degC, heating setpoint (thermostat only; ignored while heat is 0)
         "heat": [0, 0],  # W/m2 of floor, heating capacity of every room; 0 (the default) never heats
-        "room_mass": False,  # True: each room is an air node + a mass node
+        "room_mass": False,  # True: each room is an air node + a mass node; "two_node": air + surface + deep mass
         "C_rm_air": None,  # J/m2K of floor for the air node; None = 1.2 * 1005 * room_height
         "C_rm_mass": [1e3, 2e5],  # J/m2K of floor, the mass node (needed with room_mass)
         "R_rm_mass": [0.05, 10],  # m2K/W of floor, air <-> mass (needed with room_mass); pin C_rm then
+        "C_rm_deep": [1e4, 1e6],  # J/m2K of floor, the deep mass node (needed with room_mass="two_node")
+        "R_rm_deep": [0.005, 1],  # m2K/W of floor, surface <-> deep mass (needed with room_mass="two_node")
+        "solar_mass_fraction": 0.0,  # share of the solar load onto the (surface) mass node, not the air; fixed
         "solar_geometry": {"latitude": 51.25, "longitude": -2.14},  # sol-air from the irradiance on each
         #     external wall, derived from GHI (pvlib); optional "north_axis_deg", "albedo", "sky_model",
         #     "facades" ([[plan azimuth deg, area m2], ...]: the external facades to use instead of every
@@ -242,7 +245,18 @@ def model_creator(model_config):
             }
             assert not unknown, f"solar_geometry has unknown keys {sorted(unknown)}."
 
-        if model_config.get("room_mass"):
+        room_mass = model_config.get("room_mass", False)
+        assert room_mass in (False, True, "two_node"), f"room_mass must be False, True or 'two_node', got {room_mass!r}."
+        f_mass = model_config.get("solar_mass_fraction", 0.0)
+        assert 0.0 <= f_mass <= 1.0, f"solar_mass_fraction must be in [0, 1], got {f_mass}."
+        assert room_mass or not f_mass, "solar_mass_fraction needs room_mass on: there is no mass node to put the sun on."
+        if room_mass == "two_node":
+            for key in ("C_rm_deep", "R_rm_deep"):
+                assert key in model_config and param_range(model_config, key)[0] > 0, (
+                    f"room_mass='two_node' needs a range for '{key}' with a positive minimum - the deep mass "
+                    f"node's capacity and coupling resistance enter A as 1/(R*C)."
+                )
+        if room_mass:
             for key in ("C_rm_mass", "R_rm_mass"):
                 assert key in model_config and param_range(model_config, key)[0] > 0, (
                     f"room_mass=True needs a range for '{key}' with a positive minimum - the mass node's "
@@ -281,6 +295,7 @@ def model_creator(model_config):
         cooling_mode=model_config.get("cooling_mode", "switch"),
         room_mass=model_config.get("room_mass", False),
         c_rm_air=model_config.get("C_rm_air"),
+        solar_mass_fraction=model_config.get("solar_mass_fraction", 0.0),
     )
 
     model.warmup_cycles = int(model_config.get("warmup_cycles", DEFAULT_WARMUP_CYCLES))
@@ -698,12 +713,14 @@ def initialise_model(
     cooling_mode="switch",
     room_mass=False,
     c_rm_air=None,
+    solar_mass_fraction=0.0,
 ):
     """
     Build an RCModel for the given rooms and weather.
 
     cooling_mode: what the cooling action means - see RCModel.
-    room_mass, c_rm_air: split each room into an air node and a mass node - see Building.
+    room_mass, c_rm_air, solar_mass_fraction: split each room into an air node and a mass node (True) or a
+        surface + deep mass ("two_node"), and the share of the solar load put onto the mass - see Building.
 
     The weather series are wrapped in linear interpolators over weather_data_UTC_time (unix
     epoch seconds). weather_data_ghi, global horizontal irradiance in W/m2 on the same time grid,
@@ -718,7 +735,7 @@ def initialise_model(
     # Initialise Building. room_height (m) sets the external wall area: Wall.area is
     # length * height, so leaving it at 1 makes surf_area the external perimeter rather than
     # the real wall area, and R1/R2/R3 absorb the difference.
-    bld = Building(rooms, room_height, room_mass=room_mass, c_rm_air=c_rm_air)
+    bld = Building(rooms, room_height, room_mass=room_mass, c_rm_air=c_rm_air, solar_mass_fraction=solar_mass_fraction)
 
     t = torch.tensor(np.asarray(weather_data_UTC_time, dtype=np.float64))
     Tout = torch.tensor(np.asarray(weather_data_outdoor_temperature, dtype=np.float64))
