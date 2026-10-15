@@ -977,30 +977,32 @@ def _integrate_latent_vectorized(Ad, Bd0, Bd1, W, x0):
     eigendecomposition of Ad - avoids a Python loop over time steps entirely.
 
     Used by get_iv_array(), where the trajectory is the whole dataset (long) and there are
-    only two input channels - the regime where this beats a plain loop.
+    few input channels - the regime where this beats a plain loop: the wall nodes ([Tout, Tin]) and the room
+    mass nodes ([T_air, Q onto the mass] per room).
 
-    W: (n_steps, 2) columns [Tout, Tin] at every point in t.
-    x0: (2,) initial state.
-    Returns: (n_steps, 2) state trajectory including x0 at index 0.
+    W: (n_steps, m) input samples at every point in t.
+    x0: (n_states,) initial state.
+    Returns: (n_steps, n_states) state trajectory including x0 at index 0.
     """
     n_steps = len(W)
     n_states = Ad.shape[0]
-    B_aug = np.concatenate([Bd0, Bd1], axis=1)  # (n_states, 4)
+    B_aug = np.concatenate([Bd0, Bd1], axis=1)  # (n_states, 2m)
 
-    # Bd1 uses the *next* sample's input, so it's driven by Tout/Tin shifted by
+    # Bd1 uses the *next* sample's input, so it's driven by the inputs shifted by
     # one index. The final entry of each shifted channel is never actually used
     # (the last output only depends on the first n_steps-1 inputs), so its value
     # is arbitrary - repeating the last sample is a convenient no-op filler.
-    Tout, Tin = W[:, 0], W[:, 1]
-    Tout_shift = np.concatenate([Tout[1:], Tout[-1:]])
-    Tin_shift = np.concatenate([Tin[1:], Tin[-1:]])
-    U = np.stack([Tout, Tin, Tout_shift, Tin_shift], axis=1)  # (n_steps, 4)
+    W = np.asarray(W, dtype=np.float64)
+    W_shift = np.concatenate([W[1:], W[-1:]], axis=0)
+    U = np.concatenate([W, W_shift], axis=1)  # (n_steps, 2m)
 
     C = np.eye(n_states)
     D = np.zeros((n_states, U.shape[1]))
 
     Z = np.zeros((n_steps, n_states))
     for j in range(U.shape[1]):
+        if not np.any(U[:, j]) or not np.any(B_aug[:, j]):
+            continue  # e.g. no heat onto the mass: nothing to filter
         num, den = ss2tf(Ad, B_aug, C, D, input=j)
         for i in range(n_states):
             Z[:, i] += lfilter(num[i], den, U[:, j])
@@ -1188,8 +1190,19 @@ def _room_mass_history(building, t_eval, room_temps, cycles=0, n_spin=None, q_ma
     t = np.asarray(t_eval, dtype=np.float64).reshape(-1)
     n_spin = len(t) if n_spin is None else n_spin
     start = np.tile(T_air[0], n_mass)
-    x0 = _spin_up(lambda x: _integrate_states(A, B, t[:n_spin], W[:n_spin], x)[-1], start, cycles)
-    return _integrate_states(A, B, t, W, x0)
+    # The rooms' masses don't interact, so each room's (surface[, deep]) block is integrated on its own - the
+    # filter-based integrator is fast over a long history but loses accuracy on a high-order system.
+    blocks = [[i] + ([n_rooms + i] if n_mass == 2 else []) for i in range(n_rooms)]
+
+    def integrate(t_part, W_part, x):
+        X = np.empty((len(t_part), len(x)))
+        for i, rows in enumerate(blocks):
+            cols = [i, n_rooms + i]
+            X[:, rows] = _integrate_latent(A[np.ix_(rows, rows)], B[np.ix_(rows, cols)], t_part, W_part[:, cols], x[rows])
+        return X
+
+    x0 = _spin_up(lambda x: integrate(t[:n_spin], W[:n_spin], x)[-1], start, cycles)
+    return integrate(t, W, x0)
 
 
 def _spin_up_rows(dataset, t_eval):

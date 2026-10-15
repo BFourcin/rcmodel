@@ -947,3 +947,20 @@ def test_renamed_parameter_is_an_error(old, new):
         param_range({old: [18, 26]}, "C1")
     with pytest.raises(KeyError, match=f"{old} -> {new}"):
         config_physical({old: 22.0})
+
+
+@pytest.mark.parametrize("n_states, n_inputs", [(2, 2), (4, 4), (1, 2)])
+def test_vectorized_integration_matches_loop(n_states, n_inputs):
+    """The filter-based integrator (used for the long wall and room-mass histories) equals the plain FOH loop for
+    any number of states and input channels, including an all-zero channel."""
+    from rcmodel.rc_model import _integrate_latent, _integrate_states
+
+    rng = np.random.default_rng(n_states)
+    M = rng.normal(size=(n_states, n_states))
+    A = -(M @ M.T) / n_states / 3600.0 - np.eye(n_states) / 7200.0  # stable, hours-scale modes
+    B = rng.random((n_states, n_inputs)) / 3600.0
+    t = np.arange(5000) * 600.0
+    W = rng.normal(size=(len(t), n_inputs)).cumsum(axis=0) * 0.1
+    W[:, -1] = 0.0
+    x0 = rng.normal(size=n_states)
+    np.testing.assert_allclose(_integrate_latent(A, B, t, W, x0), _integrate_states(A, B, t, W, x0), atol=1e-8)
