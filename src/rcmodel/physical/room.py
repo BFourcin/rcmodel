@@ -19,7 +19,7 @@ class Room:
         self.hull = ConvexHull(coordinates)
         # For a 2D ConvexHull scipy names these the other way round to what you would expect:
         # .volume is the enclosed area (m^2) and .area is the perimeter (m). This used to read
-        # .area, which silently made C_rm, cool and gain per-metre-of-perimeter rather than
+        # .area, which silently made C_air, cool and gain per-metre-of-perimeter rather than
         # per-m^2 - for the LSI seminar room, 37.3 in place of 85.3.
         self.area = self.hull.volume  # floor area (m^2)
         self._path = mpltPath.Path(self.coordinates)

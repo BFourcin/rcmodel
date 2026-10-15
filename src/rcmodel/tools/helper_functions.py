@@ -19,6 +19,7 @@ from rcmodel.rc_model import (
     PARAM_KEYS,
     RC_PARAM_KEYS,
     RCModel,
+    check_renamed_keys,
     param_range,
 )
 
@@ -119,7 +120,7 @@ def model_creator(model_config):
     """
     model_config = {
         # Ranges:
-        "C_rm": [1e3, 1e5],  # [min, max] Capacitance/m2
+        "C_air": [1e3, 1e5],  # [min, max] Capacitance/m2
         "C1": [1e5, 1e8],  # Capacitance
         "C2": [1e5, 1e8],
         "R1": [0.1, 5],  # Resistance ((K.m^2)/W)
@@ -132,7 +133,7 @@ def model_creator(model_config):
         "solar": [0, 0.2],  # Fraction p of GHI reaching the room: solar gain = p * GHI * floor area
         "room_names": ["seminar_rm_a_t0106"],
         # Room polygons in METRES. Shifted to a common origin by change_origin(); the enclosed
-        # area scales C_rm and converts cool/gain from W/m2 to W.
+        # area scales C_air and converts cool/gain from W/m2 to W.
         "room_coordinates": [[[9.207, 12.594], [9.207, 23.174], [12.900, 23.174], [15.445, 23.174],
                               [17.264, 23.174], [17.264, 12.594]]],
         "room_height": 1,  # metres, optional. Sets external wall area (perimeter * height).
@@ -147,14 +148,14 @@ def model_creator(model_config):
         "load_model_path_physical": None,  # or None
         # ---- optional structure, all off by default (see RCModel, Building, rcmodel.physical.solar) ----
         "cooling_mode": "switch",  # or "thermostat": action 1 makes cooling (and heating) AVAILABLE, the
-        #     model holds the room between T_heat and T_set
-        "T_set": [18, 26],  # degC, thermostat setpoint range (needed with cooling_mode="thermostat")
+        #     model holds the room between T_heat and T_cool
+        "T_cool": [18, 26],  # degC, thermostat setpoint range (needed with cooling_mode="thermostat")
         "T_heat": [16, 20],  # degC, heating setpoint (thermostat only; ignored while heat is 0)
         "heat": [0, 0],  # W/m2 of floor, heating capacity of every room; 0 (the default) never heats
         "room_mass": False,  # True: each room is an air node + a mass node; "two_node": air + surface + deep mass
         "C_rm_air": None,  # J/m2K of floor for the air node; None = 1.2 * 1005 * room_height
         "C_rm_mass": [1e3, 2e5],  # J/m2K of floor, the mass node (needed with room_mass)
-        "R_rm_mass": [0.05, 10],  # m2K/W of floor, air <-> mass (needed with room_mass); pin C_rm then
+        "R_rm_mass": [0.05, 10],  # m2K/W of floor, air <-> mass (needed with room_mass); pin C_air then
         "C_rm_deep": [1e4, 1e6],  # J/m2K of floor, the deep mass node (needed with room_mass="two_node")
         "R_rm_deep": [0.005, 1],  # m2K/W of floor, surface <-> deep mass (needed with room_mass="two_node")
         "solar_mass_fraction": 0.0,  # share of the solar load onto the (surface) mass node, not the air; fixed
@@ -167,7 +168,7 @@ def model_creator(model_config):
         #     fit_free_float(): when the building can't have been conditioned
         "warmup_cycles": 5,  # spin-up of the wall/mass nodes over the file's first window (see get_iv_array)
         "parameters": {  # scaled 0-1, or None to initialise randomly
-            "C_rm": np.random.rand(1),
+            "C_air": np.random.rand(1),
             "C1": np.random.rand(1),
             "C2": np.random.rand(1),
             "R1": np.random.rand(1),
@@ -185,13 +186,14 @@ def model_creator(model_config):
     range_keys = RC_PARAM_KEYS
 
     def init_scaling():
-        # Initialise scaling class. Ranges are [min, max]: C_rm in J/K per m2 of floor, C1/C2 in
+        # Initialise scaling class. Ranges are [min, max]: C_air in J/K per m2 of floor, C1/C2 in
         # J/K, R1/R2/R3/Rin in K.m2/W, k_sa dimensionless, cool/gain in W/m2 of floor, solar a
         # dimensionless fraction. Passed by name - the key names are InputScaling's argument names.
         return InputScaling(**{key: param_range(model_config, key) for key in range_keys})
 
     def model_sanity_checks():
         """Check the config is self-consistent before anything is built."""
+        check_renamed_keys(model_config, "model_config")
         missing_ranges = [key for key in range_keys if key not in model_config and key not in OPTIONAL_PARAM_KEYS]
         assert not missing_ranges, (
             f"model_config is missing ranges for {missing_ranges}. Every one of {list(range_keys)} needs a "
@@ -225,8 +227,8 @@ def model_creator(model_config):
         cooling_mode = model_config.get("cooling_mode", "switch")
         assert cooling_mode in COOLING_MODES, f"cooling_mode must be one of {COOLING_MODES}, got {cooling_mode!r}."
         if cooling_mode == "thermostat":
-            assert "T_set" in model_config, (
-                "cooling_mode='thermostat' needs a setpoint range: model_config['T_set'] = [min, max] in degC "
+            assert "T_cool" in model_config, (
+                "cooling_mode='thermostat' needs a setpoint range: model_config['T_cool'] = [min, max] in degC "
                 "(pin it with min == max if the setpoint is known)."
             )
 
@@ -262,10 +264,10 @@ def model_creator(model_config):
                     f"room_mass=True needs a range for '{key}' with a positive minimum - the mass node's "
                     f"capacity and coupling resistance enter A as 1/(R*C)."
                 )
-            low, high = param_range(model_config, "C_rm")
+            low, high = param_range(model_config, "C_air")
             assert low == high, (
-                "room_mass=True replaces the lumped room capacity C_rm with C_rm_air (computed from the room "
-                "volume) plus the searched C_rm_mass, so C_rm is unused: pin it (e.g. [1, 1]) rather than search it."
+                "room_mass=True replaces the lumped room capacity C_air with C_rm_air (computed from the room "
+                "volume) plus the searched C_rm_mass, so C_air is unused: pin it (e.g. [1, 1]) rather than search it."
             )
 
         # Starting parameters are optional, but if given they must be complete.

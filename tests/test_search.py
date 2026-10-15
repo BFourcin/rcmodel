@@ -84,7 +84,7 @@ def test_pinned_parameters_are_constants_and_never_mutated(get_model_config):
     config = {**get_model_config, "gain": [2.0, 2.0]}
     pinned = pinned_parameters(config)
     assert pinned["gain"] == 2.0
-    assert {"C_rm_mass", "R_rm_mass", "T_set"} <= set(pinned)  # optional keys, pinned at [0, 0]
+    assert {"C_rm_mass", "R_rm_mass", "T_cool"} <= set(pinned)  # optional keys, pinned at [0, 0]
     space = search_space(config)
     assert space["gain"] == 2.0
     scheduler = build_pbt_scheduler(config)
@@ -102,7 +102,7 @@ def test_rin_is_pinned_for_a_single_room(get_model_config):
 # --------------------------------------------------------------------------- two-stage fitting
 
 TRUTH = {
-    "C_rm": 3e4,
+    "C_air": 3e4,
     "C1": 2e7,
     "C2": 1e7,
     "R1": 0.15,
@@ -133,7 +133,7 @@ def synthetic_one_room(tmp_path):
     ghi = np.clip(800 * np.sin(2 * np.pi * (hours - 6) / 24), 0, None)
     weather = write_weather_csv(tmp_path / "weather.csv", time, tout, ghi)
     config = {
-        "C_rm": [1e3, 1e5],
+        "C_air": [1e3, 1e5],
         "C1": [1e5, 1e8],
         "C2": [1e5, 1e8],
         "R1": [0.05, 5],
@@ -164,11 +164,11 @@ def synthetic_one_room(tmp_path):
 
 def test_fit_free_float_recovers_the_parameters_that_made_the_data(synthetic_one_room):
     config, data_config = synthetic_one_room
-    start = {**TRUTH, "R2": TRUTH["R2"] * 1.4, "C_rm": TRUTH["C_rm"] * 0.6}
-    fit = fit_free_float(config, data_config, keys=["R2", "C_rm"], start=start, maxfev=300)
+    start = {**TRUTH, "R2": TRUTH["R2"] * 1.4, "C_air": TRUTH["C_air"] * 0.6}
+    fit = fit_free_float(config, data_config, keys=["R2", "C_air"], start=start, maxfev=300)
     assert fit["n_segments"] >= 1 and fit["rmse"] < 0.02
     assert fit["physical"]["R2"] == pytest.approx(TRUTH["R2"], rel=0.03)
-    assert fit["physical"]["C_rm"] == pytest.approx(TRUTH["C_rm"], rel=0.03)
+    assert fit["physical"]["C_air"] == pytest.approx(TRUTH["C_air"], rel=0.03)
     assert fit["physical"]["C1"] == TRUTH["C1"]  # not fitted: held at its start value
 
 

@@ -11,7 +11,7 @@ It is duck-typed like an RLlib algorithm for evaluate(): compute_single_action(o
 the time (and room temperature) from the unwrapped environment, which evaluate() leaves at the start of the step
 it is about to take, so it works whatever the observation wrapper feeds a policy.
 
-With cooling_mode="thermostat" the model's T_set does the thermostat's job and the policy is only the
+With cooling_mode="thermostat" the model's T_cool does the thermostat's job and the policy is only the
 availability gate - leave setpoint=None. With cooling_mode="switch" the action IS the cooling, so pass a
 setpoint to get a bang-bang thermostat inside the windows.
 

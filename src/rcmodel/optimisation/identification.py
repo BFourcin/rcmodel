@@ -37,7 +37,7 @@ from .pbt import physical_to_scaled, pinned_parameters
 
 # What stage A searches by default: the envelope and the room's thermal mass - the parameters the
 # weather alone drives. Cooling, setpoint and gains belong to stage B.
-ENVELOPE_KEYS = ("R1", "R2", "R3", "C1", "C2", "k_sa", "C_rm", "C_rm_mass", "R_rm_mass", "Rin")
+ENVELOPE_KEYS = ("R1", "R2", "R3", "C1", "C2", "k_sa", "C_air", "C_rm_mass", "R_rm_mass", "Rin")
 
 
 def free_float_segments(time, free, min_rows, max_rows=None, exclude=None):

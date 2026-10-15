@@ -276,7 +276,7 @@ def test_input_matrix_shape(building):
 
 
 def test_room_area_is_floor_area_not_perimeter():
-    """Room.area must be the enclosed floor area (m^2), which is what scales C_rm and converts
+    """Room.area must be the enclosed floor area (m^2), which is what scales C_air and converts
     cool/gain from W/m2 to W.
 
     scipy names these the other way round for a 2D ConvexHull: .volume is the enclosed area and

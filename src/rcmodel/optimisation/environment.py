@@ -350,8 +350,8 @@ OBSERVATION_FEATURES = {
     "time_of_day": lambda n: 2,  # sin, cos of the time of day (UTC)
     "time_of_week": lambda n: 2,  # sin, cos of epoch time modulo a week (phase 0 = Thursday 00:00 UTC)
     "weekday": lambda n: 1,  # 1.0 Monday-Friday, 0.0 at weekends, in local time (utc_offset_hours)
-    "t_set": lambda n: 1,  # (T_set - mu) / std: the model's thermostat setpoint
-    "t_minus_setpoint": lambda n: n,  # (T_room - T_set) / std, per room
+    "t_cool": lambda n: 1,  # (T_cool - mu) / std: the model's thermostat setpoint
+    "t_minus_setpoint": lambda n: n,  # (T_room - T_cool) / std, per room
 }
 _BOUNDED_FEATURES = ("time_of_day", "time_of_week", "weekday")  # in [-1, 1]; the rest are unbounded
 
@@ -417,9 +417,9 @@ class PreprocessEnv(gym.ObservationWrapper):
 
         if self.features == DEFAULT_OBSERVATION_FEATURES:
             return preprocess_observation(x, unix_time, self.mu, self.std_dev)
-        t_set = self.env.unwrapped.RC._t_set() if {"t_set", "t_minus_setpoint"} & set(self.features) else None
+        t_cool = self.env.unwrapped.RC._t_cool() if {"t_cool", "t_minus_setpoint"} & set(self.features) else None
         return observation_features(
-            x, unix_time, self.mu, self.std_dev, self.features, t_set=t_set, utc_offset_hours=self.utc_offset_hours
+            x, unix_time, self.mu, self.std_dev, self.features, t_cool=t_cool, utc_offset_hours=self.utc_offset_hours
         )
 
 
@@ -429,10 +429,10 @@ def is_weekday(unix_time, utc_offset_hours=0.0):
     return (day + 3) % 7 < 5
 
 
-def observation_features(x, unix_time, mu, std_dev, features, t_set=None, utc_offset_hours=0.0):
+def observation_features(x, unix_time, mu, std_dev, features, t_cool=None, utc_offset_hours=0.0):
     """The observation PreprocessEnv builds for `features` (see OBSERVATION_FEATURES), as a flat array.
 
-    x are the room temperatures, t_set the thermostat setpoint (needed only by "t_set" and
+    x are the room temperatures, t_cool the thermostat setpoint (needed only by "t_cool" and
     "t_minus_setpoint"). With DEFAULT_OBSERVATION_FEATURES this equals preprocess_observation().
     """
     x = np.asarray(x, dtype=np.float64)
@@ -444,8 +444,8 @@ def observation_features(x, unix_time, mu, std_dev, features, t_set=None, utc_of
         "time_of_day": lambda: [np.sin(unix_time * (2 * np.pi / day)), np.cos(unix_time * (2 * np.pi / day))],
         "time_of_week": lambda: [np.sin(unix_time * (2 * np.pi / week)), np.cos(unix_time * (2 * np.pi / week))],
         "weekday": lambda: [float(is_weekday(unix_time, utc_offset_hours))],
-        "t_set": lambda: [(t_set - mu) / std_dev],
-        "t_minus_setpoint": lambda: ((x - t_set) / std_dev).tolist(),
+        "t_cool": lambda: [(t_cool - mu) / std_dev],
+        "t_minus_setpoint": lambda: ((x - t_cool) / std_dev).tolist(),
     }
     state = []
     for feature in features:

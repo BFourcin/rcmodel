@@ -23,7 +23,7 @@ from xitorch.interpolate import Interp1D
 #           room air (m2K/W per m2 of floor). Only used when the building has room_mass on; the air
 #           node's own capacity is then C_rm_air, computed from the room volume - see Building.
 #           With room_mass="two_node" this is the SURFACE node of a 1R2C mass.
-#   T_set - cooling setpoint (degC), only used with cooling_mode="thermostat" - see RCModel.
+#   T_cool - cooling setpoint (degC), only used with cooling_mode="thermostat" - see RCModel.
 #   T_heat, heat - heating setpoint (degC) and heating capacity (W/m2 of floor, every room), only used
 #           with cooling_mode="thermostat". heat = 0 (the default) means the thermostat never heats.
 #   C_rm_deep, R_rm_deep - room_mass="two_node" only: the deep mass node behind the surface node (J/K per
@@ -31,7 +31,7 @@ from xitorch.interpolate import Interp1D
 # The last seven are OPTIONAL_PARAM_KEYS: a config without them gets a pinned [0, 0] range and the
 # value 0, which leaves the model exactly as it was before they existed.
 PARAM_KEYS = (
-    "C_rm",
+    "C_air",
     "C1",
     "C2",
     "R1",
@@ -41,7 +41,7 @@ PARAM_KEYS = (
     "k_sa",
     "C_rm_mass",
     "R_rm_mass",
-    "T_set",
+    "T_cool",
     "T_heat",
     "heat",
     "C_rm_deep",
@@ -49,7 +49,7 @@ PARAM_KEYS = (
 )
 LOAD_KEYS = ("cool", "gain", "solar")
 RC_PARAM_KEYS = PARAM_KEYS + LOAD_KEYS
-OPTIONAL_PARAM_KEYS = ("C_rm_mass", "R_rm_mass", "T_set", "T_heat", "heat", "C_rm_deep", "R_rm_deep")
+OPTIONAL_PARAM_KEYS = ("C_rm_mass", "R_rm_mass", "T_cool", "T_heat", "heat", "C_rm_deep", "R_rm_deep")
 
 # Parameters allowed to be exactly zero. Every other PARAM_KEYS entry is a resistance or
 # capacitance and must be strictly positive, because A is built from 1/(R*C). C_rm_mass and
@@ -58,9 +58,23 @@ OPTIONAL_PARAM_KEYS = ("C_rm_mass", "R_rm_mass", "T_set", "T_heat", "heat", "C_r
 NON_NEGATIVE_PARAM_KEYS = ("k_sa", "C_rm_mass", "R_rm_mass", "heat", "C_rm_deep", "R_rm_deep")
 
 # Parameters with no sign constraint at all: temperatures.
-SIGNED_PARAM_KEYS = ("T_set", "T_heat")
+SIGNED_PARAM_KEYS = ("T_cool", "T_heat")
 
 COOLING_MODES = ("switch", "thermostat")
+
+
+# Parameters that were renamed. A config or parameter dict still using an old name is an error rather than silently
+# ignored: optional parameters missing from a config take the bottom of their range, so an old "T_set" would
+# otherwise run the thermostat at T_cool = 0 without a word.
+RENAMED_PARAM_KEYS = {"T_set": "T_cool", "C_rm": "C_air"}
+
+
+def check_renamed_keys(mapping, where="config"):
+    """Raise KeyError if `mapping` (a model_config, trial config or parameter dict) uses a renamed parameter."""
+    old = [key for key in RENAMED_PARAM_KEYS if key in mapping]
+    if old:
+        renames = ", ".join(f"{key} -> {RENAMED_PARAM_KEYS[key]}" for key in old)
+        raise KeyError(f"{where} uses renamed parameter(s): {renames}")
 
 
 def param_range(model_config, key):
@@ -69,6 +83,7 @@ def param_range(model_config, key):
     OPTIONAL_PARAM_KEYS default to a pinned [0, 0] when the config doesn't mention them, so configs
     written before they existed still describe a complete model.
     """
+    check_renamed_keys(model_config, "model_config")
     if key in model_config:
         return model_config[key]
     if key in OPTIONAL_PARAM_KEYS:
@@ -174,10 +189,10 @@ class RCModel(nn.Module):
     cooling_mode - what action 1 means:
         "switch" (default): a fixed cooling of `cool` W/m2 in every room while the action is on.
         "thermostat": cooling (and heating, if `heat` > 0) is AVAILABLE while the action is on. Every
-            data row, each room gets the cooling that brings its air down to T_set, and no more, up to
+            data row, each room gets the cooling that brings its air down to T_cool, and no more, up to
             `cool` W/m2 - an ideal-loads thermostat, as EnergyPlus's ZoneHVAC:IdealLoadsAirSystem with
             LimitCapacity. Likewise a room below T_heat gets the heating that brings it up to T_heat, up
-            to `heat` W/m2 - a dual setpoint, with no conditioning between T_heat and T_set. With heat = 0
+            to `heat` W/m2 - a dual setpoint, with no conditioning between T_heat and T_cool. With heat = 0
             (the default) it never heats. The policy then only has to learn when the system is
             available; the modulation comes from the physics. See _integrate_thermostat().
     """
@@ -305,8 +320,8 @@ class RCModel(nn.Module):
             if key in NON_NEGATIVE_PARAM_KEYS and key not in strictly_positive and not value >= 0
         ]
         problems += [f"{key}={value:g} (must be finite)" for key, value in values.items() if not np.isfinite(value)]
-        if values.get("heat", 0.0) > 0 and not values["T_heat"] <= values["T_set"]:
-            problems.append(f"T_heat={values['T_heat']:g} (must be <= T_set={values['T_set']:g} when heating)")
+        if values.get("heat", 0.0) > 0 and not values["T_heat"] <= values["T_cool"]:
+            problems.append(f"T_heat={values['T_heat']:g} (must be <= T_cool={values['T_cool']:g} when heating)")
         problems += [
             f"{key}={physical_loads[i].tolist()} (must be >= 0)"
             for i, key in enumerate(LOAD_KEYS)
@@ -361,7 +376,7 @@ class RCModel(nn.Module):
                 x0,
                 room_rows=self._room_state_rows(),
                 q_cols=np.arange(1, 1 + len(self.building.rooms)),
-                t_set=self._t_set(),
+                t_cool=self._t_cool(),
                 q_max=self._cooling_capacity_watts(),
                 disc_cache=self._disc_cache,
                 t_heat=self._t_heat(),
@@ -414,8 +429,8 @@ class RCModel(nn.Module):
         """Rows of the state vector holding the room (air) temperatures: after the two envelope nodes."""
         return np.arange(2, 2 + len(self.building.rooms))
 
-    def _t_set(self):
-        return self._physical_param("T_set")
+    def _t_cool(self):
+        return self._physical_param("T_cool")
 
     def _t_heat(self):
         return self._physical_param("T_heat")
@@ -832,7 +847,7 @@ def _discretisation(A, B, dt, disc_cache):
     return cached
 
 
-def _integrate_thermostat(A, B, t, u, x0, room_rows, q_cols, t_set, q_max, disc_cache=None, t_heat=None, q_heat_max=None):
+def _integrate_thermostat(A, B, t, u, x0, room_rows, q_cols, t_cool, q_max, disc_cache=None, t_heat=None, q_heat_max=None):
     """
     Step dx/dt = A x + B u(t) across `t` with an ideal-loads dual-setpoint thermostat on every room.
 
@@ -840,10 +855,10 @@ def _integrate_thermostat(A, B, t, u, x0, room_rows, q_cols, t_set, q_max, disc_
     heat input q (W per room: > 0 heating, < 0 cooling) is held constant over the step - EnergyPlus's
     ideal loads likewise deliver a constant rate over a zone timestep - so its effect on the next state
     is linear, H q with H = (Bd0 + Bd1)[:, q_cols]. q is chosen so each room that would end the step
-    above t_set ends it exactly at t_set, and each room that would end it below t_heat ends it exactly
+    above t_cool ends it exactly at t_cool, and each room that would end it below t_heat ends it exactly
     at t_heat:
 
-        G q = target - x_free[rooms],   target = clip(x_free[rooms], t_heat, t_set),   G = H[rooms, :]
+        G q = target - x_free[rooms],   target = clip(x_free[rooms], t_heat, t_cool),   G = H[rooms, :]
                                         (G is diagonally dominant: a room's own input moves it far
                                          more than a neighbour's)
 
@@ -856,7 +871,7 @@ def _integrate_thermostat(A, B, t, u, x0, room_rows, q_cols, t_set, q_max, disc_
     ----------
     room_rows : array of int      state rows of the room air nodes.
     q_cols : array of int         input columns of the per-room heat inputs (u = [T_sa, Q_1..Q_n]).
-    t_set : float                 cooling setpoint, degC.
+    t_cool : float                 cooling setpoint, degC.
     q_max : array (n_rooms,)      cooling capacity per room, W (>= 0).
     t_heat : float or None        heating setpoint, degC. Unused when there is no heating capacity.
     q_heat_max : array or None    heating capacity per room, W (>= 0). None or zeros: never heats.
@@ -884,7 +899,7 @@ def _integrate_thermostat(A, B, t, u, x0, room_rows, q_cols, t_set, q_max, disc_
         G = H[room_rows, :]
         free_rooms = x_free[room_rows]
         # negative where the room would end the step too warm, positive where too cold
-        need = np.clip(free_rooms, lower, t_set) - free_rooms
+        need = np.clip(free_rooms, lower, t_cool) - free_rooms
 
         q = np.zeros(n_rooms)
         active = need != 0

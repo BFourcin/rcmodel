@@ -12,7 +12,7 @@ class Building:
     """
     A class containing all the rooms of a building (2D)
 
-    room_mass - False (default): each room is ONE node of capacity C_rm per m2 of floor, which has to
+    room_mass - False (default): each room is ONE node of capacity C_air per m2 of floor, which has to
         stand for the air and everything in thermal contact with it.
         True: each room is an AIR node plus a MASS node (floor screed, furniture, internal linings),
         coupled through a resistance R_rm_mass (m2K/W per m2 of floor) - the air/mass split of

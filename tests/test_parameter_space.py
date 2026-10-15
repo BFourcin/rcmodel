@@ -25,7 +25,7 @@ SPEC = {
     "f_i": {"range": [0.01, 0.49], "step": 0.01},
     "g_i": {"range": [0.01, 0.99], "step": 0.01},
     "k_sa": {"range": [0.0, 1.0]},
-    "C_rm": {"range": [1e3, 1e5], "log": True},
+    "C_air": {"range": [1e3, 1e5], "log": True},
 }
 
 
@@ -112,15 +112,15 @@ def test_decode_snaps_to_the_grid_and_ends_map_to_the_range():
     for key, entry in SPEC.items():
         assert lo[key] == pytest.approx(entry["range"][0])
         assert hi[key] == pytest.approx(entry["range"][1])
-    assert space.values(np.full(space.dim, 0.5))["C_rm"] == pytest.approx(1e4)  # log midpoint
+    assert space.values(np.full(space.dim, 0.5))["C_air"] == pytest.approx(1e4)  # log midpoint
 
 
 def test_decode_returns_the_physical_envelope_and_the_pins():
-    space = ParameterSpace(SPEC, pinned={"T_set": 22.0})
+    space = ParameterSpace(SPEC, pinned={"T_cool": 22.0})
     physical = space.decode(np.full(space.dim, 0.3))
     assert set(ENVELOPE_PHYSICAL_KEYS) <= set(physical)
     assert not set(physical) & {"R_total", "C_total", "f_o", "f_i", "g_i"}
-    assert physical["T_set"] == 22.0
+    assert physical["T_cool"] == 22.0
     values = space.values(np.full(space.dim, 0.3))
     assert sum(physical[k] for k in ("R1", "R2", "R3")) == pytest.approx(values["R_total"])
 
@@ -136,7 +136,7 @@ def test_encode_decode_round_trip():
 
 def test_encode_snaps_an_off_grid_envelope():
     space = ParameterSpace(SPEC)
-    snapped = ratios_from_envelope(space.decode(space.encode({**IDF_ENVELOPE, "k_sa": 0.5, "C_rm": 1e4})))
+    snapped = ratios_from_envelope(space.decode(space.encode({**IDF_ENVELOPE, "k_sa": 0.5, "C_air": 1e4})))
     assert snapped["f_o"] == pytest.approx(0.05)  # 0.0476
     assert snapped["f_i"] == pytest.approx(0.17)  # 0.1705
     assert snapped["g_i"] == pytest.approx(0.28)  # 0.2841
@@ -164,9 +164,9 @@ def test_envelope_ranges_hold_every_decoded_envelope():
 
 
 def test_decoded_parameters_build_a_valid_model(get_model_config):
-    spec = {key: entry for key, entry in SPEC.items() if key != "C_rm"}
+    spec = {key: entry for key, entry in SPEC.items() if key != "C_air"}
     model_config = {**get_model_config, **envelope_ranges(spec)}
-    pinned = {"C_rm": 1e4, "Rin": 1.0, "cool": 10.0, "gain": 1.0, "solar": 0.05}
+    pinned = {"C_air": 1e4, "Rin": 1.0, "cool": 10.0, "gain": 1.0, "solar": 0.05}
     space = ParameterSpace(spec, pinned=pinned)
     for u in _random_points(space, n=3, seed=2):
         scaled = physical_to_scaled(model_config, space.decode(u))

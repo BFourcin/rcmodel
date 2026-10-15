@@ -187,7 +187,7 @@ def test_out_of_range_values_pass_through_unclipped(get_model_config):
         ("Rin", 0.0),
         ("R1", -0.1),
         ("C1", 0.0),
-        ("C_rm", -5.0),
+        ("C_air", -5.0),
         ("k_sa", -0.1),
         ("cool", -1.0),
         ("gain", -0.5),
@@ -910,7 +910,7 @@ if __name__ == "__main__":
 
 
 def test_trial_config_from_before_the_optional_parameters_still_loads(get_model_config):
-    """A trial config written before C_rm_mass / R_rm_mass / T_set existed (a checkpoint of an older run)
+    """A trial config written before C_rm_mass / R_rm_mass / T_cool existed (a checkpoint of an older run)
     has no such keys; they take the bottom of their range, which is where they sat before."""
     from rcmodel.optimisation.pbt import config_physical
 
@@ -922,10 +922,10 @@ def test_trial_config_from_before_the_optional_parameters_still_loads(get_model_
 
 
 def test_perturbation_never_carries_the_setpoint_out_of_its_range(get_model_config):
-    """PBT multiplies by 0.8 / 1.2, which compounds on a temperature: T_set must be clipped back."""
-    config = {**get_model_config, "cooling_mode": "thermostat", "T_set": [18.0, 26.0]}
+    """PBT multiplies by 0.8 / 1.2, which compounds on a temperature: T_cool must be clipped back."""
+    config = {**get_model_config, "cooling_mode": "thermostat", "T_cool": [18.0, 26.0]}
     scheduler = build_pbt_scheduler(config)
     explore = scheduler._custom_explore_fn
-    assert explore({"T_set": 22.0 * 1.2**4, "R1": 99.0})["T_set"] == 26.0
-    assert explore({"T_set": 10.0})["T_set"] == 18.0
-    assert explore({"T_set": 21.0, "R1": 99.0})["R1"] == 99.0  # scale quantities still wander freely
+    assert explore({"T_cool": 22.0 * 1.2**4, "R1": 99.0})["T_cool"] == 26.0
+    assert explore({"T_cool": 10.0})["T_cool"] == 18.0
+    assert explore({"T_cool": 21.0, "R1": 99.0})["R1"] == 99.0  # scale quantities still wander freely

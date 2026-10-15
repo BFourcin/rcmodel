@@ -176,7 +176,7 @@ def test_default_observation_unchanged(get_model_config, env_config):
 
 
 def test_extended_observation(get_model_config, env_config):
-    features = ["temperature", "time_of_day", "weekday", "t_set", "t_minus_setpoint"]
+    features = ["temperature", "time_of_day", "weekday", "t_cool", "t_minus_setpoint"]
     env = env_creator({**env_config, "model_config": copy.deepcopy(get_model_config), "observation_features": features})
     n_rooms = env.unwrapped.n_rooms
     size = n_rooms + 2 + 1 + 1 + n_rooms
@@ -185,13 +185,13 @@ def test_extended_observation(get_model_config, env_config):
     assert obs.shape == (size,)
     assert env.observation_space.contains(obs)
 
-    t_set = env.unwrapped.RC._t_set()
+    t_cool = env.unwrapped.RC._t_cool()
     mu, std = env.mu, env.std_dev
     x_norm = obs[:n_rooms]
     assert obs[n_rooms + 2] in (0.0, 1.0)
-    assert obs[n_rooms + 3] == pytest.approx((t_set - mu) / std)
-    # T_room - T_set, normalised, is consistent with the normalised temperature and setpoint.
-    assert np.allclose(obs[n_rooms + 4 :], x_norm - (t_set - mu) / std)
+    assert obs[n_rooms + 3] == pytest.approx((t_cool - mu) / std)
+    # T_room - T_cool, normalised, is consistent with the normalised temperature and setpoint.
+    assert np.allclose(obs[n_rooms + 4 :], x_norm - (t_cool - mu) / std)
 
 
 def test_unknown_feature_rejected(get_model_config, env_config):

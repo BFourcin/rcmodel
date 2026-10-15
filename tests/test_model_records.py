@@ -223,7 +223,7 @@ def test_thermostat_record_carries_the_cooling_it_delivered(get_model_config, da
     """In thermostat mode the cooling is worked out row by row, so the record must carry what was
     actually delivered - never more than capacity, never heating, only while the action is on -
     and net heat must include exactly that."""
-    config = {**get_model_config, "cooling_mode": "thermostat", "T_set": [21, 21], "gain": [0, 200]}
+    config = {**get_model_config, "cooling_mode": "thermostat", "T_cool": [21, 21], "gain": [0, 200]}
     env = env_creator({**env_config, "model_config": config})
     _, eval_dataloader = make_dataloaders(data_config)
     _, record = evaluate(env, AlternatingPolicy(), eval_dataloader, record_window=0)
@@ -250,7 +250,7 @@ def test_thermostat_record_carries_the_heating_it_delivered(get_model_config, da
     config = {
         **get_model_config,
         "cooling_mode": "thermostat",
-        "T_set": [30, 30],
+        "T_cool": [30, 30],
         "T_heat": [25, 25],
         "heat": [50, 50],
     }
@@ -278,7 +278,7 @@ def test_thermostat_record_carries_the_heating_it_delivered(get_model_config, da
 def test_room_mass_env_scores_and_records_only_the_rooms(get_model_config, data_config, env_config):
     """With mass nodes after the rooms, the reward and the policy's observation must still be the
     rooms, and the record must name every state."""
-    config = {**get_model_config, "room_mass": True, "C_rm": [1, 1], "C_rm_mass": [1e3, 1e5], "R_rm_mass": [0.1, 5]}
+    config = {**get_model_config, "room_mass": True, "C_air": [1, 1], "C_rm_mass": [1e3, 1e5], "R_rm_mass": [0.1, 5]}
     env = env_creator({**env_config, "model_config": config})
     n_rooms = len(config["room_names"])
     obs, _ = env.reset()

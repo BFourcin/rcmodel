@@ -60,7 +60,7 @@ def heavy_building(get_model_config, fake_rooms, tmp_path):
         }
     )
     physical = {
-        "C_rm": 5e3,
+        "C_air": 5e3,
         "C1": 5e6,
         "C2": 5e6,
         "R1": 1.0,

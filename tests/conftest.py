@@ -197,7 +197,7 @@ def get_model_config(fake_time, fake_outdoor_weather, fake_ghi, fake_rooms):
 
     model_config = {
         # Ranges:
-        "C_rm": [1e3, 1e5],  # [min, max] Capacitance/m2
+        "C_air": [1e3, 1e5],  # [min, max] Capacitance/m2
         "C1": [1e5, 1e8],  # Capacitance
         "C2": [1e5, 1e8],
         "R1": [0.1, 5],  # Resistance ((K.m^2)/W)
@@ -217,7 +217,7 @@ def get_model_config(fake_time, fake_outdoor_weather, fake_ghi, fake_rooms):
         "load_model_path_policy": None,  # './prior_policy.pt',  # or None
         "load_model_path_physical": None,  # or None
         "parameters": {
-            "C_rm": np.random.rand(1).item(),
+            "C_air": np.random.rand(1).item(),
             "C1": np.random.rand(1).item(),
             "C2": np.random.rand(1).item(),
             "R1": np.random.rand(1).item(),

@@ -43,7 +43,15 @@ from ray.tune.schedulers import PopulationBasedTraining
 from ray.tune.search.basic_variant import BasicVariantGenerator
 
 import rcmodel.tools
-from rcmodel.rc_model import LOAD_KEYS, OPTIONAL_PARAM_KEYS, PARAM_KEYS, RC_PARAM_KEYS, SIGNED_PARAM_KEYS, param_range
+from rcmodel.rc_model import (
+    LOAD_KEYS,
+    OPTIONAL_PARAM_KEYS,
+    PARAM_KEYS,
+    RC_PARAM_KEYS,
+    SIGNED_PARAM_KEYS,
+    check_renamed_keys,
+    param_range,
+)
 
 from .evaluation import evaluate, make_update_env_fn
 
@@ -224,6 +232,7 @@ def config_physical(config):
     """The physical RC parameters in a trial config. A config written before an OPTIONAL_PARAM_KEYS
     parameter existed (e.g. a checkpointed trial restored from an older run) doesn't hold it; it takes the
     bottom of its range, which is where that parameter sat before it existed."""
+    check_renamed_keys(config, "trial config")
     model_config = config.get("model_config", {})
     return {
         key: config[key] if key in config else float(param_range(model_config, key)[0])
@@ -835,10 +844,10 @@ def build_pbt_scheduler(
 
 def _clip_ranges(model_config):
     """{name: (min, max)} of the searched parameters a perturbation must not carry out of range: the
-    SIGNED_PARAM_KEYS (T_set). PBT perturbs by MULTIPLYING (x 0.8 / 1.2), which suits the scale quantities
+    SIGNED_PARAM_KEYS (T_cool). PBT perturbs by MULTIPLYING (x 0.8 / 1.2), which suits the scale quantities
     - a capacitance or resistance may legitimately wander past its prior range - but not a temperature:
     repeated steps compound (22 -> 26 -> 32 ...), and a setpoint above the room's temperature silently
-    switches the thermostat off. A 600-iteration run drifted T_set to 39-71 degC this way."""
+    switches the thermostat off. A 600-iteration run drifted T_cool to 39-71 degC this way."""
     pinned = pinned_parameters(model_config)
     return {key: tuple(param_range(model_config, key)) for key in SIGNED_PARAM_KEYS if key not in pinned}
 
