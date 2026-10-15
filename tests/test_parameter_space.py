@@ -176,3 +176,60 @@ def test_decoded_parameters_build_a_valid_model(get_model_config):
         model.setup()
         physical = model.get_physical_paramaters()
         assert np.all(np.isfinite(np.asarray(physical[0], dtype=float)))
+
+
+MASS_SPEC = {
+    "C_rm": {"range": [1e4, 5e5], "log": True},
+    "g_rm": {"range": [0.01, 0.99]},
+    "R_rm": {"range": [0.05, 2.0], "log": True},
+    "f_rm": {"range": [0.01, 0.99]},
+}
+
+
+def test_mass_ratios_round_trip():
+    from rcmodel import mass_from_ratios, ratios_from_mass
+
+    physical = mass_from_ratios(C_rm=48.6e3, g_rm=0.035, R_rm=0.39, f_rm=0.7)
+    assert physical["C_rm_mass"] == pytest.approx(0.035 * 48.6e3)
+    assert physical["C_rm_deep"] == pytest.approx(0.965 * 48.6e3)
+    assert physical["R_rm_mass"] == pytest.approx(0.7 * 0.39)
+    assert physical["R_rm_deep"] == pytest.approx(0.3 * 0.39)
+    back = ratios_from_mass(physical)
+    assert back == pytest.approx({"C_rm": 48.6e3, "g_rm": 0.035, "R_rm": 0.39, "f_rm": 0.7})
+
+
+@pytest.mark.parametrize("bad", [{"g_rm": 1.0}, {"f_rm": 0.0}, {"C_rm": -1.0}, {"R_rm": float("nan")}])
+def test_mass_ratios_reject_degenerate_nodes(bad):
+    from rcmodel import mass_from_ratios
+
+    with pytest.raises(ValueError):
+        mass_from_ratios(**{"C_rm": 5e4, "g_rm": 0.5, "R_rm": 0.4, "f_rm": 0.5, **bad})
+
+
+def test_parameter_space_decodes_mass_ratios():
+    from rcmodel import ParameterSpace, mass_ranges
+
+    space = ParameterSpace(MASS_SPEC, pinned={"k_sa": 0.5})
+    rng = np.random.default_rng(0)
+    ranges = mass_ranges(MASS_SPEC)
+    for _ in range(20):
+        u = rng.random(space.dim)
+        physical = space.decode(u)
+        assert set(physical) == {"k_sa", "C_rm_mass", "C_rm_deep", "R_rm_mass", "R_rm_deep"}
+        for key, (lo, hi) in ranges.items():
+            assert lo * (1 - 1e-12) <= physical[key] <= hi * (1 + 1e-12)
+        np.testing.assert_allclose(space.encode(physical), u, atol=1e-9)
+
+
+def test_parameter_space_needs_all_mass_ratios():
+    from rcmodel import ParameterSpace
+
+    with pytest.raises(ValueError, match="room-mass ratios"):
+        ParameterSpace({k: MASS_SPEC[k] for k in ("C_rm", "g_rm")})
+
+
+def test_parameter_space_rejects_old_t_set():
+    from rcmodel import ParameterSpace
+
+    with pytest.raises(KeyError, match="T_set -> T_cool"):
+        ParameterSpace({"T_set": {"range": [18, 26]}})

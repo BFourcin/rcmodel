@@ -15,6 +15,12 @@ Searching (R_total, C_total, f_o, f_i, g_i) instead of (R1, R2, R3, C1, C2) sepa
 (the envelope's UA and its mass) from how they are distributed through the wall, so two candidates that differ only
 in the split are seen to be close rather than far apart.
 
+Room-mass ratios: the 1R2C room mass (Building(room_mass="two_node")) is searched the same way, as its total capacity
+and total resistance per m2 of floor, apportioned between the surface node (next to the air) and the deep node:
+
+    C_rm_mass = g_rm C_rm    C_rm_deep = (1 - g_rm) C_rm      (surface / deep capacity, J/K per m2 of floor)
+    R_rm_mass = f_rm R_rm    R_rm_deep = (1 - f_rm) R_rm      (air-surface / surface-deep resistance, m2K/W of floor)
+
 ParameterSpace maps a unit cube [0, 1]^d to physical values - continuous, or snapped to a log or linear grid - for an
 optimiser that searches a box (pynmmso, scipy). The physics is unchanged: decode() hands back R1-R3, C1, C2.
 """
@@ -23,8 +29,12 @@ import math
 
 import numpy as np
 
+from rcmodel.rc_model import check_renamed_keys
+
 RATIO_KEYS = ("R_total", "C_total", "f_o", "f_i", "g_i")
 ENVELOPE_PHYSICAL_KEYS = ("R1", "R2", "R3", "C1", "C2")
+MASS_RATIO_KEYS = ("C_rm", "g_rm", "R_rm", "f_rm")
+MASS_PHYSICAL_KEYS = ("C_rm_mass", "C_rm_deep", "R_rm_mass", "R_rm_deep")
 
 
 def envelope_from_ratios(R_total, C_total, f_o, f_i, g_i):
@@ -77,6 +87,44 @@ def envelope_ranges(spec):
     }
 
 
+def mass_from_ratios(C_rm, g_rm, R_rm, f_rm):
+    """{C_rm_mass, C_rm_deep, R_rm_mass, R_rm_deep} of a 1R2C room mass from its totals and splits (see the module
+    docstring). Raises ValueError unless every value comes out > 0: C_rm, R_rm > 0 and 0 < g_rm, f_rm < 1."""
+    values = {"C_rm": C_rm, "g_rm": g_rm, "R_rm": R_rm, "f_rm": f_rm}
+    for key, value in values.items():
+        if not (math.isfinite(value) and value > 0):
+            raise ValueError(f"{key} must be finite and > 0, got {value}")
+    for key in ("g_rm", "f_rm"):
+        if not values[key] < 1:
+            raise ValueError(f"{key} must be < 1 so both mass nodes are kept, got {values[key]}")
+    return {
+        "C_rm_mass": g_rm * C_rm,
+        "C_rm_deep": (1 - g_rm) * C_rm,
+        "R_rm_mass": f_rm * R_rm,
+        "R_rm_deep": (1 - f_rm) * R_rm,
+    }
+
+
+def ratios_from_mass(physical):
+    """{C_rm, g_rm, R_rm, f_rm} from a dict holding C_rm_mass, C_rm_deep, R_rm_mass, R_rm_deep: the inverse of
+    mass_from_ratios."""
+    c_rm = physical["C_rm_mass"] + physical["C_rm_deep"]
+    r_rm = physical["R_rm_mass"] + physical["R_rm_deep"]
+    return {"C_rm": c_rm, "g_rm": physical["C_rm_mass"] / c_rm, "R_rm": r_rm, "f_rm": physical["R_rm_mass"] / r_rm}
+
+
+def mass_ranges(spec):
+    """The smallest [min, max] for each of C_rm_mass, C_rm_deep, R_rm_mass, R_rm_deep that holds every room mass the
+    ratio ranges in `spec` decode to (like envelope_ranges)."""
+    (c_lo, c_hi), (g_lo, g_hi), (r_lo, r_hi), (f_lo, f_hi) = (spec[k]["range"] for k in MASS_RATIO_KEYS)
+    return {
+        "C_rm_mass": [g_lo * c_lo, g_hi * c_hi],
+        "C_rm_deep": [(1 - g_hi) * c_lo, (1 - g_lo) * c_hi],
+        "R_rm_mass": [f_lo * r_lo, f_hi * r_hi],
+        "R_rm_deep": [(1 - f_hi) * r_lo, (1 - f_lo) * r_hi],
+    }
+
+
 class ParameterSpace:
     """
     The unit cube [0, 1]^d <-> physical parameter values.
@@ -90,12 +138,15 @@ class ParameterSpace:
     pinned  {key: value} returned by decode() as well (fixed parameters, which may include ratio keys).
 
     When the searched and pinned keys include the RATIO_KEYS, decode() replaces them with R1-R3, C1, C2
-    (envelope_from_ratios); all five must be present between the two.
+    (envelope_from_ratios); all five must be present between the two. Likewise the MASS_RATIO_KEYS (all four) are
+    replaced with C_rm_mass, C_rm_deep, R_rm_mass, R_rm_deep (mass_from_ratios).
     """
 
     def __init__(self, spec, pinned=None):
         self.spec = {key: dict(entry) for key, entry in spec.items()}
         self.pinned = dict(pinned or {})
+        # "C_rm" is the room-mass total here, so only the other renamed keys can be misread.
+        check_renamed_keys({k: v for k, v in {**self.spec, **self.pinned}.items() if k != "C_rm"}, "ParameterSpace")
         self.keys = list(self.spec)
         self._grids = {}
         for key, entry in self.spec.items():
@@ -122,6 +173,11 @@ class ParameterSpace:
             missing = [k for k in RATIO_KEYS if k not in uses_ratios]
             raise ValueError(f"the envelope ratios need all of {RATIO_KEYS}; missing {missing}")
         self.uses_ratios = bool(uses_ratios)
+        uses_mass = [k for k in MASS_RATIO_KEYS if k in self.spec or k in self.pinned]
+        if uses_mass and len(uses_mass) != len(MASS_RATIO_KEYS):
+            missing = [k for k in MASS_RATIO_KEYS if k not in uses_mass]
+            raise ValueError(f"the room-mass ratios need all of {MASS_RATIO_KEYS}; missing {missing}")
+        self.uses_mass_ratios = bool(uses_mass)
 
     @property
     def dim(self):
@@ -154,18 +210,22 @@ class ParameterSpace:
 
     def decode(self, u):
         """The physical parameter dict for unit-cube point u: pinned values, then the searched ones, with the ratio
-        keys (if used) replaced by R1-R3, C1, C2."""
+        keys (if used) replaced by R1-R3, C1, C2 and the room-mass ratio keys by the four mass parameters."""
         physical = {**self.pinned, **self.values(u)}
         if self.uses_ratios:
             physical.update(envelope_from_ratios(*(physical.pop(k) for k in RATIO_KEYS)))
+        if self.uses_mass_ratios:
+            physical.update(mass_from_ratios(*(physical.pop(k) for k in MASS_RATIO_KEYS)))
         return physical
 
     def encode(self, physical):
-        """The unit-cube point for a physical parameter dict (R1-R3, C1, C2 or the ratio keys), snapped to the
-        grid dimensions and clipped to the ranges. decode(encode(p)) is p on the grid."""
+        """The unit-cube point for a physical parameter dict (R1-R3, C1, C2 or the ratio keys; likewise the room
+        mass), snapped to the grid dimensions and clipped to the ranges. decode(encode(p)) is p on the grid."""
         values = dict(physical)
         if self.uses_ratios and not all(k in values for k in RATIO_KEYS):
             values.update(ratios_from_envelope(values))
+        if self.uses_mass_ratios and not all(k in values for k in MASS_RATIO_KEYS):
+            values.update(ratios_from_mass(values))
         u = []
         for key in self.keys:
             lo, hi = self.spec[key]["range"]

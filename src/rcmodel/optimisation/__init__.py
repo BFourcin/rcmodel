@@ -11,11 +11,16 @@ from .evaluation import evaluate, make_update_env_fn
 from .identification import ENVELOPE_KEYS, fit_free_float, free_float_segments, narrow_ranges
 from .parameter_space import (
     ENVELOPE_PHYSICAL_KEYS,
+    MASS_PHYSICAL_KEYS,
+    MASS_RATIO_KEYS,
     RATIO_KEYS,
     ParameterSpace,
     envelope_from_ratios,
     envelope_ranges,
+    mass_from_ratios,
+    mass_ranges,
     ratios_from_envelope,
+    ratios_from_mass,
 )
 from .pbt import (
     METRIC,
@@ -43,6 +48,8 @@ __all__ = [
     "DEFAULT_OBSERVATION_FEATURES",
     "ENVELOPE_KEYS",
     "ENVELOPE_PHYSICAL_KEYS",
+    "MASS_PHYSICAL_KEYS",
+    "MASS_RATIO_KEYS",
     "METRIC",
     "MODE",
     "OBSERVATION_FEATURES",
@@ -67,6 +74,8 @@ __all__ = [
     "is_weekday",
     "learner_diagnostics",
     "make_update_env_fn",
+    "mass_from_ratios",
+    "mass_ranges",
     "narrow_ranges",
     "observation_features",
     "physical_to_scaled",
@@ -75,6 +84,7 @@ __all__ = [
     "ppo_settings",
     "preprocess_observation",
     "ratios_from_envelope",
+    "ratios_from_mass",
     "sample_plausible_population",
     "schedule_available",
     "search_space",
